@@ -44,6 +44,9 @@ pub fn auto_pair_device() -> Result<String, String> {
         serde_json::json!({})
     };
 
+    // 无论是否已配对，都确保 gateway.controlUi.allowedOrigins 已写入
+    patch_gateway_origins();
+
     // 检查设备是否已配对
     if paired.get(&device_id).is_some() {
         return Ok("设备已配对".into());
