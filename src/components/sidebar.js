@@ -33,6 +33,7 @@ const NAV_ITEMS_FULL = [
     section: '数据',
     items: [
       { route: '/memory', label: '记忆文件', icon: 'memory' },
+      { route: '/cron', label: '定时任务', icon: 'clock' },
     ]
   },
   {
