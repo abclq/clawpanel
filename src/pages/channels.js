@@ -497,7 +497,8 @@ async function openConfigDialog(pid, page, state) {
       if (reg.pluginRequired) {
         const pluginId = reg.pluginId || pid
         const pluginStatus = await api.getChannelPluginStatus(pluginId)
-        if (!pluginStatus?.installed) {
+        // 跳过安装：插件已安装 或 已内置（新版 OpenClaw 内置了 feishu 等插件）
+        if (!pluginStatus?.installed && !pluginStatus?.builtin) {
           btnSave.textContent = '安装插件中...'
           resultEl.innerHTML = `
             <div style="background:var(--bg-tertiary);border-radius:var(--radius-md);padding:12px;margin-top:var(--space-sm)">
