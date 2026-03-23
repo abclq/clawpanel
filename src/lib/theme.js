@@ -9,10 +9,26 @@ export function initTheme() {
   applyTheme(theme)
 }
 
-export function toggleTheme() {
-  const current = document.documentElement.dataset.theme || 'light'
+export function toggleTheme(onApply) {
+  const html = document.documentElement
+  const current = html.dataset.theme || 'light'
   const next = current === 'dark' ? 'light' : 'dark'
-  applyTheme(next)
+
+  // 设置扩散起点：白切黑从左下角，黑切白从右上角
+  const toDark = next === 'dark'
+  html.style.setProperty('--theme-reveal-x', toDark ? '0%' : '100%')
+  html.style.setProperty('--theme-reveal-y', toDark ? '100%' : '0%')
+
+  const doApply = () => {
+    applyTheme(next)
+    if (onApply) onApply(next)
+  }
+
+  if (document.startViewTransition) {
+    document.startViewTransition(doApply)
+  } else {
+    doApply()
+  }
   return next
 }
 

@@ -222,8 +222,7 @@ export function renderSidebar(el) {
       // 主题切换
       const themeBtn = e.target.closest('#btn-theme-toggle')
       if (themeBtn) {
-        toggleTheme()
-        renderSidebar(el)
+        toggleTheme(() => renderSidebar(el))
         return
       }
       // 实例切换器
