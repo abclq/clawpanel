@@ -1189,7 +1189,10 @@ pub async fn run_channel_action(
                         .output()
                         .ok()?;
                     let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                    raw.split_whitespace().last().map(String::from)
+                    // 输出格式: "OpenClaw 2026.3.24 (hash)" → 取第二个词（版本号）
+                    raw.split_whitespace()
+                        .find(|w| w.chars().next().map_or(false, |c| c.is_ascii_digit()))
+                        .map(String::from)
                 })
                 .unwrap_or_default();
             let oc_nums: Vec<u32> = oc_ver
