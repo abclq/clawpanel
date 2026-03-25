@@ -1203,6 +1203,18 @@ pub async fn run_channel_action(
                 "@tencent-weixin/openclaw-weixin-cli@latest".to_string()
             }
         };
+        // 先清理旧的不兼容插件目录（v1.0.3 的 CLI 检测到已安装会做 in-place update，不会覆盖旧文件）
+        let weixin_ext_dir = super::openclaw_dir()
+            .join("extensions")
+            .join("openclaw-weixin");
+        if weixin_ext_dir.exists() {
+            let _ = app.emit(
+                "channel-action-log",
+                json!({ "platform": &platform, "action": &action, "kind": "info", "message": "清理旧版微信插件目录..." }),
+            );
+            let _ = std::fs::remove_dir_all(&weixin_ext_dir);
+        }
+
         let _ = app.emit(
             "channel-action-log",
             json!({
