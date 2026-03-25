@@ -259,14 +259,17 @@ fn build_enhanced_path() -> String {
             extra.push(format!("{}/bin", prefix));
         }
         // 扫描 nvm 实际安装的版本目录（兼容无 current 符号链接的情况）
+        // 按版本号倒序排列，确保最新版优先（修复 #143：v20 排在 v24 前面）
         let nvm_versions = home.join(".nvm/versions/node");
         if nvm_versions.is_dir() {
             if let Ok(entries) = std::fs::read_dir(&nvm_versions) {
-                for entry in entries.flatten() {
-                    let bin = entry.path().join("bin");
-                    if bin.is_dir() {
-                        extra.push(bin.to_string_lossy().to_string());
-                    }
+                let mut dirs: Vec<_> = entries
+                    .flatten()
+                    .filter(|e| e.path().join("bin").is_dir())
+                    .collect();
+                dirs.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+                for entry in dirs {
+                    extra.push(entry.path().join("bin").to_string_lossy().to_string());
                 }
             }
         }
@@ -278,11 +281,13 @@ fn build_enhanced_path() -> String {
         let fnm_versions = fnm_dir.join("node-versions");
         if fnm_versions.is_dir() {
             if let Ok(entries) = std::fs::read_dir(&fnm_versions) {
-                for entry in entries.flatten() {
-                    let bin = entry.path().join("installation/bin");
-                    if bin.is_dir() {
-                        extra.push(bin.to_string_lossy().to_string());
-                    }
+                let mut dirs: Vec<_> = entries
+                    .flatten()
+                    .filter(|e| e.path().join("installation/bin").is_dir())
+                    .collect();
+                dirs.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+                for entry in dirs {
+                    extra.push(entry.path().join("installation/bin").to_string_lossy().to_string());
                 }
             }
         }
@@ -316,6 +321,7 @@ fn build_enhanced_path() -> String {
             extra.push(format!("{}/bin", prefix));
         }
         // NVM_DIR 环境变量（用户可能自定义了 nvm 安装目录）
+        // 按版本号倒序排列，确保最新版优先（修复 #143：v20 排在 v24 前面）
         let nvm_dir = std::env::var("NVM_DIR")
             .ok()
             .map(std::path::PathBuf::from)
@@ -323,11 +329,13 @@ fn build_enhanced_path() -> String {
         let nvm_versions = nvm_dir.join("versions/node");
         if nvm_versions.is_dir() {
             if let Ok(entries) = std::fs::read_dir(&nvm_versions) {
-                for entry in entries.flatten() {
-                    let bin = entry.path().join("bin");
-                    if bin.is_dir() {
-                        extra.push(bin.to_string_lossy().to_string());
-                    }
+                let mut dirs: Vec<_> = entries
+                    .flatten()
+                    .filter(|e| e.path().join("bin").is_dir())
+                    .collect();
+                dirs.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+                for entry in dirs {
+                    extra.push(entry.path().join("bin").to_string_lossy().to_string());
                 }
             }
         }
@@ -339,11 +347,13 @@ fn build_enhanced_path() -> String {
         let fnm_versions = fnm_dir.join("node-versions");
         if fnm_versions.is_dir() {
             if let Ok(entries) = std::fs::read_dir(&fnm_versions) {
-                for entry in entries.flatten() {
-                    let bin = entry.path().join("installation/bin");
-                    if bin.is_dir() {
-                        extra.push(bin.to_string_lossy().to_string());
-                    }
+                let mut dirs: Vec<_> = entries
+                    .flatten()
+                    .filter(|e| e.path().join("installation/bin").is_dir())
+                    .collect();
+                dirs.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+                for entry in dirs {
+                    extra.push(entry.path().join("installation/bin").to_string_lossy().to_string());
                 }
             }
         }

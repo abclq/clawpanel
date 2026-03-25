@@ -741,15 +741,9 @@ function applyDefaultModel(state) {
   for (const fb of fallbacks) modelsMap[fb] = {}
   defaults.models = modelsMap
 
-  // 同步到各 agent 的模型覆盖配置，避免 agent 级别的旧值覆盖全局默认
-  const list = state.config.agents?.list
-  if (Array.isArray(list)) {
-    for (const agent of list) {
-      if (agent.model && typeof agent.model === 'object' && agent.model.primary) {
-        agent.model.primary = primary
-      }
-    }
-  }
+  // 注意：不再强制同步到各 agent 的 model.primary
+  // 子 Agent 的模型覆盖是 OpenClaw 正常功能（用户可通过对话为不同 Agent 设置不同模型）
+  // 强制覆盖会导致 #142：重开 ClawPanel 后子 Agent 模型配置被重置
 }
 
 // 顶部按钮事件
