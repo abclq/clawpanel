@@ -1,9 +1,9 @@
 {
-  "version": "0.9.9",
+  "version": "0.10.0",
   "minAppVersion": "0.9.0",
-  "hash": "sha256:de6f15a48b61e38ac874b5e796d136c3479f2eb791f1a649b62d0e7ee859a524",
-  "url": "https://github.com/qingchencloud/clawpanel/releases/download/v0.9.9/web-0.9.9.zip",
-  "size": 2098431,
-  "changelog": "",
-  "releasedAt": "2026-03-24T14:48:46Z"
+  "hash": "",
+  "url": "https://github.com/qingchencloud/clawpanel/releases/download/v0.10.0/web-0.10.0.zip",
+  "size": 0,
+  "changelog": "修复 6 个 issue + 插件版本智能适配 + 开机自启 + 一键修复 + 微信 QR 渲染",
+  "releasedAt": "2026-03-26T00:00:00Z"
 }

@@ -5,6 +5,37 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.10.0] - 2026-03-26
+
+### 新功能 (Features)
+
+- **开机自启** — 面板设置新增开机自启开关，基于 tauri-plugin-autostart（仅桌面版）
+- **Gateway 一键修复** — 启动失败时顶部 banner 显示「一键修复」按钮，弹窗执行 `openclaw doctor --fix` 并显示实时日志，修复完成自动重启 Gateway
+- **渠道插件版本智能适配** — 安装渠道插件时自动匹配用户 OpenClaw 版本（@openclaw/ 前缀包 pin 版本号，微信/QQ 独立版本号不 pin）
+- **微信插件兼容检测** — 检测已安装微信插件与 OpenClaw 版本的兼容性，不兼容时显示红色警告 + 升级引导 + 手动安装命令
+- **微信扫码二维码渲染** — 安装/登录流程中自动检测微信 QR URL 并渲染为可扫描的二维码图片
+- **赞助项目区域** — 关于页面新增赞助区域（BNB QR 码 + 点击预览大图，仅非中文语言显示）
+- **联系邮箱** — 关于页面商务合作改为 support@qctx.net 可点击邮箱链接
+
+### 修复 (Fixes)
+
+- **仪表盘版本缓存** — 切页后版本信息不再丢失，新增持久化缓存 + 实例切换自动清空 (fixes #145)
+- **macOS 手动安装检测** — 兼容 standalone (~/.openclaw-bin)、/opt/openclaw、Homebrew ARM/Intel 路径，无 plist 时返回默认 Gateway 条目 (fixes #144)
+- **更新提示持久化** — 全局更新 banner 从 sessionStorage 改为 localStorage，关闭后不再每次重启都弹 (fixes #146)
+- **AI 助手 Web 模式** — Web 部署模式下 AI 测试走后端代理绕过 CORS (fixes #148)
+- **子 Agent 模型配置** — 不再在切换默认模型时强制覆盖所有子 Agent 的 model.primary (fixes #142)
+- **nvm 版本排序** — nvm/fnm 版本目录按倒序排列，最新版 Node.js 优先检测 (fixes #143)
+- **热更新 banner** — 热更新下载后记录已应用版本到 localStorage，重载后不再重复提示
+- **版本号解析** — 修复 `openclaw --version` 输出解析，正确取版本号而非 commit hash（影响版本显示、升级检测、插件兼容判断）
+- **插件 minHostVersion 检测** — 插件安装失败时检测宿主版本不满足，给出明确升级提示
+- **微信插件清理** — 重装前自动删除旧插件目录 + 清理 openclaw.json 残留配置
+
+### 改进 (Improvements)
+
+- **插件安装体验** — 网络慢时显示「正在下载，请稍候」提示，避免空白等待
+- **i18n 国际化** — 新增 Guardian 修复弹窗 15 个 key + 渠道兼容 2 个 key + 赞助 2 个 key（11 种语言）
+- **10 个非中文 README** — 新增 Sponsor + Contact 区域（BNB QR + support@qctx.net）
+
 ## [0.9.9] - 2026-03-24
 
 ### 新功能 (Features)

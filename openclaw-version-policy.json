@@ -95,6 +95,14 @@
       "chinese": {
         "recommended": "2026.3.13-zh.1"
       }
+    },
+    "0.10.0": {
+      "official": {
+        "recommended": "2026.3.13"
+      },
+      "chinese": {
+        "recommended": "2026.3.13-zh.1"
+      }
     }
   }
 }
