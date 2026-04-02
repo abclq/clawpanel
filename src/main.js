@@ -10,7 +10,7 @@ import { renderSidebar, openMobileSidebar } from './components/sidebar.js'
 import { initTheme } from './lib/theme.js'
 import { detectOpenclawStatus, isOpenclawReady, isUpgrading, isGatewayRunning, onGatewayChange, startGatewayPoll, onGuardianGiveUp, resetAutoRestart, loadActiveInstance, getActiveInstance, onInstanceChange } from './lib/app-state.js'
 import { wsClient } from './lib/ws-client.js'
-import { api, checkBackendHealth, isBackendOnline, onBackendStatusChange } from './lib/tauri-api.js'
+import { api, checkBackendHealth, isBackendOnline, isTauriRuntime, onBackendStatusChange } from './lib/tauri-api.js'
 import { version as APP_VERSION } from '../package.json'
 import { statusIcon } from './lib/icons.js'
 import { isForeignGatewayError, showGatewayConflictGuidance } from './lib/gateway-ownership.js'
@@ -45,7 +45,7 @@ async function openGatewayConflict(error = null) {
 }
 
 // === 访问密码保护（Web + 桌面端通用） ===
-const isTauri = !!window.__TAURI_INTERNALS__
+const isTauri = isTauriRuntime()
 
 async function checkAuth() {
   if (isTauri) {
@@ -408,7 +408,7 @@ async function boot() {
       })
 
       // 守护放弃时，弹出恢复选项
-      if (window.__TAURI_INTERNALS__) {
+      if (isTauriRuntime()) {
         import('@tauri-apps/api/event').then(async ({ listen }) => {
           await listen('guardian-event', (e) => {
             if (e.payload?.kind === 'give_up') showGuardianRecovery()
@@ -432,7 +432,7 @@ async function boot() {
     }
 
     // 全局监听后台任务完成/失败事件，自动刷新安装状态和侧边栏
-    if (window.__TAURI_INTERNALS__) {
+    if (isTauriRuntime()) {
       import('@tauri-apps/api/event').then(async ({ listen }) => {
         const refreshAfterTask = async () => {
           // 清除 API 缓存，确保拿到最新状态
@@ -509,10 +509,10 @@ async function autoConnectWebSocket() {
         const url = new URL(inst2.endpoint)
         host = `${url.hostname}:${inst2.gatewayPort || port}`
       } catch {
-        host = window.__TAURI_INTERNALS__ ? `127.0.0.1:${port}` : location.host
+        host = isTauriRuntime() ? `127.0.0.1:${port}` : location.host
       }
     } else {
-      host = window.__TAURI_INTERNALS__ ? `127.0.0.1:${port}` : location.host
+      host = isTauriRuntime() ? `127.0.0.1:${port}` : location.host
     }
     wsClient.connect(host, token)
     console.log(`[main] WebSocket 连接已启动 -> ${host}`)
@@ -712,7 +712,7 @@ async function checkGlobalUpdate() {
     if (hotApplied === ver) return
 
     const changelog = info.manifest?.changelog || ''
-    const isWeb = !window.__TAURI_INTERNALS__
+    const isWeb = !isTauriRuntime()
 
     banner.classList.remove('update-banner-hidden')
     banner.innerHTML = `

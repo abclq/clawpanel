@@ -153,6 +153,7 @@ export default {
   hostedGwNotReady: _('Gateway 未就绪', 'Gateway not ready', 'Gateway 未就緒'),
   hostedErrorThreshold: _('连续错误超过阈值', 'Consecutive errors exceeded threshold', '連續錯誤超過阈值'),
   hostedModelNotConfigured: _('托管 Agent 未配置模型（请在 AI 助手页面配置）', 'Hosted Agent model not configured (please configure in AI Assistant page)', '托管 Agent 未設定模型（請在 AI 助手頁面設定）'),
+  hostedModelUrlInvalid: _('托管 Agent 模型地址无效，请在 AI 助手页面填写完整的 http(s):// 地址', 'Hosted Agent model URL is invalid. Please enter a full http(s):// URL on the AI Assistant page.', '托管 Agent 模型位址無效，請在 AI 助手頁面填寫完整的 http(s):// 位址'),
   hostedApiError: _('API 错误 {code}', 'API Error {code}', 'API 錯誤 {code}'),
   hostedPrefix: _('[托管 Agent] ', '[Hosted Agent] '),
   hostedContextSummary: _('[上下文摘要 - 已压缩 {n} 条历史]', '[Context Summary - compressed {n} history entries]', '[上下文摘要 - 已壓縮 {n} 條歷史]'),

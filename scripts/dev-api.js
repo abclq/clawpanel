@@ -511,6 +511,38 @@ function standaloneConfig() {
   return policy?.standalone || { enabled: false }
 }
 
+function findPanelPolicyEntry(policy, currentVersion) {
+  const exact = policy?.panels?.[currentVersion]
+  if (exact) return exact
+
+  const currentParts = parseVersion(currentVersion)
+  if (currentParts.length < 2) return null
+
+  let matched = null
+  let matchedParts = null
+  for (const [version, entry] of Object.entries(policy?.panels || {})) {
+    const parts = parseVersion(version)
+    if (parts.length < 2) continue
+    if (parts[0] !== currentParts[0] || parts[1] !== currentParts[1]) continue
+    if (versionCompare(version, currentVersion) > 0) continue
+    if (!matchedParts || compareParsedVersion(parts, matchedParts) > 0) {
+      matched = entry
+      matchedParts = parts
+    }
+  }
+  return matched
+}
+
+function compareParsedVersion(a = [], b = []) {
+  const len = Math.max(a.length, b.length)
+  for (let i = 0; i < len; i++) {
+    const av = Number(a[i] || 0)
+    const bv = Number(b[i] || 0)
+    if (av !== bv) return av > bv ? 1 : -1
+  }
+  return 0
+}
+
 function standalonePlatformKey() {
   const arch = process.arch
   const plat = process.platform
@@ -746,7 +778,8 @@ async function _tryR2Install(version, source, logs) {
 
 function recommendedVersionFor(source = 'chinese') {
   const policy = loadVersionPolicy()
-  return policy?.panels?.[PANEL_VERSION]?.[source]?.recommended
+  const panelEntry = findPanelPolicyEntry(policy, PANEL_VERSION)
+  return panelEntry?.[source]?.recommended
     || policy?.default?.[source]?.recommended
     || null
 }

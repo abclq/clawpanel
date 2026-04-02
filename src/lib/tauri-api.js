@@ -5,7 +5,9 @@
 
 import { t } from './i18n.js'
 
-const isTauri = !!window.__TAURI_INTERNALS__
+export function isTauriRuntime() {
+  return !!window.__TAURI_INTERNALS__ || !!window.__TAURI__ || window.location?.hostname === 'tauri.localhost'
+}
 
 // 仅在 Node.js 后端实现的命令（Tauri Rust 不处理），强制走 webInvoke
 const WEB_ONLY_CMDS = new Set([
@@ -19,10 +21,15 @@ const WEB_ONLY_CMDS = new Set([
   'get_deploy_mode',
 ])
 
-// 预加载 Tauri invoke，避免每次 API 调用都做动态 import
-const _invokeReady = isTauri
-  ? import('@tauri-apps/api/core').then(m => m.invoke)
-  : null
+let _invokeReady = null
+
+async function getTauriInvoke() {
+  if (!isTauriRuntime()) return null
+  if (!_invokeReady) {
+    _invokeReady = import('@tauri-apps/api/core').then(m => m.invoke)
+  }
+  return _invokeReady
+}
 
 // 简单缓存：避免页面切换时重复请求后端
 const _cache = new Map()
@@ -97,8 +104,8 @@ export { invalidate }
 
 async function invoke(cmd, args = {}) {
   const start = Date.now()
-  if (_invokeReady && !WEB_ONLY_CMDS.has(cmd)) {
-    const tauriInvoke = await _invokeReady
+  const tauriInvoke = WEB_ONLY_CMDS.has(cmd) ? null : await getTauriInvoke()
+  if (tauriInvoke) {
     const result = await tauriInvoke(cmd, args)
     const duration = Date.now() - start
     logRequest(cmd, args, duration, false)
@@ -120,7 +127,7 @@ async function webInvoke(cmd, args) {
   })
   if (resp.status === 401) {
     // Tauri 模式下不触发登录浮层（Tauri 有自己的认证流程）
-    if (!isTauri && window.__clawpanel_show_login) window.__clawpanel_show_login()
+    if (!isTauriRuntime() && window.__clawpanel_show_login) window.__clawpanel_show_login()
     throw new Error(t('common.loginRequired'))
   }
   // 检测后端是否可用：如果返回的是 HTML（非 JSON），说明后端未运行
@@ -155,7 +162,7 @@ function _setBackendOnline(v) {
 
 // 后端健康检查
 export async function checkBackendHealth() {
-  if (isTauri) { _setBackendOnline(true); return true }
+  if (isTauriRuntime()) { _setBackendOnline(true); return true }
   try {
     const resp = await fetch('/__api/health', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
     const ok = resp.ok

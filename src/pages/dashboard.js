@@ -118,6 +118,7 @@ async function loadDashboardData(page, fullRefresh = false) {
     api.readOpenclawConfig(),
     // 版本信息：首次加载或手动刷新时才查询（避免 ARM 设备上频繁查 npm registry）
     (!_dashboardInitialized || fullRefresh || !_dashboardVersionCache) ? api.getVersionInfo() : Promise.resolve(_dashboardVersionCache),
+    api.readPanelConfig(),
   ]), 15000)
   const secondaryP = withTimeout(Promise.allSettled([
     api.listAgents(),
@@ -127,12 +128,13 @@ async function loadDashboardData(page, fullRefresh = false) {
   const logsP = api.readLogTail('gateway', 20).catch(() => '')
 
   // 第一波：服务状态 + 配置 + 版本 → 立即渲染统计卡片
-  const [servicesRes, configRes, versionRes] = await coreP
+  const [servicesRes, configRes, versionRes, panelConfigRes] = await coreP
   const services = servicesRes.status === 'fulfilled' ? servicesRes.value : []
   const version = (versionRes.status === 'fulfilled' && versionRes.value)
     ? (_dashboardVersionCache = versionRes.value)
     : (_dashboardVersionCache || {})
   const config = configRes.status === 'fulfilled' ? configRes.value : null
+  const panelConfig = panelConfigRes.status === 'fulfilled' ? panelConfigRes.value : null
   const gw = services.find(s => s.label === 'ai.openclaw.gateway')
   const shouldLoadStatusSummary = gw?.running === true
   if (!shouldLoadStatusSummary) {
@@ -166,7 +168,7 @@ async function loadDashboardData(page, fullRefresh = false) {
     }
   }
 
-  renderStatCards(page, services, version, [], config)
+  renderStatCards(page, services, version, [], config, panelConfig)
   if (gw) {
     maybeShowForeignGatewayBindingPrompt({
       service: gw,
@@ -191,7 +193,7 @@ async function loadDashboardData(page, fullRefresh = false) {
     }
   }
 
-  renderStatCards(page, services, version, agents, config)
+  renderStatCards(page, services, version, agents, config, panelConfig)
   renderOverview(page, services, mcpConfig, backups, config, agents, statusSummary)
 
   // 第三波：日志（最低优先级）
@@ -212,7 +214,7 @@ async function openGatewayConflict(page, error = null, reason = null) {
   })
 }
 
-function renderStatCards(page, services, version, agents, config) {
+function renderStatCards(page, services, version, agents, config, panelConfig) {
   const cardsEl = page.querySelector('#stat-cards')
   const gw = services.find(s => s.label === 'ai.openclaw.gateway')
   const foreignGateway = isForeignGatewayService(gw)
@@ -225,6 +227,7 @@ function renderStatCards(page, services, version, agents, config) {
   const cliSourceLabel = { standalone: t('dashboard.cliSourceStandalone'), 'npm-zh': t('dashboard.cliSourceNpmZh'), 'npm-official': t('dashboard.cliSourceNpmOfficial'), 'npm-global': t('dashboard.cliSourceNpmGlobal') }[version.cli_source] || t('dashboard.cliSourceUnknown')
   const installCount = dedupeOpenclawInstallations(version.all_installations).length
   const multiInstall = installCount > 1
+  const cliBound = !!(panelConfig?.openclawCliPath && String(panelConfig.openclawCliPath).trim())
 
   const defaultAgent = agents.find(a => a.id === 'main')?.name || 'main'
   const modelCount = config?.models?.providers ? Object.values(config.models.providers).reduce((acc, p) => acc + (p.models?.length || 0), 0) : 0
@@ -252,13 +255,15 @@ function renderStatCards(page, services, version, agents, config) {
       </div>
       <div class="stat-card-value">${version.current || t('common.unknown')}</div>
       <div class="stat-card-meta">${versionMeta}</div>
-      ${version.cli_path ? `<div class="stat-card-meta" style="margin-top:2px;font-size:11px;opacity:0.7" title="${escapeHtml(version.cli_path)}">${cliSourceLabel}${multiInstall ? ' · <span style="color:var(--warning)">' + t('dashboard.installCount', { count: installCount }) + '</span>' : ''}</div>` : ''}
-      ${multiInstall
+      ${version.cli_path ? `<div class="stat-card-meta" style="margin-top:2px;font-size:11px;opacity:0.7" title="${escapeHtml(version.cli_path)}">${cliSourceLabel}${multiInstall ? ' · <span' + (cliBound ? '' : ' style="color:var(--warning)"') + '>' + t('dashboard.installCount', { count: installCount }) + '</span>' : ''}</div>` : ''}
+      ${multiInstall && !cliBound
         ? `<div class="stat-card-meta" style="margin-top:8px;color:var(--warning);line-height:1.6">${t('dashboard.multiInstallCardHint')}</div>
            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
              <button class="btn btn-secondary btn-xs" data-action="resolve-multi-install">${t('dashboard.viewGuidance')}</button>
              <button class="btn btn-primary btn-xs" data-action="open-settings">${t('dashboard.goSettings')}</button>
            </div>`
+        : multiInstall && cliBound
+          ? `<div class="stat-card-meta" style="margin-top:4px;color:var(--text-tertiary);font-size:11px">✓ ${t('dashboard.multiInstallBoundOk', { count: installCount })}</div>`
         : ''}
     </div>
     <div class="stat-card">

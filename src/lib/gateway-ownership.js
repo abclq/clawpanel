@@ -125,47 +125,78 @@ export async function showGatewayConflictGuidance({ error = null, service = null
   const suggestionThree = t('services.guidanceSuggestionInstallations')
   const settingsButtonLabel = hasUnboundForeignGateway ? t('services.guidanceBindCliBtn') : t('sidebar.settings')
 
+  const whyText = hasUnboundForeignGateway
+    ? t('services.guidanceWhyForeignUnbound')
+    : hasForeignGateway
+      ? t('services.guidanceWhyForeign')
+    : t('services.guidanceWhyMultiInstall')
+
   const installationHtml = installations.length
     ? installations.map(inst => {
-        const badges = [
-        inst.active ? `<span class="clawhub-badge" style="font-size:11px">${escapeHtml(t('settings.cliActive'))}</span>` : '',
-        inst.version ? `<span class="clawhub-badge" style="font-size:11px">${escapeHtml(t('settings.cliVersion'))}: ${escapeHtml(inst.version)}</span>` : '',
-        inst.source ? `<span class="clawhub-badge" style="font-size:11px">${escapeHtml(cliSourceLabel(inst.source))}</span>` : '',
-      ].filter(Boolean).join(' ')
+      const isActive = !!inst.active
+      const borderColor = isActive ? 'rgba(34,197,94,0.4)' : 'var(--border-light)'
+      const bgColor = isActive ? 'rgba(34,197,94,0.06)' : 'var(--bg-secondary)'
+      const activeBadge = isActive
+        ? `<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;background:rgba(34,197,94,0.14);color:#16a34a">● ${escapeHtml(t('services.guidanceActiveBadge'))}</span>`
+        : ''
+      const versionBadge = inst.version
+        ? `<span style="display:inline-flex;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:500;background:rgba(99,102,241,0.10);color:var(--text-secondary)">${escapeHtml(inst.version)}</span>`
+        : ''
+      const sourceBadge = inst.source
+        ? `<span style="display:inline-flex;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:500;background:var(--bg-tertiary, rgba(0,0,0,0.06));color:var(--text-tertiary)">${escapeHtml(cliSourceLabel(inst.source))}</span>`
+        : ''
       return `
-        <div style="padding:10px 12px;border:1px solid var(--border-light);border-radius:10px;background:var(--bg-secondary);margin-top:8px">
-          <div style="font-size:12px;word-break:break-all;font-family:var(--font-mono)">${escapeHtml(inst.path)}</div>
-          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">${badges}</div>
+        <div style="padding:10px 14px;border:1px solid ${borderColor};border-radius:10px;background:${bgColor};margin-top:8px;transition:border-color .15s">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="font-size:15px">📂</span>
+            <code style="font-size:12px;word-break:break-all;flex:1;min-width:0">${escapeHtml(inst.path)}</code>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">${activeBadge}${versionBadge}${sourceBadge}</div>
         </div>`
     }).join('')
-    : `<div style="padding:10px 12px;border:1px dashed var(--border-light);border-radius:10px;background:var(--bg-secondary);margin-top:8px;color:var(--text-secondary)">${escapeHtml(t('services.guidanceNoInstallations', { settings: settingsLabel }))}</div>`
+    : `<div style="padding:14px;border:1px dashed var(--border-light);border-radius:10px;background:var(--bg-secondary);margin-top:8px;color:var(--text-tertiary);text-align:center">${escapeHtml(t('services.guidanceNoInstallations', { settings: settingsLabel }))}</div>`
+
+  const infoCard = (icon, label, value, sub) => `
+    <div style="display:flex;gap:10px;padding:10px 14px;border-radius:10px;background:var(--bg-secondary);border:1px solid var(--border-light)">
+      <span style="font-size:16px;flex-shrink:0;margin-top:1px">${icon}</span>
+      <div style="min-width:0;flex:1">
+        <div style="font-size:11px;color:var(--text-tertiary);font-weight:600;text-transform:uppercase;letter-spacing:0.3px">${escapeHtml(label)}</div>
+        <div style="margin-top:3px;font-size:13px;word-break:break-all;font-family:var(--font-mono);color:var(--text-primary)">${escapeHtml(value)}</div>
+        ${sub ? `<div style="margin-top:2px;font-size:11px;color:var(--text-tertiary)">${escapeHtml(sub)}</div>` : ''}
+      </div>
+    </div>`
+
+  const stepCard = (n, text) => `
+    <div style="display:flex;gap:10px;align-items:flex-start">
+      <span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--primary, #6366f1);color:#fff;font-size:12px;font-weight:700;flex-shrink:0;margin-top:1px">${n}</span>
+      <div style="font-size:13px;color:var(--text-secondary);line-height:1.6;flex:1">${escapeHtml(text)}</div>
+    </div>`
 
   const content = `
-    <div style="display:flex;flex-direction:column;gap:12px;font-size:var(--font-size-sm);color:var(--text-secondary);line-height:1.7">
-      <div style="padding:12px;border-radius:10px;background:rgba(245,158,11,0.12);color:var(--warning)">
-        ${escapeHtml(summaryText)}
+    <div style="display:flex;flex-direction:column;gap:14px;font-size:var(--font-size-sm);color:var(--text-secondary);line-height:1.7">
+      <div style="display:flex;gap:10px;padding:12px 14px;border-radius:10px;background:rgba(245,158,11,0.10);border:1px solid rgba(245,158,11,0.2)">
+        <span style="font-size:18px;flex-shrink:0">⚠️</span>
+        <div style="color:var(--warning);font-size:13px;line-height:1.6">${escapeHtml(summaryText)}</div>
       </div>
-      ${message ? `<div style="padding:10px 12px;border-radius:10px;background:var(--bg-secondary);font-family:var(--font-mono);word-break:break-all">${message}</div>` : ''}
-      <div style="display:grid;grid-template-columns:1fr;gap:8px">
-        <div><strong>${escapeHtml(t('services.guidanceCurrentBindingTitle'))}</strong><div style="margin-top:4px;font-family:var(--font-mono);word-break:break-all">${escapeHtml(displayBoundCliPath)}</div></div>
-        <div><strong>${escapeHtml(t('settings.openclawCli'))}</strong><div style="margin-top:4px;font-family:var(--font-mono);word-break:break-all">${escapeHtml(currentCli)}</div><div style="margin-top:4px;color:var(--text-tertiary)">${escapeHtml(currentCliSource)}</div></div>
-        <div><strong>${escapeHtml(t('settings.openclawDir'))}</strong><div style="margin-top:4px;font-family:var(--font-mono);word-break:break-all">${escapeHtml(currentDir)}</div></div>
-        ${pid ? `<div><strong>PID</strong><div style="margin-top:4px">${escapeHtml(pid)}</div></div>` : ''}
+      ${message ? `<div style="padding:10px 14px;border-radius:10px;background:var(--bg-secondary);border:1px solid var(--border-light);font-family:var(--font-mono);font-size:12px;word-break:break-all;color:var(--text-tertiary)">${message}</div>` : ''}
+      <details style="border-radius:10px;background:var(--bg-secondary);border:1px solid var(--border-light);overflow:hidden">
+        <summary style="padding:10px 14px;cursor:pointer;font-size:13px;font-weight:600;color:var(--text-primary);user-select:none">${escapeHtml(t('services.guidanceWhyTitle'))}</summary>
+        <div style="padding:0 14px 12px;font-size:13px;color:var(--text-secondary);line-height:1.6">${escapeHtml(whyText)}</div>
+      </details>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        ${infoCard('🔗', t('services.guidanceInfoCliBinding'), displayBoundCliPath)}
+        ${infoCard('🛠️', t('services.guidanceInfoCliDetected'), currentCli, currentCliSource)}
+        ${infoCard('📁', t('services.guidanceInfoDataDir'), currentDir)}
+        ${pid ? infoCard('⚡', t('services.guidanceInfoProcess'), `PID ${pid}`) : ''}
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div style="font-size:13px;font-weight:600;color:var(--text-primary)">${escapeHtml(t('services.guidanceHandlingTitle'))}</div>
+        ${stepCard(1, suggestionOne.replace(/^1\.\s*/, ''))}
+        ${stepCard(2, suggestionTwo.replace(/^2\.\s*/, ''))}
+        ${stepCard(3, suggestionThree.replace(/^3\.\s*/, ''))}
       </div>
       <div>
-        <strong>${escapeHtml(t('services.guidanceHandlingTitle'))}</strong>
-        <div style="margin-top:6px">
-          ${escapeHtml(suggestionOne)}
-        </div>
-        <div style="margin-top:6px">
-          ${escapeHtml(suggestionTwo)}
-        </div>
-        <div style="margin-top:6px">
-          ${escapeHtml(suggestionThree)}
-        </div>
-      </div>
-      <div>
-        <strong>${escapeHtml(t('services.guidanceInstallationsTitle'))}</strong>
+        <div style="font-size:13px;font-weight:600;color:var(--text-primary);margin-bottom:4px">${escapeHtml(t('services.guidanceInstallationsTitle'))}</div>
         ${installationHtml}
       </div>
     </div>

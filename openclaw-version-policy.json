@@ -111,6 +111,22 @@
       "chinese": {
         "recommended": "2026.3.28-zh.2"
       }
+    },
+    "0.11.1": {
+      "official": {
+        "recommended": "2026.3.28"
+      },
+      "chinese": {
+        "recommended": "2026.3.28-zh.2"
+      }
+    },
+    "0.11.2": {
+      "official": {
+        "recommended": "2026.3.28"
+      },
+      "chinese": {
+        "recommended": "2026.3.28-zh.2"
+      }
     }
   }
 }

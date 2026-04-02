@@ -2,7 +2,7 @@
  * 系统诊断页面
  * 全面检测 ClawPanel 各项功能状态，快速定位问题
  */
-import { api, getRequestLogs, clearRequestLogs } from '../lib/tauri-api.js'
+import { api, getRequestLogs, clearRequestLogs, isTauriRuntime } from '../lib/tauri-api.js'
 import { wsClient } from '../lib/ws-client.js'
 import { isOpenclawReady, isGatewayRunning } from '../lib/app-state.js'
 import { isForeignGatewayError, showGatewayConflictGuidance } from '../lib/gateway-ownership.js'
@@ -396,7 +396,7 @@ function testWebSocket(page) {
     const port = config?.gateway?.port || 18789
     const rawToken = config?.gateway?.auth?.token
     const token = (typeof rawToken === 'string') ? rawToken : ''
-    const wsHost = window.__TAURI_INTERNALS__ ? `127.0.0.1:${port}` : location.host
+    const wsHost = isTauriRuntime() ? `127.0.0.1:${port}` : location.host
     const url = `ws://${wsHost}/ws?token=${encodeURIComponent(token)}`
 
     addLog(`${icon('radio', 14)} ${t('chatDebug.wsAddress', { url })}`)
@@ -640,7 +640,7 @@ async function fixPairing(page) {
     const port = config?.gateway?.port || 18789
     const rawToken = config?.gateway?.auth?.token
     const token = (typeof rawToken === 'string') ? rawToken : ''
-    const wsHost = window.__TAURI_INTERNALS__ ? `127.0.0.1:${port}` : location.host
+    const wsHost = isTauriRuntime() ? `127.0.0.1:${port}` : location.host
     const url = `ws://${wsHost}/ws?token=${encodeURIComponent(token)}`
 
     const ws = new WebSocket(url)

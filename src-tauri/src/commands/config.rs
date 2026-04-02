@@ -101,6 +101,36 @@ fn panel_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+fn find_panel_policy_entry<'a>(policy: &'a VersionPolicy, current_version: &str) -> Option<&'a VersionPolicyEntry> {
+    if let Some(entry) = policy.panels.get(current_version) {
+        return Some(entry);
+    }
+
+    let current_parts = parse_version(current_version);
+    if current_parts.len() < 2 {
+        return None;
+    }
+
+    policy
+        .panels
+        .iter()
+        .filter_map(|(version, entry)| {
+            let parts = parse_version(version);
+            if parts.len() < 2 {
+                return None;
+            }
+            if parts[0] != current_parts[0] || parts[1] != current_parts[1] {
+                return None;
+            }
+            if parts > current_parts {
+                return None;
+            }
+            Some((parts, entry))
+        })
+        .max_by(|(left, _), (right, _)| left.cmp(right))
+        .map(|(_, entry)| entry)
+}
+
 fn parse_version(value: &str) -> Vec<u32> {
     value
         .split(|c: char| !c.is_ascii_digit())
@@ -231,7 +261,7 @@ pub(crate) fn all_standalone_dirs() -> Vec<PathBuf> {
 
 fn recommended_version_for(source: &str) -> Option<String> {
     let policy = load_version_policy();
-    let panel_entry = policy.panels.get(panel_version());
+    let panel_entry = find_panel_policy_entry(&policy, panel_version());
     match source {
         "official" => panel_entry
             .and_then(|entry| entry.official.recommended.clone())

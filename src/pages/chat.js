@@ -2,7 +2,7 @@
  * 聊天页面 - 完整版，对接 OpenClaw Gateway
  * 支持：流式响应、Markdown 渲染、会话管理、Agent 选择、快捷指令
  */
-import { api, invalidate } from '../lib/tauri-api.js'
+import { api, invalidate, isTauriRuntime } from '../lib/tauri-api.js'
 import { navigate } from '../router.js'
 import { wsClient, uuid } from '../lib/ws-client.js'
 import { renderMarkdown } from '../lib/markdown.js'
@@ -1233,7 +1233,7 @@ async function connectGateway() {
     // 未连接，发起新连接
     const config = await api.readOpenclawConfig()
     const gw = config?.gateway || {}
-    const host = window.__TAURI_INTERNALS__ ? `127.0.0.1:${gw.port || 18789}` : location.host
+    const host = isTauriRuntime() ? `127.0.0.1:${gw.port || 18789}` : location.host
     const token = gw.auth?.token || gw.authToken || ''
     wsClient.connect(host, token)
   } catch (e) {
@@ -2970,7 +2970,8 @@ async function callHostedAI(messages, onChunk) {
 
   if (!config.baseUrl || !config.model) throw new Error(t('chat.hostedModelNotConfigured'))
 
-  let base = config.baseUrl.replace(/\/+$/, '').replace(/\/chat\/completions\/?$/, '').replace(/\/completions\/?$/, '').replace(/\/messages\/?$/, '').replace(/\/models\/?$/, '')
+  const apiType = normalizeHostedApiType(config.apiType)
+  const base = normalizeHostedBaseUrl(config.baseUrl, apiType)
   if (_hostedAbort) { _hostedAbort.abort(); _hostedAbort = null }
   _hostedAbort = new AbortController()
   const signal = _hostedAbort.signal
@@ -3008,6 +3009,51 @@ async function callHostedAI(messages, onChunk) {
     clearTimeout(timeout)
     _hostedAbort = null
   }
+}
+
+function normalizeHostedApiType(raw) {
+  const type = (raw || '').trim()
+  if (type === 'anthropic' || type === 'anthropic-messages') return 'anthropic-messages'
+  if (type === 'google-gemini' || type === 'google-generative-ai') return 'google-generative-ai'
+  if (type === 'ollama') return 'ollama'
+  return 'openai-completions'
+}
+
+function normalizeHostedBaseUrl(raw, apiType) {
+  let base = (raw || '').trim()
+  if (!base) throw new Error(t('chat.hostedModelNotConfigured'))
+  if (/^\/\//.test(base)) base = `http:${base}`
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(base) && /^(localhost|(?:\d{1,3}\.){3}\d{1,3}|\[[0-9a-f:.]+\]|[^/\s]+:\d+)(?:\/|$)/i.test(base)) {
+    base = `http://${base}`
+  }
+  let url
+  try {
+    url = new URL(base)
+  } catch {
+    throw new Error(t('chat.hostedModelUrlInvalid'))
+  }
+  if (!/^https?:$/.test(url.protocol) || url.hostname === 'tauri.localhost') {
+    throw new Error(t('chat.hostedModelUrlInvalid'))
+  }
+  base = `${url.origin}${url.pathname}`
+    .replace(/\/+$/, '')
+    .replace(/\/api\/chat\/?$/, '')
+    .replace(/\/api\/generate\/?$/, '')
+    .replace(/\/api\/tags\/?$/, '')
+    .replace(/\/api\/?$/, '')
+    .replace(/\/chat\/completions\/?$/, '')
+    .replace(/\/completions\/?$/, '')
+    .replace(/\/responses\/?$/, '')
+    .replace(/\/messages\/?$/, '')
+    .replace(/\/models\/?$/, '')
+  const type = normalizeHostedApiType(apiType)
+  if (type === 'anthropic-messages') {
+    if (!base.endsWith('/v1')) base += '/v1'
+    return base
+  }
+  if (type === 'google-generative-ai') return base
+  if (/:(11434)$/i.test(base) && !base.endsWith('/v1')) return `${base}/v1`
+  return base
 }
 
 function appendHostedOutput(text) {

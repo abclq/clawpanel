@@ -5,6 +5,19 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.11.3] - 2026-04-03
+
+### 修复 (Fixes)
+
+- **推荐稳定版映射** — `0.11.1` / `0.11.2` 现在会正确继承并显示 OpenClaw `2026.3.28` / `2026.3.28-zh.2`，不再错误回退到旧的 `2026.3.13` 默认值；桌面端 Rust 后端和 Web 模式 `dev-api` 统一采用同一套 panel patch 版本兜底匹配逻辑
+- **多安装提示误报** — 仪表盘检测到多个 OpenClaw 安装时，若用户已经显式绑定 CLI，则不再继续显示橙色告警和“去配置”按钮，避免误导已经完成绑定的用户
+- **托管 Agent 地址校验** — 托管 Agent 现在会规范化并校验第三方模型地址，自动清理 `/chat/completions`、`/models`、`/api` 等尾部路径，兼容 OpenAI / Anthropic / Gemini / Ollama，并拦截无效的 `tauri.localhost` 或非 `http(s)` 地址
+
+### 改进 (Improvements)
+
+- **多安装引导弹窗重构** — “检测到多个 OpenClaw 安装”对话框改为更适合新手理解的卡片式布局，新增“为什么会看到这个提示”、当前绑定/自动检测信息卡、步骤化建议和高亮的安装列表
+- **Tauri 运行时检测统一** — 抽出 `isTauriRuntime()` 统一判断桌面端环境，减少 `window.__TAURI_INTERNALS__` 直判带来的分支分散问题，改善主入口、聊天页和调试页的 WebSocket/桌面环境兼容性
+
 ## [0.11.2] - 2026-04-02
 
 ### 修复 (Fixes)

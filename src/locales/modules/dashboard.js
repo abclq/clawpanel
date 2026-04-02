@@ -38,6 +38,7 @@ export default {
   multiInstall: _('检测到多个安装', 'Multiple installations detected', '檢測到多個安裝', '複数のインストールを検出', '여러 설치가 감지됨'),
   multiInstallHint: _('在「面板设置」中可选择使用哪个', 'Choose which one to use in Settings', '在「面板設定」中可選擇使用哪個', '設定で使用するものを選択できます', '설정에서 사용할 설치를 선택할 수 있습니다'),
   multiInstallCardHint: _('检测到多个安装，建议确认当前绑定的 CLI 与 OpenClaw 目录。', 'Multiple installations detected. Confirm the bound CLI and OpenClaw directory first.', '檢測到多個安裝，建議先確認目前綁定的 CLI 與 OpenClaw 目錄。', '複数のインストールが検出されました。まず CLI バインドと OpenClaw ディレクトリを確認してください。', '여러 설치가 감지되었습니다. 먼저 바인딩된 CLI와 OpenClaw 디렉터리를 확인하세요.'),
+  multiInstallBoundOk: _('已绑定 CLI，{count} 个安装共存', '{count} installations coexist, CLI is bound', '已綁定 CLI，{count} 個安裝共存'),
   foreignGatewayHint: _('检测到外部 Gateway，建议先查看引导或进入设置修正绑定。', 'External Gateway detected. Review the guidance or open Settings to correct the binding.', '檢測到外部 Gateway，建議先查看引導或進入設定修正綁定。', '外部 Gateway を検出しました。ガイドを確認するか設定を開いて関連付けを修正してください。', '외부 Gateway가 감지되었습니다. 안내를 확인하거나 설정에서 바인딩을 수정하세요.'),
   externalInstance: _('外部实例', 'External instance', '外部實例', '外部インスタンス', '외부 인스턴스', 'Phiên bản bên ngoài'),
   externalGatewayDetected: _('检测到外部 Gateway{pid}', 'External Gateway detected{pid}', '檢測到外部 Gateway{pid}', '外部 Gateway を検出{pid}', '외부 Gateway 감지됨{pid}', 'Đã phát hiện Gateway bên ngoài{pid}'),
