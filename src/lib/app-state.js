@@ -183,8 +183,11 @@ async function _tryAutoRestart() {
     return
   }
 
-  // 重启前再次确认端口确实空闲，防止端口被其他程序占用时无限拉起
+  // 延迟 3 秒后再次确认端口确实空闲，防止瞬态 TCP 超时误判触发不必要的重启
+  await new Promise(r => setTimeout(r, 3000))
   try {
+    const { invalidate } = await import('./tauri-api.js')
+    invalidate('get_services_status')
     const services = await api.getServicesStatus()
     const gw = services?.find?.(s => s.label === 'ai.openclaw.gateway') || services?.[0]
     if (gw?.running) {
@@ -213,7 +216,7 @@ async function _tryAutoRestart() {
 }
 
 /** 刷新 Gateway 运行状态（轻量，仅查服务状态）
- *  防抖：running→stopped 需要连续 2 次检测才切换，避免瞬态误判 */
+ *  防抖：running→stopped 需要连续 3 次检测才切换，避免瞬态误判 */
 export async function refreshGatewayStatus() {
   try {
     const services = await api.getServicesStatus()
@@ -239,14 +242,14 @@ export async function refreshGatewayStatus() {
         } else {
           _gwStopCount++
         }
-        if (foreignRunning || _gwStopCount >= 2 || !_gatewayRunning) {
+        if (foreignRunning || _gwStopCount >= 3 || !_gatewayRunning) {
           _setGatewayRunning(false, foreignRunning)
         }
       }
     }
   } catch {
     _gwStopCount++
-    if (_gwStopCount >= 2) _setGatewayRunning(false)
+    if (_gwStopCount >= 3) _setGatewayRunning(false)
   }
   return _gatewayRunning
 }

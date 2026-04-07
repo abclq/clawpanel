@@ -416,63 +416,30 @@ async function doInstall(page, title, source, version) {
 
 async function checkHotUpdate(cards, panelVersion) {
   const el = () => cards.querySelector('#panel-update-meta')
+  const btnSm = 'padding:2px 8px;font-size:var(--font-size-xs)'
   try {
     const info = await api.checkFrontendUpdate()
     const meta = el()
     if (!meta) return
 
-    if (info.updateReady) {
-      // 已下载更新，等待重载
-      const ver = info.manifest?.version || info.latestVersion || ''
-      meta.innerHTML = `
-        <span style="color:var(--accent)">v${ver} ${t('about.updateReady')}</span>
-        <button class="btn btn-primary btn-sm" id="btn-hot-reload" style="padding:2px 8px;font-size:var(--font-size-xs)">${t('about.reloadApp')}</button>
-        <button class="btn btn-secondary btn-sm" id="btn-hot-rollback" style="padding:2px 8px;font-size:var(--font-size-xs)">${t('about.rollback')}</button>
-      `
-      meta.querySelector('#btn-hot-reload')?.addEventListener('click', () => {
-        window.location.reload()
-      })
-      meta.querySelector('#btn-hot-rollback')?.addEventListener('click', async () => {
-        try {
-          await api.rollbackFrontendUpdate()
-          toast(t('about.rollbackSuccess'), 'success')
-          setTimeout(() => window.location.reload(), 800)
-        } catch (e) {
-          toast(t('about.rollbackFailed') + (e.message || e), 'error')
-        }
-      })
-    } else if (info.hasUpdate) {
-      // 有新版本可下载
-      const ver = info.latestVersion
-      const manifest = info.manifest || {}
-      const changelog = manifest.changelog || ''
+    if (info.hasUpdate || info.updateReady) {
+      const ver = info.latestVersion || info.manifest?.version || ''
+      const changelog = info.manifest?.changelog || ''
       meta.innerHTML = `
         <span style="color:var(--accent)">${t('about.newVersion')}: v${ver}</span>
         ${changelog ? `<span style="color:var(--text-tertiary);font-size:var(--font-size-xs)">${changelog}</span>` : ''}
-        <button class="btn btn-primary btn-sm" id="btn-hot-download" style="padding:2px 8px;font-size:var(--font-size-xs)">${t('about.hotUpdate')}</button>
-        <a class="btn btn-secondary btn-sm" href="https://github.com/qingchencloud/clawpanel/releases" target="_blank" rel="noopener" style="padding:2px 8px;font-size:var(--font-size-xs)">${t('about.fullInstaller')}</a>
+        <a class="btn btn-primary btn-sm" href="https://claw.qt.cool" target="_blank" rel="noopener" style="${btnSm}">${t('about.downloadFromWebsite')}</a>
+        <a class="btn btn-secondary btn-sm" href="https://github.com/qingchencloud/clawpanel/releases" target="_blank" rel="noopener" style="${btnSm}">${t('about.downloadFromGitHub')}</a>
       `
-      meta.querySelector('#btn-hot-download')?.addEventListener('click', async () => {
-        const btn = meta.querySelector('#btn-hot-download')
-        if (btn) { btn.disabled = true; btn.textContent = t('about.downloading') }
-        try {
-          await api.downloadFrontendUpdate(manifest.url, manifest.hash || '')
-          toast(t('about.downloadDone'), 'success')
-          checkHotUpdate(cards, panelVersion)
-        } catch (e) {
-          toast(t('about.downloadFailed') + (e.message || e), 'error')
-          if (btn) { btn.disabled = false; btn.textContent = t('about.retry') }
-        }
-      })
     } else if (!info.compatible) {
-      meta.innerHTML = `<span style="color:var(--text-tertiary)">${t('about.needFullUpdate')}</span> <a class="btn btn-primary btn-sm" href="https://claw.qt.cool" target="_blank" rel="noopener" style="padding:2px 8px;font-size:var(--font-size-xs)">${t('about.goToWebsite')}</a> <a class="btn btn-secondary btn-sm" href="https://github.com/qingchencloud/clawpanel/releases" target="_blank" rel="noopener" style="padding:2px 8px;font-size:var(--font-size-xs)">GitHub</a>`
+      meta.innerHTML = `<span style="color:var(--text-tertiary)">${t('about.needFullUpdate')}</span> <a class="btn btn-primary btn-sm" href="https://claw.qt.cool" target="_blank" rel="noopener" style="${btnSm}">${t('about.downloadFromWebsite')}</a> <a class="btn btn-secondary btn-sm" href="https://github.com/qingchencloud/clawpanel/releases" target="_blank" rel="noopener" style="${btnSm}">${t('about.downloadFromGitHub')}</a>`
     } else {
       meta.innerHTML = `<span style="color:var(--success)">${t('about.upToDate')}</span>`
     }
   } catch (err) {
     const meta = el()
     if (!meta) return
-    meta.innerHTML = `<span style="color:var(--text-tertiary)">${t('about.checkUpdateFailed')}</span> <a class="btn btn-secondary btn-sm" href="https://claw.qt.cool" target="_blank" rel="noopener" style="padding:2px 8px;font-size:var(--font-size-xs)">${t('about.goToWebsite')}</a>`
+    meta.innerHTML = `<span style="color:var(--text-tertiary)">${t('about.checkUpdateFailed')}</span> <a class="btn btn-secondary btn-sm" href="https://claw.qt.cool" target="_blank" rel="noopener" style="${btnSm}">${t('about.goToWebsite')}</a>`
   }
 }
 

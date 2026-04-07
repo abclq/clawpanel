@@ -1569,9 +1569,14 @@ async function callChatCompletions(base, messages, onChunk) {
     let contentChunks = 0
     let reasoningChunks = 0
     let reasoningBuf = ''
+    let streamError = ''
 
     await readSSEStream(resp, (json) => {
       chunkCount++
+      // 捕获流内错误事件（如模型不可用）
+      if (json.error) {
+        streamError = streamError || json.error?.message || json.error || ''
+      }
       const d = json.choices?.[0]?.delta
       if (!d) return
 
@@ -1593,6 +1598,12 @@ async function callChatCompletions(base, messages, onChunk) {
       onChunk(reasoningBuf)
       _lastDebugInfo.fallbackToReasoning = true
     }
+    // 流式完成但没有任何内容 → 视为无效响应（防止空气泡）
+    if (contentChunks === 0 && !reasoningBuf) {
+      const errDetail = streamError || t('assistant.errInvalidResponse')
+      console.warn('[assistant] SSE 流完成但 0 内容块:', errDetail)
+      throw new Error(errDetail)
+    }
   } else {
     // 非流式响应：API 忽略了 stream:true，直接返回完整 JSON
     _lastDebugInfo.streaming = false
@@ -1601,7 +1612,13 @@ async function callChatCompletions(base, messages, onChunk) {
     console.log('[assistant] 非流式响应:', json)
     const msg = json.choices?.[0]?.message
     const content = msg?.content || msg?.reasoning_content || ''
-    if (content) onChunk(content)
+    if (content) {
+      onChunk(content)
+    } else {
+      // 尝试从 error 字段提取错误信息
+      const errMsg = json.error?.message || json.choices?.[0]?.finish_reason || ''
+      throw new Error(errMsg || t('assistant.errInvalidResponse'))
+    }
   }
 }
 
@@ -2038,8 +2055,8 @@ async function executeToolWithSafety(toolName, args, tcForConfirm) {
   return { result, approved }
 }
 
-// 带工具调用的 AI 请求（非流式，用于 tool_calls 检测循环）
-async function callAIWithTools(messages, onStatus, onToolProgress) {
+// 带工具调用的 AI 请求（流式，支持 tool_calls 循环 + 打字机效果）
+async function callAIWithTools(messages, onStatus, onToolProgress, onChunk) {
   const apiType = normalizeApiType(_config.apiType)
   if (!_config.baseUrl || !_config.model || (requiresApiKey(apiType) && !_config.apiKey)) {
     throw new Error(t('assistant.errConfigFirst'))
@@ -2191,11 +2208,12 @@ async function callAIWithTools(messages, onStatus, onToolProgress) {
       return { content: textParts, toolHistory }
     }
 
-    // ── OpenAI 工具调用 ──
+    // ── OpenAI 工具调用（流式） ──
     const body = {
       model: _config.model,
       messages: currentMessages,
       temperature: _config.temperature || 0.7,
+      stream: true,
     }
     if (tools.length > 0) body.tools = tools
 
@@ -2213,16 +2231,98 @@ async function callAIWithTools(messages, onStatus, onToolProgress) {
       throw new Error(errMsg)
     }
 
-    const data = await resp.json()
-    const choice = data.choices?.[0]
-    const assistantMsg = choice?.message
+    // 流式累积状态
+    let contentBuf = ''
+    let reasoningBuf = ''
+    let streamError = ''
+    const pendingToolCalls = []   // [{ id, type, function: { name, arguments } }]
+    let finishReason = ''
 
-    if (!assistantMsg) throw new Error(t('assistant.errInvalidResponse'))
+    const ct = resp.headers.get('content-type') || ''
+    if (ct.includes('text/event-stream') || ct.includes('text/plain')) {
+      // ── SSE 流式解析 ──
+      await readSSEStream(resp, (json) => {
+        if (json.error) {
+          streamError = streamError || json.error?.message || json.error || ''
+        }
+        const choice = json.choices?.[0]
+        if (!choice) return
+        if (choice.finish_reason) finishReason = choice.finish_reason
 
-    if (assistantMsg.tool_calls && assistantMsg.tool_calls.length > 0) {
+        const d = choice.delta
+        if (!d) return
+
+        // 累积 content → 打字机效果
+        if (d.content) {
+          contentBuf += d.content
+          if (onChunk) onChunk(d.content)
+        }
+
+        // 累积 reasoning_content
+        if (d.reasoning_content) {
+          reasoningBuf += d.reasoning_content
+        }
+
+        // 累积 tool_calls 分块
+        if (d.tool_calls) {
+          for (const tc of d.tool_calls) {
+            const idx = tc.index ?? pendingToolCalls.length
+            if (!pendingToolCalls[idx]) {
+              pendingToolCalls[idx] = {
+                id: tc.id || '',
+                type: tc.type || 'function',
+                function: { name: '', arguments: '' },
+              }
+            }
+            const slot = pendingToolCalls[idx]
+            if (tc.id) slot.id = tc.id
+            if (tc.function?.name) slot.function.name += tc.function.name
+            if (tc.function?.arguments) slot.function.arguments += tc.function.arguments
+          }
+          // 实时显示工具调用进度（显示已知名称）
+          const names = pendingToolCalls.filter(t => t.function.name).map(t => t.function.name)
+          if (names.length) {
+            onStatus(t('assistant.aiCallingTools', { tools: names.join(', ') }) || `调用工具: ${names.join(', ')}`)
+          }
+        }
+      }, _abortController?.signal)
+    } else {
+      // ── 非流式回退（API 忽略了 stream:true）──
+      const data = await resp.json()
+      const choice = data.choices?.[0]
+      const msg = choice?.message
+      if (!msg) {
+        const errMsg = data.error?.message || ''
+        throw new Error(errMsg || t('assistant.errInvalidResponse'))
+      }
+      finishReason = choice.finish_reason || ''
+      contentBuf = msg.content || msg.reasoning_content || ''
+      if (contentBuf && onChunk) onChunk(contentBuf)
+      if (msg.tool_calls) {
+        for (const tc of msg.tool_calls) {
+          pendingToolCalls.push(tc)
+        }
+      }
+    }
+
+    // 流式完成但无任何内容且无工具调用 → 无效响应
+    if (!contentBuf && !reasoningBuf && pendingToolCalls.length === 0) {
+      throw new Error(streamError || t('assistant.errInvalidResponse'))
+    }
+
+    // 无 content 但有 reasoning → 作为回复
+    if (!contentBuf && reasoningBuf && pendingToolCalls.length === 0) {
+      contentBuf = reasoningBuf
+      if (onChunk) onChunk(contentBuf)
+    }
+
+    // ── 处理工具调用 ──
+    if (pendingToolCalls.length > 0) {
+      // 构造完整 assistant message 用于上下文
+      const assistantMsg = { role: 'assistant', content: contentBuf || null, tool_calls: pendingToolCalls }
       currentMessages.push(assistantMsg)
 
-      for (const tc of assistantMsg.tool_calls) {
+      for (const tc of pendingToolCalls) {
         let args
         try { args = JSON.parse(tc.function.arguments) } catch { args = {} }
         const toolName = tc.function.name
@@ -2245,8 +2345,7 @@ async function callAIWithTools(messages, onStatus, onToolProgress) {
       continue
     }
 
-    const content = assistantMsg.content || assistantMsg.reasoning_content || ''
-    return { content, toolHistory }
+    return { content: contentBuf, toolHistory }
   }
 }
 
@@ -2433,6 +2532,9 @@ function renderMessages() {
       ).join('')}</div>` : ''
       return `<div class="ast-msg ast-msg-user" data-msg-idx="${idx}"><div class="ast-msg-bubble ast-msg-bubble-user">${imagesHtml}${textPart ? escHtml(textPart) : ''}</div><div class="ast-msg-meta"><button class="msg-copy-btn" title="${t('common.copy')}">${icon('copy', 12)}</button></div></div>`
     } else if (m.role === 'assistant') {
+      // 跳过空的 AI 消息（历史脏数据），除非正在流式中（最后一条是占位符）
+      const isLastMsg = idx === session.messages.length - 1
+      if (!m.content && !m.toolHistory?.length && !(isLastMsg && _isStreaming)) return ''
       const toolHtml = renderToolBlocks(m.toolHistory)
       return `<div class="ast-msg ast-msg-ai" data-msg-idx="${idx}">${toolHtml}<div class="ast-msg-bubble ast-msg-bubble-ai">${renderMarkdown(m.content)}</div><div class="ast-msg-meta"><button class="msg-copy-btn" title="${t('common.copy')}">${icon('copy', 12)}</button></div></div>`
     }
@@ -3609,14 +3711,14 @@ async function sendMessageDirect(text) {
 
   try {
     if (toolsEnabled) {
-      // ── 工具模式：非流式，支持 tool_calls 循环 ──
+      // ── 工具模式：流式 + tool_calls 循环 ──
       const aiMsgContainers = _messagesEl?.querySelectorAll('.ast-msg-ai')
       const lastContainer = aiMsgContainers?.[aiMsgContainers.length - 1]
 
       const result = await callAIWithTools(contextMessages,
         // onStatus
         (status) => {
-          if (lastBubble) lastBubble.innerHTML = `<span class="ast-typing">${escHtml(status)}</span>`
+          if (lastBubble && !aiMsg.content) lastBubble.innerHTML = `<span class="ast-typing">${escHtml(status)}</span>`
         },
         // onToolProgress
         (history) => {
@@ -3627,13 +3729,31 @@ async function sendMessageDirect(text) {
           const bubble = lastContainer.querySelector('.ast-msg-bubble-ai')
           lastContainer.innerHTML = toolHtml + (bubble ? bubble.outerHTML : '')
           if (_messagesEl) _messagesEl.scrollTop = _messagesEl.scrollHeight
+        },
+        // onChunk — 流式打字机效果（需从 container 重新查询 bubble，因为 onToolProgress 会替换 innerHTML）
+        (chunk) => {
+          aiMsg.content += chunk
+          throttledSave()
+          const bubble = lastContainer?.querySelector('.ast-msg-bubble-ai') || lastBubble
+          if (bubble) {
+            const now = Date.now()
+            if (now - _lastRenderTime > 50) {
+              bubble.innerHTML = renderMarkdown(aiMsg.content) + '<span class="ast-cursor">▊</span>'
+              if (_messagesEl) _messagesEl.scrollTop = _messagesEl.scrollHeight
+              _lastRenderTime = now
+            }
+          }
         }
       )
 
-      aiMsg.content = result.content
+      // result.content 可能在流式中已经通过 onChunk 累积到 aiMsg.content
+      // 但如果有额外内容（如 reasoning 回退），以 result 为准
+      if (result.content && !aiMsg.content) aiMsg.content = result.content
       if (result.toolHistory.length > 0) {
         aiMsg.toolHistory = result.toolHistory
       }
+      const finalBubble = lastContainer?.querySelector('.ast-msg-bubble-ai') || lastBubble
+      if (finalBubble && aiMsg.content) finalBubble.innerHTML = renderMarkdown(aiMsg.content)
       renderMessages()
     } else {
       // ── 普通流式模式 ──
@@ -3707,6 +3827,11 @@ async function sendMessageDirect(text) {
     stopStreamRefresh()
     if (_sendBtn) _sendBtn.innerHTML = sendIcon()
     if (_textarea) _textarea.focus()
+    // 清理空的 AI 消息（防止持久化空气泡）
+    const _lastMsg = session.messages[session.messages.length - 1]
+    if (_lastMsg?.role === 'assistant' && !_lastMsg.content && !_lastMsg.toolHistory?.length) {
+      session.messages.pop()
+    }
     session.updatedAt = Date.now()
     flushSave()
     if (getSessionStatus(session.id) !== 'error') {
@@ -3749,7 +3874,7 @@ async function retryAIResponse(session) {
       const lastContainer = aiMsgContainers?.[aiMsgContainers.length - 1]
 
       const result = await callAIWithTools(contextMessages,
-        (status) => { if (lastBubble) lastBubble.innerHTML = `<span class="ast-typing">${escHtml(status)}</span>` },
+        (status) => { if (lastBubble && !aiMsg.content) lastBubble.innerHTML = `<span class="ast-typing">${escHtml(status)}</span>` },
         (history) => {
           aiMsg.toolHistory = history
           throttledSave()
@@ -3758,10 +3883,26 @@ async function retryAIResponse(session) {
           const bubble = lastContainer.querySelector('.ast-msg-bubble-ai')
           lastContainer.innerHTML = toolHtml + (bubble ? bubble.outerHTML : '')
           if (_messagesEl) _messagesEl.scrollTop = _messagesEl.scrollHeight
+        },
+        // onChunk — 流式打字机效果（需从 container 重新查询 bubble）
+        (chunk) => {
+          aiMsg.content += chunk
+          throttledSave()
+          const bubble = lastContainer?.querySelector('.ast-msg-bubble-ai') || lastBubble
+          if (bubble) {
+            const now = Date.now()
+            if (now - _lastRenderTime > 50) {
+              bubble.innerHTML = renderMarkdown(aiMsg.content) + '<span class="ast-cursor">▊</span>'
+              if (_messagesEl) _messagesEl.scrollTop = _messagesEl.scrollHeight
+              _lastRenderTime = now
+            }
+          }
         }
       )
-      aiMsg.content = result.content
+      if (result.content && !aiMsg.content) aiMsg.content = result.content
       if (result.toolHistory.length > 0) aiMsg.toolHistory = result.toolHistory
+      const retryFinalBubble = lastContainer?.querySelector('.ast-msg-bubble-ai') || lastBubble
+      if (retryFinalBubble && aiMsg.content) retryFinalBubble.innerHTML = renderMarkdown(aiMsg.content)
       renderMessages()
     } else {
       await callAI(contextMessages, (chunk) => {
@@ -3823,6 +3964,11 @@ async function retryAIResponse(session) {
     stopStreamRefresh()
     if (_sendBtn) _sendBtn.innerHTML = sendIcon()
     if (_textarea) _textarea.focus()
+    // 清理空的 AI 消息（防止持久化空气泡）
+    const _retryLastMsg = session.messages[session.messages.length - 1]
+    if (_retryLastMsg?.role === 'assistant' && !_retryLastMsg.content && !_retryLastMsg.toolHistory?.length) {
+      session.messages.pop()
+    }
     session.updatedAt = Date.now()
     flushSave()
     if (getSessionStatus(session.id) !== 'error') {

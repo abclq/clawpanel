@@ -1006,6 +1006,11 @@ fn resolve_agent_workspace(id: &str, config: &Value) -> String {
         })
 }
 
+/// Public wrapper for expand_user_path, used by skills.rs
+pub fn expand_user_path_pub(raw: &str) -> std::path::PathBuf {
+    expand_user_path(raw)
+}
+
 fn expand_user_path(raw: &str) -> std::path::PathBuf {
     let trimmed = raw.trim();
     let path = if let Some(rest) = trimmed

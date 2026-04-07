@@ -568,14 +568,17 @@ mod platform {
             Ok(a) => a,
             Err(_) => return (false, None),
         };
-        match std::net::TcpStream::connect_timeout(&socket_addr, std::time::Duration::from_secs(1))
-        {
-            Ok(_) => {
-                // 尝试通过 lsof 获取 PID
-                let pid = get_pid_by_lsof(port);
-                (true, pid)
-            }
-            Err(_) => (false, None),
+        // 两次尝试：第一次 1 秒，失败后短暂等待再用 2 秒重试，避免瞬态超时误判
+        let connected = std::net::TcpStream::connect_timeout(&socket_addr, std::time::Duration::from_secs(1)).is_ok()
+            || {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                std::net::TcpStream::connect_timeout(&socket_addr, std::time::Duration::from_secs(2)).is_ok()
+            };
+        if connected {
+            let pid = get_pid_by_lsof(port);
+            (true, pid)
+        } else {
+            (false, None)
         }
     }
 
@@ -1120,7 +1123,13 @@ mod platform {
             Ok(a) => a,
             Err(_) => return (false, None),
         };
-        if std::net::TcpStream::connect_timeout(&socket_addr, Duration::from_secs(1)).is_err() {
+        // 两次尝试：第一次 1 秒，失败后短暂等待再用 2 秒重试，避免瞬态超时误判
+        let connected = std::net::TcpStream::connect_timeout(&socket_addr, Duration::from_secs(1)).is_ok()
+            || {
+                std::thread::sleep(Duration::from_millis(300));
+                std::net::TcpStream::connect_timeout(&socket_addr, Duration::from_secs(2)).is_ok()
+            };
+        if !connected {
             // 端口不通，先清空已知的僵死 PID
             let mut known = LAST_KNOWN_GATEWAY_PID.lock().unwrap();
             *known = None;

@@ -741,12 +741,7 @@ async function checkGlobalUpdate() {
     const dismissed = localStorage.getItem('clawpanel_update_dismissed')
     if (dismissed === ver) return
 
-    // 热更新已下载并重载过，不再重复提示同一版本
-    const hotApplied = localStorage.getItem('clawpanel_hot_update_applied')
-    if (hotApplied === ver) return
-
     const changelog = info.manifest?.changelog || ''
-    const isWeb = !isTauriRuntime()
 
     banner.classList.remove('update-banner-hidden')
     banner.innerHTML = `
@@ -756,12 +751,8 @@ async function checkGlobalUpdate() {
           <span class="update-banner-ver">${t('about.versionAvailable', { version: ver })}</span>
           ${changelog ? `<span class="update-banner-changelog">· ${changelog}</span>` : ''}
         </div>
-        ${isWeb
-          ? `<button class="btn btn-sm" id="btn-update-show-cmd">${t('about.updateMethod')}</button>
-             <a class="btn btn-sm" href="https://github.com/qingchencloud/clawpanel/releases" target="_blank" rel="noopener">${t('about.releaseNotes')}</a>`
-          : `<button class="btn btn-sm" id="btn-update-hot">${t('about.hotUpdate')}</button>
-             <a class="btn btn-sm" href="https://github.com/qingchencloud/clawpanel/releases" target="_blank" rel="noopener">${t('about.fullInstaller')}</a>`
-        }
+        <a class="btn btn-sm" href="https://claw.qt.cool" target="_blank" rel="noopener">${t('about.downloadFromWebsite')}</a>
+        <a class="btn btn-sm" href="https://github.com/qingchencloud/clawpanel/releases" target="_blank" rel="noopener">${t('about.downloadFromGitHub')}</a>
         <button class="update-banner-close" id="btn-update-dismiss" title="${t('about.dismissVersion')}">✕</button>
       </div>
     `
@@ -770,55 +761,6 @@ async function checkGlobalUpdate() {
     banner.querySelector('#btn-update-dismiss')?.addEventListener('click', () => {
       localStorage.setItem('clawpanel_update_dismissed', ver)
       banner.classList.add('update-banner-hidden')
-    })
-
-    // Web 模式：显示更新命令弹窗
-    banner.querySelector('#btn-update-show-cmd')?.addEventListener('click', () => {
-      const overlay = document.createElement('div')
-      overlay.className = 'modal-overlay'
-      overlay.innerHTML = `
-        <div class="modal" style="max-width:480px">
-          <div class="modal-title">${t('about.updateToVersion', { version: ver })}</div>
-          <div style="font-size:var(--font-size-sm);line-height:1.8">
-            <p style="margin-bottom:12px">${t('about.runOnServer')}</p>
-            <pre style="background:var(--bg-tertiary);padding:12px 16px;border-radius:var(--radius-md);font-family:var(--font-mono);font-size:var(--font-size-xs);overflow-x:auto;white-space:pre-wrap;user-select:all">cd /opt/clawpanel
-git pull origin main
-npm install
-npm run build
-sudo systemctl restart clawpanel</pre>
-            <p style="margin-top:12px;color:var(--text-tertiary);font-size:var(--font-size-xs)">
-              ${t('about.updateCommandHint')}
-            </p>
-          </div>
-          <div class="modal-actions">
-            <button class="btn btn-secondary btn-sm" data-action="close">${t('common.close')}</button>
-          </div>
-        </div>
-      `
-      document.body.appendChild(overlay)
-      overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove() })
-      overlay.querySelector('[data-action="close"]').onclick = () => overlay.remove()
-      overlay.addEventListener('keydown', (e) => { if (e.key === 'Escape') overlay.remove() })
-    })
-
-    // Tauri 热更新按钮
-    banner.querySelector('#btn-update-hot')?.addEventListener('click', async () => {
-      const btn = banner.querySelector('#btn-update-hot')
-      if (!btn) return
-      btn.disabled = true
-      btn.textContent = t('about.downloading')
-      try {
-        await api.downloadFrontendUpdate(info.manifest?.url || '', info.manifest?.hash || '')
-        localStorage.setItem('clawpanel_hot_update_applied', ver)
-        btn.textContent = t('about.reloadApp')
-        btn.disabled = false
-        btn.onclick = () => window.location.reload()
-      } catch (e) {
-        btn.textContent = t('about.downloadFailedShort')
-        btn.disabled = false
-        const { toast } = await import('./components/toast.js')
-        toast(t('about.downloadFailed') + (e.message || e), 'error')
-      }
     })
   } catch {
     // 检查失败静默忽略

@@ -5,15 +5,18 @@ use serde_json::Value;
 use std::os::windows::process::CommandExt;
 
 /// 列出所有 Skills 及其状态（纯本地扫描，不依赖 CLI）
+/// agent_id: 可选，指定 Agent ID，不同 Agent 有不同的 workspace/skills 目录
 #[tauri::command]
-pub async fn skills_list() -> Result<Value, String> {
-    scan_local_skills(None)
+pub async fn skills_list(agent_id: Option<String>) -> Result<Value, String> {
+    let agent_ws = resolve_agent_skills_dir(agent_id.as_deref());
+    scan_local_skills(None, agent_ws.as_deref())
 }
 
 /// 查看单个 Skill 详情（纯本地文件解析，不依赖 CLI）
 #[tauri::command]
-pub async fn skills_info(name: String) -> Result<Value, String> {
-    scan_custom_skill_detail(&name).ok_or_else(|| format!("Skill「{name}」不存在"))
+pub async fn skills_info(name: String, agent_id: Option<String>) -> Result<Value, String> {
+    let agent_ws = resolve_agent_skills_dir(agent_id.as_deref());
+    scan_custom_skill_detail(&name, agent_ws.as_deref()).ok_or_else(|| format!("Skill「{name}」不存在"))
 }
 
 /// 检查 Skills 依赖状态（纯本地扫描）
@@ -124,8 +127,11 @@ pub async fn skillhub_index() -> Result<Value, String> {
 
 /// 从 SkillHub 安装 Skill（内置 HTTP 下载 + zip 解压）
 #[tauri::command]
-pub async fn skillhub_install(slug: String) -> Result<Value, String> {
-    let skills_dir = super::openclaw_dir().join("skills");
+pub async fn skillhub_install(slug: String, agent_id: Option<String>) -> Result<Value, String> {
+    let skills_dir = match resolve_agent_skills_dir(agent_id.as_deref()) {
+        Some(dir) => dir,
+        None => super::openclaw_dir().join("skills"),
+    };
     if !skills_dir.exists() {
         std::fs::create_dir_all(&skills_dir).map_err(|e| format!("创建 skills 目录失败: {e}"))?;
     }
@@ -137,14 +143,15 @@ pub async fn skillhub_install(slug: String) -> Result<Value, String> {
     }))
 }
 
-/// 卸载 Skill（删除 ~/.openclaw/skills/<name>/ 目录）
+/// 卸载 Skill（删除 skills/<name>/ 目录）
 #[tauri::command]
-pub async fn skills_uninstall(name: String) -> Result<Value, String> {
+pub async fn skills_uninstall(name: String, agent_id: Option<String>) -> Result<Value, String> {
     if name.is_empty() || name.contains("..") || name.contains('/') || name.contains('\\') {
         return Err("无效的 Skill 名称".to_string());
     }
+    let agent_ws = resolve_agent_skills_dir(agent_id.as_deref());
     let skills_dir =
-        resolve_custom_skill_dir(&name).ok_or_else(|| format!("Skill「{name}」不存在"))?;
+        resolve_custom_skill_dir_with_agent(&name, agent_ws.as_deref()).ok_or_else(|| format!("Skill「{name}」不存在"))?;
     if !skills_dir.exists() {
         return Err(format!("Skill「{name}」不存在"));
     }
@@ -160,7 +167,7 @@ pub async fn skills_validate(name: String) -> Result<Value, String> {
     }
 
     let skill_dir =
-        resolve_custom_skill_dir(&name).ok_or_else(|| format!("Skill「{name}」不存在"))?;
+        resolve_custom_skill_dir_with_agent(&name, None).ok_or_else(|| format!("Skill「{name}」不存在"))?;
     if !skill_dir.exists() {
         return Err(format!("Skill「{name}」不存在"));
     }
@@ -447,8 +454,48 @@ fn clean_cli_output(text: &str) -> String {
         .join("\n")
 }
 
-fn custom_skill_roots() -> Vec<(std::path::PathBuf, &'static str)> {
-    let mut roots = vec![(super::openclaw_dir().join("skills"), "OpenClaw 自定义")];
+/// 根据 agentId 解析该 Agent 的 workspace/skills 目录
+/// 如果 agentId 为 None 或 "main"，返回 None（使用默认的 ~/.openclaw/skills）
+fn resolve_agent_skills_dir(agent_id: Option<&str>) -> Option<std::path::PathBuf> {
+    let id = agent_id.map(|s| s.trim()).filter(|s| !s.is_empty() && *s != "main")?;
+    // 读取 openclaw.json 获取 agent workspace
+    let config = super::config::load_openclaw_json().ok()?;
+    let workspace = config
+        .get("agents")
+        .and_then(|a| a.get("list"))
+        .and_then(|l| l.as_array())
+        .and_then(|list| {
+            list.iter()
+                .find(|a| a.get("id").and_then(|v| v.as_str()) == Some(id))
+                .and_then(|a| a.get("workspace"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or_else(|| {
+            // 默认：~/.openclaw/agents/{id}/workspace
+            super::openclaw_dir()
+                .join("agents")
+                .join(id)
+                .join("workspace")
+                .to_string_lossy()
+                .to_string()
+        });
+    let expanded = super::agent::expand_user_path_pub(&workspace);
+    Some(expanded.join("skills"))
+}
+
+fn custom_skill_roots_for_agent(agent_skills_dir: Option<&std::path::Path>) -> Vec<(std::path::PathBuf, &'static str)> {
+    let mut roots = Vec::new();
+
+    // 如果指定了 agent 的 skills 目录，优先放在第一位
+    if let Some(agent_dir) = agent_skills_dir {
+        roots.push((agent_dir.to_path_buf(), "Agent 自定义"));
+    } else {
+        // 默认 agent 使用全局 skills 目录
+        roots.push((super::openclaw_dir().join("skills"), "OpenClaw 自定义"));
+    }
+
     if let Some(home) = dirs::home_dir() {
         let claude_skills = home.join(".claude").join("skills");
         if !roots.iter().any(|(dir, _)| dir == &claude_skills) {
@@ -456,13 +503,9 @@ fn custom_skill_roots() -> Vec<(std::path::PathBuf, &'static str)> {
         }
     }
     // 从已解析的 CLI 路径推导 npm 包内的 bundled skills 目录
-    // 例如 CLI 在 /usr/lib/node_modules/openclaw/bin/openclaw
-    //   → 包根 /usr/lib/node_modules/openclaw/
-    //   → skills 目录 /usr/lib/node_modules/openclaw/skills/
     if let Some(cli_path) = crate::utils::resolve_openclaw_cli_path() {
         let cli = std::path::PathBuf::from(&cli_path);
         let cli = std::fs::canonicalize(&cli).unwrap_or(cli);
-        // CLI 可能在 bin/ 子目录或包根目录
         for pkg_root in [cli.parent(), cli.parent().and_then(|p| p.parent())]
             .into_iter()
             .flatten()
@@ -489,15 +532,15 @@ fn custom_skill_roots() -> Vec<(std::path::PathBuf, &'static str)> {
     roots
 }
 
-fn resolve_custom_skill_dir(name: &str) -> Option<std::path::PathBuf> {
-    custom_skill_roots()
+fn resolve_custom_skill_dir_with_agent(name: &str, agent_skills_dir: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
+    custom_skill_roots_for_agent(agent_skills_dir)
         .into_iter()
         .map(|(root, _)| root.join(name))
         .find(|path| path.exists())
 }
 
-fn scan_custom_skill_detail(name: &str) -> Option<Value> {
-    for (root, source_label) in custom_skill_roots() {
+fn scan_custom_skill_detail(name: &str, agent_skills_dir: Option<&std::path::Path>) -> Option<Value> {
+    for (root, source_label) in custom_skill_roots_for_agent(agent_skills_dir) {
         let skill_path = root.join(name);
         if !skill_path.exists() {
             continue;
@@ -550,10 +593,10 @@ fn scan_custom_skill_detail(name: &str) -> Option<Value> {
     None
 }
 
-fn scan_local_skill_entries() -> Result<Vec<Value>, String> {
+fn scan_local_skill_entries_for_agent(agent_skills_dir: Option<&std::path::Path>) -> Result<Vec<Value>, String> {
     let mut skills = Vec::new();
 
-    for (skills_dir, source_label) in custom_skill_roots() {
+    for (skills_dir, source_label) in custom_skill_roots_for_agent(agent_skills_dir) {
         if !skills_dir.exists() {
             continue;
         }
@@ -615,14 +658,18 @@ fn scan_local_skill_entries() -> Result<Vec<Value>, String> {
     Ok(skills)
 }
 
-/// CLI 不可用或当前结果不可用时的兜底：扫描本地自定义 Skills 目录（含 ~/.openclaw/skills 与 ~/.claude/skills）
-fn scan_local_skills(cli_diagnostic: Option<Value>) -> Result<Value, String> {
-    let roots = custom_skill_roots();
+fn scan_local_skill_entries() -> Result<Vec<Value>, String> {
+    scan_local_skill_entries_for_agent(None)
+}
+
+/// CLI 不可用或当前结果不可用时的兜底：扫描本地自定义 Skills 目录
+fn scan_local_skills(cli_diagnostic: Option<Value>, agent_skills_dir: Option<&std::path::Path>) -> Result<Value, String> {
+    let roots = custom_skill_roots_for_agent(agent_skills_dir);
     let scanned_roots: Vec<String> = roots
         .iter()
         .map(|(dir, label)| format!("{}: {}", label, dir.to_string_lossy()))
         .collect();
-    let skills = scan_local_skill_entries()?;
+    let skills = scan_local_skill_entries_for_agent(agent_skills_dir)?;
     let cli_available = cli_diagnostic
         .as_ref()
         .and_then(|v| v.get("cliAvailable"))

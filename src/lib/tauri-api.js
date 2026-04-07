@@ -322,15 +322,15 @@ export const api = {
   assistantFetchUrl: (url) => invoke('assistant_fetch_url', { url }),
 
   // Skills 管理
-  skillsList: () => invoke('skills_list'),
-  skillsInfo: (name) => invoke('skills_info', { name }),
+  skillsList: (agentId) => invoke('skills_list', { agent_id: agentId || null }),
+  skillsInfo: (name, agentId) => invoke('skills_info', { name, agent_id: agentId || null }),
   skillsCheck: () => invoke('skills_check'),
   skillsInstallDep: (kind, spec) => invoke('skills_install_dep', { kind, spec }),
-  skillsUninstall: (name) => invoke('skills_uninstall', { name }),
+  skillsUninstall: (name, agentId) => invoke('skills_uninstall', { name, agent_id: agentId || null }),
   // SkillHub SDK（内置 HTTP，不依赖 CLI）
   skillhubSearch: (query, limit) => invoke('skillhub_search', { query, limit }),
   skillhubIndex: () => invoke('skillhub_index'),
-  skillhubInstall: (slug) => invoke('skillhub_install', { slug }),
+  skillhubInstall: (slug, agentId) => invoke('skillhub_install', { slug, agent_id: agentId || null }),
 
   // 实例管理
   instanceList: () => cachedInvoke('instance_list', {}, 10000),

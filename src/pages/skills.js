@@ -7,6 +7,7 @@ import { toast } from '../components/toast.js'
 import { t } from '../lib/i18n.js'
 
 let _loadSeq = 0
+let _selectedAgentId = null // null = default (main)
 
 function esc(str) {
   if (!str) return ''
@@ -16,11 +17,34 @@ function esc(str) {
 export async function render() {
   const page = document.createElement('div')
   page.className = 'page'
+
+  // 加载 Agent 列表
+  let agents = []
+  try {
+    const list = await api.listAgents()
+    if (Array.isArray(list)) agents = list
+  } catch {}
+
+  const agentOptions = agents.length > 1
+    ? `<div class="skills-agent-selector" style="display:flex;align-items:center;gap:var(--space-xs);margin-bottom:var(--space-sm)">
+        <label style="font-size:var(--font-size-sm);color:var(--text-secondary);white-space:nowrap">${t('skills.agentLabel')}</label>
+        <select id="skills-agent-select" class="input" style="max-width:220px;font-size:var(--font-size-sm);padding:4px 8px">
+          ${agents.map(a => {
+            const id = a.id || 'main'
+            const name = a.name || a.id || 'main'
+            const isDefault = a.default ? ` (${t('skills.allAgents').split('(')[0].trim()})` : ''
+            return `<option value="${esc(id)}"${id === (_selectedAgentId || 'main') ? ' selected' : ''}>${esc(name)}${isDefault}</option>`
+          }).join('')}
+        </select>
+      </div>`
+    : ''
+
   page.innerHTML = `
     <div class="page-header">
       <h1 class="page-title">${t('skills.title')}</h1>
       <p class="page-desc">${t('skills.desc')}</p>
     </div>
+    ${agentOptions}
     <div class="tab-bar" id="skills-main-tabs">
       <div class="tab active" data-main-tab="installed">${t('skills.tabInstalled')}</div>
       <div class="tab" data-main-tab="store">${t('skills.tabStore')}</div>
@@ -41,6 +65,19 @@ export async function render() {
   `
   bindEvents(page)
   loadSkills(page)
+
+  // Agent 选择器变化时刷新
+  const agentSelect = page.querySelector('#skills-agent-select')
+  if (agentSelect) {
+    agentSelect.addEventListener('change', () => {
+      const val = agentSelect.value
+      _selectedAgentId = (val === 'main') ? null : val
+      _storeIndex = null // 清除商店缓存
+      _installedNames = new Set()
+      loadSkills(page)
+    })
+  }
+
   return page
 }
 
@@ -55,7 +92,7 @@ async function loadSkills(page) {
   </div>`
 
   try {
-    const data = await api.skillsList()
+    const data = await api.skillsList(_selectedAgentId)
     if (seq !== _loadSeq) return
     renderSkills(el, data)
   } catch (e) {
@@ -206,7 +243,7 @@ async function handleInfo(page, name) {
   detail.innerHTML = `<div class="form-hint" style="margin-top:var(--space-md)">${t('skills.loadingDetail')}</div>`
   detail.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
   try {
-    const skill = await api.skillsInfo(name)
+    const skill = await api.skillsInfo(name, _selectedAgentId)
     const s = skill || {}
     const reqs = s.requirements || {}
     const miss = s.missing || {}
@@ -272,7 +309,7 @@ async function loadStore(page) {
     _storeIndex = await api.skillhubIndex()
     // 获取已安装列表用于标记
     try {
-      const data = await api.skillsList()
+      const data = await api.skillsList(_selectedAgentId)
       _installedNames = new Set((data?.skills || []).map(s => s.name))
     } catch { _installedNames = new Set() }
     renderStoreItems(results, _storeIndex)
@@ -346,7 +383,7 @@ async function handleStoreInstall(page, btn) {
   btn.disabled = true
   btn.textContent = t('skills.installing')
   try {
-    await api.skillhubInstall(slug)
+    await api.skillhubInstall(slug, _selectedAgentId)
     toast(t('skills.skillInstalled', { name: slug }), 'success')
     btn.textContent = t('skills.installed')
     btn.classList.remove('btn-primary')
@@ -367,7 +404,7 @@ async function handleSkillUninstall(page, btn) {
   btn.disabled = true
   btn.textContent = t('skills.uninstalling')
   try {
-    await api.skillsUninstall(name)
+    await api.skillsUninstall(name, _selectedAgentId)
     toast(t('skills.uninstalled', { name }), 'success')
     await loadSkills(page)
   } catch (e) {

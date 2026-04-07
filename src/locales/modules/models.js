@@ -10,7 +10,7 @@ export default {
   providerHint: _('服务商是模型的来源（如 OpenAI、DeepSeek 等）。每个服务商下可添加多个模型。标记为「主模型」的将优先使用，其余作为备选自动切换。配置修改后自动保存。', 'Providers are sources of models (e.g. OpenAI, DeepSeek). Each provider can have multiple models. The "primary" model is used first; others serve as fallbacks. Changes are auto-saved.', '服務商是模型的來源（如 OpenAI、DeepSeek 等）。每個服務商下可新增多個模型。標記為「主模型」的將優先使用，其餘作為備選自動切換。設定修改后自動儲存。'),
   qtcoolName: _('晴辰云', 'QingChen Cloud', '晴辰雲'),
   qtcoolRecommend: _('推荐', 'Recommended', '推薦'),
-  qtcoolDesc: _('GPT-5 / Codex 全系列，低至官方价 2-3 折，不满意随时可退。', 'GPT-5 / Codex full series, as low as 20-30% of official price. Refund anytime.', 'GPT-5 / Codex 全系列，低至官方價 2-3 折，不滿意隨時可退。', 'GPT-5 / Codex 全シリーズ、公式価格の2〜3割', 'GPT-5 / Codex 전 시리즈, 공식가의 2~3할'),
+  qtcoolDesc: _('每日签到领取免费模型测试额度，邀请好友再送额度。付费低至官方价 2-3 折，不满意随时可退。', 'Daily check-in for free model credits, invite friends for bonus. Paid plans as low as 20-30% of official price. Refund anytime.', '每日簽到領取免費模型測試額度，邀請好友再送額度。付費低至官方價 2-3 折，不滿意隨時可退。', '毎日チェックインで無料クレジット獲得、友達招待でボーナス。有料は公式価格の2〜3割', '매일 체크인으로 무료 크레딧, 친구 초대 보너스. 유료는 공식가의 2~3할'),
   qtcoolMore: _('了解更多 →', 'Learn more →'),
   qtcoolCheckin: _('每日签到领额度', 'Daily check-in for credits', '每日簽到领额度'),
   qtcoolKeyPlaceholder: _('粘贴 API Key（签到后在用户后台获取）', 'Paste API Key (get from dashboard after check-in)', '貼上 API Key（簽到后在使用者後台取得）'),

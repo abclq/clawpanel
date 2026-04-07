@@ -59,4 +59,6 @@ export default {
   uninstalled: _('已卸载 {name}', 'Uninstalled {name}', '已卸載 {name}'),
   uninstallFailed: _('卸载失败', 'Uninstall failed', '卸載失敗', 'アンインストール失敗', '제거 실패'),
   skillInstalled: _('Skill {name} 安装成功', 'Skill {name} installed', 'Skill {name} 安裝成功'),
+  agentLabel: _('Agent:', 'Agent:'),
+  allAgents: _('默认 (main)', 'Default (main)', '預設 (main)'),
 }

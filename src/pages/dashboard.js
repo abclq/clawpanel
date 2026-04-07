@@ -9,6 +9,8 @@ import { navigate } from '../router.js'
 import { t } from '../lib/i18n.js'
 
 let _unsubGw = null
+let _loadInFlight = false
+let _lastGwChangeLoad = 0
 
 export async function render() {
   const page = document.createElement('div')
@@ -52,9 +54,12 @@ export async function render() {
   })
   page.__retryLoad = () => loadDashboardData(page).catch(() => {})
 
-  // 监听 Gateway 状态变化，自动刷新仪表盘
+  // 监听 Gateway 状态变化，节流刷新仪表盘（至少间隔 5 秒，防止状态抖动导致 UI 闪烁）
   if (_unsubGw) _unsubGw()
   _unsubGw = onGatewayChange(() => {
+    const now = Date.now()
+    if (now - _lastGwChangeLoad < 5000) return
+    _lastGwChangeLoad = now
     loadDashboardData(page)
   })
 
@@ -106,6 +111,13 @@ function syncDashboardInstanceScope() {
 }
 
 async function loadDashboardData(page, fullRefresh = false) {
+  // 并发保护：如果上一次加载仍在进行，跳过本次（fullRefresh 除外）
+  if (_loadInFlight && !fullRefresh) return
+  _loadInFlight = true
+  try { await _loadDashboardDataInner(page, fullRefresh) } finally { _loadInFlight = false }
+}
+
+async function _loadDashboardDataInner(page, fullRefresh) {
   syncDashboardInstanceScope()
   // 分波加载：关键数据先渲染，次要数据后填充，减少白屏等待
   // 轻量调用（读文件）每次都做；重量调用（spawn CLI/网络请求）只在首次或手动刷新时做

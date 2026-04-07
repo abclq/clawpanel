@@ -5,6 +5,23 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.11.6] - 2026-04-07
+
+### 新功能 (Features)
+
+- **Skills 多 Agent 支持** — Skills 页面新增 Agent 选择器，不同 Agent 可独立管理各自的 Skills 目录；后端 Rust/Node.js 双端均支持 agent_id 参数路由
+- **助手工具模式流式输出** — 晴辰助手工具调用模式从非流式改为流式，AI 文字逐 token 打字机显示，tool_calls 分块累积后再执行
+
+### 改进 (Improvements)
+
+- **OpenClaw 4.5 兼容** — 实时聊天页面支持全部 Agent 事件流（lifecycle / item / plan / approval / thinking / command_output），新增 3 分钟终极超时和实时计时器，解决无回复时 UI 永远卡住的问题
+- **热更新替换为稳定版下载** — 关于页和全局更新横幅不再展示热更新/重载，改为引导用户前往官网或 GitHub 下载最新稳定版
+
+### 修复 (Fixes)
+
+- **Gateway 状态抖动** — 仪表盘刷新增加 5 秒节流和并发保护；TCP 端口检测增加重试（1s+2s）；Gateway 停止判定从 2 次提高到 3 次连续检测；自动重启前增加 3 秒延迟确认
+- **助手空灰色气泡** — 修复流式响应 0 内容块时静默成功导致空消息持久化的 bug；新增流内错误事件捕获、渲染时过滤空消息、finally 块清理机制
+
 ## [0.11.5] - 2026-04-07
 
 ### 新功能 (Features)

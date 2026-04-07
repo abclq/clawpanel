@@ -899,7 +899,19 @@ function parseSkillFrontmatterFile(skillMdPath) {
   }
 }
 
-function collectLocalSkillRoots() {
+function resolveAgentSkillsDir(agentId) {
+  const id = (agentId || '').trim()
+  if (!id || id === 'main') return null
+  try {
+    const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'))
+    const ws = resolveAgentWorkspace(config, id)
+    return path.join(ws, 'skills')
+  } catch {
+    return path.join(OPENCLAW_DIR, 'agents', id, 'workspace', 'skills')
+  }
+}
+
+function collectLocalSkillRoots(agentSkillsDir) {
   const roots = []
   const seen = new Set()
   const pushRoot = (dir, source, bundled = false) => {
@@ -911,7 +923,11 @@ function collectLocalSkillRoots() {
     roots.push({ dir: normalized, source, bundled })
   }
 
-  pushRoot(path.join(OPENCLAW_DIR, 'skills'), 'OpenClaw 自定义', false)
+  if (agentSkillsDir) {
+    pushRoot(agentSkillsDir, 'Agent 自定义', false)
+  } else {
+    pushRoot(path.join(OPENCLAW_DIR, 'skills'), 'OpenClaw 自定义', false)
+  }
   pushRoot(path.join(homedir(), '.claude', 'skills'), 'Claude 自定义', false)
 
   const cliPath = resolveOpenclawCliPath()
@@ -979,8 +995,8 @@ function scanSingleSkill(root, name) {
   return result
 }
 
-function scanLocalSkillsFallback(cliError = null) {
-  const roots = collectLocalSkillRoots()
+function scanLocalSkillsFallback(agentSkillsDir = null) {
+  const roots = collectLocalSkillRoots(agentSkillsDir)
   const skills = []
   const seen = new Set()
   const scannedRoots = []
@@ -5350,12 +5366,14 @@ const handlers = {
   },
 
   // Skills 管理（纯本地扫描，不依赖 CLI）
-  skills_list() {
-    return scanLocalSkillsFallback()
+  skills_list({ agent_id } = {}) {
+    const agentDir = resolveAgentSkillsDir(agent_id)
+    return scanLocalSkillsFallback(agentDir)
   },
-  skills_info({ name }) {
+  skills_info({ name, agent_id } = {}) {
     const n = String(name || '').trim()
-    const fallback = scanLocalSkillsFallback().skills.find(skill => skill.name === n)
+    const agentDir = resolveAgentSkillsDir(agent_id)
+    const fallback = scanLocalSkillsFallback(agentDir).skills.find(skill => skill.name === n)
     if (fallback) return fallback
     throw new Error(`Skill「${n}」不存在`)
   },
@@ -5384,9 +5402,11 @@ const handlers = {
       throw new Error(`安装失败: ${e.message || e}`)
     }
   },
-  skills_uninstall({ name }) {
+  skills_uninstall({ name, agent_id } = {}) {
     if (!name || name.includes('..') || name.includes('/') || name.includes('\\')) throw new Error('无效的 Skill 名称')
-    const skillDir = path.join(OPENCLAW_DIR, 'skills', name)
+    const agentDir = resolveAgentSkillsDir(agent_id)
+    const baseDir = agentDir || path.join(OPENCLAW_DIR, 'skills')
+    const skillDir = path.join(baseDir, name)
     if (!fs.existsSync(skillDir)) throw new Error(`Skill「${name}」不存在`)
     fs.rmSync(skillDir, { recursive: true, force: true })
     return { success: true, name }
@@ -5398,8 +5418,9 @@ const handlers = {
   async skillhub_index() {
     return await skillhubSdk.fetchIndex()
   },
-  async skillhub_install({ slug }) {
-    const skillsDir = path.join(OPENCLAW_DIR, 'skills')
+  async skillhub_install({ slug, agent_id } = {}) {
+    const agentDir = resolveAgentSkillsDir(agent_id)
+    const skillsDir = agentDir || path.join(OPENCLAW_DIR, 'skills')
     if (!fs.existsSync(skillsDir)) fs.mkdirSync(skillsDir, { recursive: true })
     const installedPath = await skillhubSdk.install(slug, skillsDir)
     return { success: true, slug, path: installedPath }

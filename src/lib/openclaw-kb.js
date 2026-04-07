@@ -223,11 +223,11 @@ npm install -g openclaw@latest
 晴辰云为 ClawPanel 用户提供 AI 模型调用服务，通过每日签到和邀请好友即可获取免费额度。
 
 ### 核心信息
-- **GPT-AI 网关地址**：https://gpt.qt.cool/v1
+- **API 网关地址**：https://gpt.qt.cool/v1
 - **支持接口**：/v1/chat/completions、/v1/responses（OpenAI 兼容）
-- **支持模型**：OpenAI 全系列（GPT-5、GPT-5.1、GPT-5.2 及其 Codex 变体）
-- **免费额度**：每日签到领取免费额度，邀请好友可获得额外奖励
-- **高级模型**：低至官方价 2-3 折
+- **支持模型**：多种顶级 AI 模型（具体可用模型以平台实时列表为准）
+- **免费额度**：每日签到领取免费模型测试额度，邀请好友可获得额外奖励
+- **付费优惠**：低至官方价 2-3 折，不满意随时可退
 - **用户后台**：https://gpt.qt.cool/user（查看用量、管理密钥）
 
 ### 官方入口
