@@ -189,6 +189,17 @@ async function runDetect(page) {
     api.configureGitHttps().catch(() => {})
   }
 
+  const nodeOk = node.installed
+  const allOk = nodeOk && cliOk && config.installed
+
+  // 全部通过 → 自动跳转到仪表盘
+  if (allOk) {
+    const engine = getActiveEngine()
+    if (engine?.detect) await engine.detect()
+    window.location.hash = '/dashboard'
+    return
+  }
+
   renderSteps(page, { node, git, cliOk, config, version })
 }
 
