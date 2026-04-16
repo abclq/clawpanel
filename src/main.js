@@ -813,6 +813,9 @@ async function checkGlobalUpdate() {
     if (dismissed === ver) return
 
     const changelog = info.manifest?.changelog || ''
+    const canHotUpdate = isTauriRuntime()
+      && info.manifest?.downloadUrl
+      && info.manifest?.hash
 
     banner.classList.remove('update-banner-hidden')
     banner.innerHTML = `
@@ -822,6 +825,7 @@ async function checkGlobalUpdate() {
           <span class="update-banner-ver">${t('about.versionAvailable', { version: ver })}</span>
           ${changelog ? `<span class="update-banner-changelog">· ${changelog}</span>` : ''}
         </div>
+        ${canHotUpdate ? `<button class="btn btn-sm btn-primary" id="btn-hot-update">${t('about.hotUpdateNow')}</button>` : ''}
         <a class="btn btn-sm" href="https://claw.qt.cool" target="_blank" rel="noopener">${t('about.downloadFromWebsite')}</a>
         <a class="btn btn-sm" href="https://github.com/qingchencloud/clawpanel/releases" target="_blank" rel="noopener">${t('about.downloadFromGitHub')}</a>
         <button class="update-banner-close" id="btn-update-dismiss" title="${t('about.dismissVersion')}">✕</button>
@@ -833,6 +837,34 @@ async function checkGlobalUpdate() {
       localStorage.setItem('clawpanel_update_dismissed', ver)
       banner.classList.add('update-banner-hidden')
     })
+
+    // 热更新按钮
+    const hotUpdateBtn = banner.querySelector('#btn-hot-update')
+    if (hotUpdateBtn && canHotUpdate) {
+      hotUpdateBtn.addEventListener('click', async () => {
+        hotUpdateBtn.disabled = true
+        hotUpdateBtn.textContent = t('about.hotUpdateDownloading')
+        try {
+          await api.downloadFrontendUpdate(
+            info.manifest.downloadUrl,
+            info.manifest.hash,
+            ver
+          )
+          hotUpdateBtn.style.display = 'none'
+          toast(t('about.hotUpdateDone'), 'success')
+          // 在 banner 中插入重启按钮
+          const rebootBtn = document.createElement('button')
+          rebootBtn.className = 'btn btn-sm btn-primary'
+          rebootBtn.textContent = t('about.restartApp')
+          rebootBtn.onclick = () => api.relaunchApp().catch(() => {})
+          banner.querySelector('.update-banner-text').after(rebootBtn)
+        } catch (err) {
+          hotUpdateBtn.disabled = false
+          hotUpdateBtn.textContent = t('about.hotUpdateNow')
+          toast(t('about.hotUpdateFailed') + ': ' + (err.message || err), 'error')
+        }
+      })
+    }
   } catch {
     // 检查失败静默忽略
   }

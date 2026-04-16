@@ -2,7 +2,7 @@
  * 引擎管理器
  * 管理多引擎（OpenClaw / Hermes Agent / ...）的注册、切换和状态
  */
-import { api } from './tauri-api.js'
+import { api, invalidate } from './tauri-api.js'
 import { registerRoute, setDefaultRoute } from '../router.js'
 
 const _engines = {}
@@ -72,9 +72,12 @@ export async function activateEngine(id, persist = true) {
     return
   }
 
-  // 清理旧引擎
-  if (_activeEngine && _activeEngine.id !== id && _activeEngine.cleanup) {
-    try { _activeEngine.cleanup() } catch {}
+  // 清理旧引擎 + 重置 API 缓存与 in-flight，避免旧引擎 pending 请求阻塞新引擎页面
+  if (_activeEngine && _activeEngine.id !== id) {
+    if (_activeEngine.cleanup) {
+      try { _activeEngine.cleanup() } catch {}
+    }
+    try { invalidate() } catch {}
   }
 
   _activeEngine = engine
@@ -90,8 +93,13 @@ export async function activateEngine(id, persist = true) {
 
   // 切换时启动新引擎（检测安装状态等），初始化由 main.js 处理
   if (persist && engine.boot) {
-    try { await engine.boot() } catch (e) {
-      console.warn('[engine-manager] boot 失败:', e)
+    try {
+      await Promise.race([
+        engine.boot(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('engine boot timeout')), 10000))
+      ])
+    } catch (e) {
+      console.warn('[engine-manager] boot 失败或超时:', e)
     }
   }
 

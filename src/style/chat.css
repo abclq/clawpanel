@@ -1,3 +1,8 @@
+/* AI bubble markdown layout fix: #212 */
+.msg-ai .msg-bubble .msg-text {
+  display: block;
+  color: var(--text-primary);
+}
 /**
  * 聊天页面样式
  * 使用 clawpanel CSS 变量

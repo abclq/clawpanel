@@ -388,7 +388,8 @@ async function testWebSocketAdv(page) {
     const rawToken = config?.gateway?.auth?.token
     const token = (typeof rawToken === 'string') ? rawToken : ''
     const wsHost = isTauriRuntime() ? `127.0.0.1:${port}` : location.host
-    const url = `ws://${wsHost}/ws?token=${encodeURIComponent(token)}`
+    const wsScheme = location.protocol === 'https:' ? 'wss' : 'ws'
+    const url = `${wsScheme}://${wsHost}/ws?token=${encodeURIComponent(token)}`
     log(`→ ${url}`)
 
     const ws = new WebSocket(url)

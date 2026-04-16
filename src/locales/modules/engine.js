@@ -2,6 +2,7 @@ import { _ } from '../helper.js'
 
 export default {
   switchedTo: _('已切换到 {name} 模式', 'Switched to {name} mode', '已切換到 {name} 模式', '{name} モードに切り替えました', '{name} 모드로 전환됨'),
+  switchFailed: _('引擎切换失败，请稍后重试', 'Engine switch failed, please try again later', '引擎切換失敗，請稍後重試', 'エンジンの切り替えに失敗しました。後でもう一度お試しください', '엔진 전환에 실패했습니다. 잠시 후 다시 시도해 주세요'),
   hermesSetupDesc: _('安装并配置 Hermes Agent', 'Install and configure Hermes Agent', '安裝並配置 Hermes Agent'),
   hermesPhaseClickHint: _('点击可返回此步骤', 'Click to go back to this step', '點擊可返回此步驟', 'このステップに戻るにはクリック', '이 단계로 돌아가려면 클릭'),
   hermesSetupIntro: _(
@@ -106,6 +107,8 @@ export default {
   dashRestarting: _('正在重启...', 'Restarting...', '正在重啟...'),
   dashQuickActions: _('快捷操作', 'Quick Actions', '快捷操作'),
   dashOpenChat: _('打开对话', 'Open Chat', '開啟對話'),
+  dashOpenPanel: _('打开面板', 'Open Panel', '開啟面板'),
+  dashOpenPanelDesc: _('Hermes 对话面板', 'Hermes Chat Panel', 'Hermes 對話面板'),
   dashOpenCron: _('定时任务', 'Cron Jobs', '定時任務'),
   dashOpenSetup: _('重新配置', 'Reconfigure', '重新配置'),
   dashNoModel: _('未配置', 'Not configured', '未配置'),

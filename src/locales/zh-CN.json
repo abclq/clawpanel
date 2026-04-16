@@ -110,6 +110,8 @@
     "dashRestarting": "重启中…",
     "dashQuickActions": "快捷操作",
     "dashOpenChat": "打开对话",
+    "dashOpenPanel": "打开面板",
+    "dashOpenPanelDesc": "Hermes 对话面板",
     "dashOpenCron": "定时任务",
     "dashOpenSetup": "安装配置",
     "dashModelConfig": "模型配置",

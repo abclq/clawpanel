@@ -36,7 +36,15 @@ pub async fn check_frontend_update() -> Result<Value, String> {
         .unwrap_or("")
         .to_string();
 
-    let current = env!("CARGO_PKG_VERSION");
+    // 优先读取已热更新的版本，避免 macOS/Linux 用户安装旧包后永远提示有更新
+    let current = {
+        let version_file = update_dir().join(".version");
+        std::fs::read_to_string(&version_file)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
+    };
 
     // 检查最低兼容的 app 版本（前端可能依赖较新的 Rust 后端命令）
     let min_app = manifest
@@ -44,8 +52,8 @@ pub async fn check_frontend_update() -> Result<Value, String> {
         .and_then(|v| v.as_str())
         .unwrap_or("0.0.0");
 
-    let compatible = version_ge(current, min_app);
-    let remote_newer = !latest.is_empty() && compatible && version_gt(&latest, current);
+    let compatible = version_ge(&current, min_app);
+    let remote_newer = !latest.is_empty() && compatible && version_gt(&latest, &current);
     let update_ready = remote_newer && update_dir().join("index.html").exists();
     let has_update = remote_newer && !update_ready;
 
@@ -61,7 +69,7 @@ pub async fn check_frontend_update() -> Result<Value, String> {
 
 /// 下载并解压前端更新包
 #[tauri::command]
-pub async fn download_frontend_update(url: String, expected_hash: String) -> Result<Value, String> {
+pub async fn download_frontend_update(url: String, expected_hash: String, version: String) -> Result<Value, String> {
     let client = super::build_http_client(std::time::Duration::from_secs(120), Some("ClawPanel"))
         .map_err(|e| format!("HTTP 客户端错误: {e}"))?;
 
@@ -122,6 +130,11 @@ pub async fn download_frontend_update(url: String, expected_hash: String) -> Res
                 .map_err(|e| format!("读取文件内容失败: {e}"))?;
             fs::write(&target, &buf).map_err(|e| format!("写入文件失败: {e}"))?;
         }
+    }
+
+    // 写入版本号文件，供下次 check_frontend_update 读取
+    if !version.is_empty() {
+        let _ = std::fs::write(dir.join(".version"), &version);
     }
 
     Ok(serde_json::json!({

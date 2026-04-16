@@ -175,6 +175,15 @@ export function render() {
             <div style="font-size:13px;font-weight:600;font-family:var(--font-mono, monospace)">http://127.0.0.1:${port}</div>
           </div>
         </div>
+        <div class="card hm-dash-open-panel" style="cursor:pointer;border-left:4px solid var(--accent,#6366f1)">
+          <div class="card-body" style="padding:16px">
+            <div style="font-size:12px;color:var(--text-tertiary);margin-bottom:6px;display:flex;align-items:center;gap:6px">
+              ${t('engine.dashOpenPanel')}
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12" style="opacity:.6"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            </div>
+            <div style="font-size:14px;font-weight:600">${t('engine.dashOpenPanelDesc')}</div>
+          </div>
+        </div>
       </div>
 
       <!-- 模型配置区 -->
@@ -345,6 +354,8 @@ export function render() {
     el.querySelectorAll('.hm-dash-link').forEach(btn => {
       btn.addEventListener('click', () => { window.location.hash = '#' + btn.dataset.route })
     })
+    // Open panel card
+    el.querySelector('.hm-dash-open-panel')?.addEventListener('click', () => { window.location.hash = '#/h/chat' })
     // Provider presets — 点击填充 URL
     el.querySelectorAll('.hm-preset-btn').forEach(btn => {
       btn.addEventListener('click', () => {

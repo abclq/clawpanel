@@ -35,6 +35,7 @@ scripts/build-r2-archive.sh
 r2-archives/
 
 # 内部开发文档（不入公开仓）
+AGENTS.md
 BLOCKING_ISSUES_REPORT.md
 __clawapp-chat-ref.js
 LOBSTER-LEGION-ARCHIVE.md

@@ -5,6 +5,19 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.13.3] - 2026-04-16
+
+### 修复 (Fixes)
+
+- **#212** 修复聊天界面 AI 消息内容在气泡中间区域空白的问题
+- **#215** 修复 HTTPS 页面下 WebSocket 测试因写死 `ws://` 触发 Mixed Content 被拦截的问题
+- **#219** 修复多实例共存时版本号检测错误：优先通过 `openclaw status --json` 读取运行中实例版本，并调整 CLI 路径查找优先级
+- 修复引擎切换后仪表盘无限加载：给 `engine.boot()` 增加 10 秒超时，切换时清空 API in-flight 缓存
+- 修复仪表盘请求超时：将整体 15 秒超时拆分为各请求独立超时，避免单个慢接口拖垮整个页面
+- 修复热更新「假更新」循环（macOS/Linux）：`check_frontend_update` 优先读取已下载的 `.version` 文件，下载后写入版本号；CI release 构建前自动同步版本号
+
+---
+
 ## [0.13.2] - 2026-04-13
 
 ### 新功能 (Features)

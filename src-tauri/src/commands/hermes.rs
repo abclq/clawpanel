@@ -606,7 +606,7 @@ pub fn check_hermes() -> Result<Value, String> {
             // 提取版本号（格式可能是 "Hermes Agent v0.8.0" 或 "0.8.0"）
             let version = ver_raw
                 .split_whitespace()
-                .find(|s| s.starts_with('v') || s.chars().next().map_or(false, |c| c.is_ascii_digit()))
+                .find(|s| s.starts_with('v') || s.chars().next().is_some_and(|c| c.is_ascii_digit()))
                 .unwrap_or(&ver_raw)
                 .trim_start_matches('v')
                 .to_string();
@@ -1888,7 +1888,7 @@ pub async fn hermes_detect_environments() -> Result<Value, String> {
                     if let Ok(ip_out) = ip_cmd {
                         if ip_out.status.success() {
                             let ip_str = String::from_utf8_lossy(&ip_out.stdout);
-                            let ip = ip_str.trim().split_whitespace().next().unwrap_or("").to_string();
+                            let ip = ip_str.split_whitespace().next().unwrap_or("").to_string();
                             if !ip.is_empty() {
                                 result["wsl2"]["ip"] = serde_json::json!(ip);
                             }
@@ -2004,7 +2004,7 @@ pub async fn hermes_set_gateway_url(url: Option<String>) -> Result<String, Strin
     };
 
     // 确保 hermes 对象存在
-    if !config.get("hermes").map_or(false, |v| v.is_object()) {
+    if !config.get("hermes").is_some_and(|v| v.is_object()) {
         config["hermes"] = serde_json::json!({});
     }
 
@@ -2543,8 +2543,7 @@ pub async fn hermes_logs_list() -> Result<Value, String> {
                             .map(|d| {
                                 let secs = d.as_secs() as i64;
                                 // Simple ISO-ish format
-                                let dt = chrono_simple(secs);
-                                dt
+                                chrono_simple(secs)
                             })
                     })
                     .unwrap_or_default();

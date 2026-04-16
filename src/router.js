@@ -19,7 +19,12 @@ export function setDefaultRoute(path) {
 }
 
 export function navigate(path) {
+  const current = window.location.hash.slice(1)
   window.location.hash = path
+  // 如果 hash 没有实际变化，手动触发加载（引擎切换等场景兜底）
+  if (current === path) {
+    reloadCurrentRoute()
+  }
 }
 
 export function initRouter(contentEl) {

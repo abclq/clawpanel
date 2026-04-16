@@ -92,10 +92,14 @@ function cachedInvoke(cmd, args = {}, ttl = CACHE_TTL) {
 function invalidate(...cmds) {
   if (!cmds.length) {
     _cache.clear()
+    _inflight.clear()
     return
   }
   for (const [k] of _cache) {
     if (cmds.some(c => k.startsWith(c))) _cache.delete(k)
+  }
+  for (const [k] of _inflight) {
+    if (cmds.some(c => k.startsWith(c))) _inflight.delete(k)
   }
 }
 
@@ -364,7 +368,7 @@ export const api = {
 
   // 前端热更新
   checkFrontendUpdate: () => invoke('check_frontend_update'),
-  downloadFrontendUpdate: (url, expectedHash) => invoke('download_frontend_update', { url, expectedHash: expectedHash || '' }),
+  downloadFrontendUpdate: (url, expectedHash, version) => invoke('download_frontend_update', { url, expectedHash: expectedHash || '', version: version || '' }),
   rollbackFrontendUpdate: () => invoke('rollback_frontend_update'),
   getUpdateStatus: () => invoke('get_update_status'),
 

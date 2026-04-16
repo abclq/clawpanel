@@ -126,19 +126,20 @@ async function _loadDashboardDataInner(page, fullRefresh) {
     promise,
     new Promise((_, reject) => setTimeout(() => reject(new Error(`超时(${ms/1000}s)`)), ms))
   ])
-  const coreP = withTimeout(Promise.allSettled([
-    api.getServicesStatus(),
-    api.readOpenclawConfig(),
+  // 每个请求独立超时：避免单个慢请求拖垮整体渲染
+  const coreP = Promise.allSettled([
+    withTimeout(api.getServicesStatus(), 12000),
+    withTimeout(api.readOpenclawConfig(), 5000),
     // 版本信息：首次加载或手动刷新时才查询（避免 ARM 设备上频繁查 npm registry）
-    (!_dashboardInitialized || fullRefresh || !_dashboardVersionCache) ? api.getVersionInfo() : Promise.resolve(_dashboardVersionCache),
-    api.readPanelConfig(),
-  ]), 15000)
-  const secondaryP = withTimeout(Promise.allSettled([
-    api.listAgents(),
-    api.readMcpConfig(),
-    api.listBackups(),
-    api.listConfiguredPlatforms().catch(() => []),
-  ]), 15000).catch(() => [{ status: 'rejected' }, { status: 'rejected' }, { status: 'rejected' }, { status: 'rejected' }])
+    (!_dashboardInitialized || fullRefresh || !_dashboardVersionCache) ? withTimeout(api.getVersionInfo(), 8000) : Promise.resolve(_dashboardVersionCache),
+    withTimeout(api.readPanelConfig(), 5000),
+  ])
+  const secondaryP = Promise.allSettled([
+    withTimeout(api.listAgents(), 10000),
+    withTimeout(api.readMcpConfig(), 10000),
+    withTimeout(api.listBackups(), 10000),
+    withTimeout(api.listConfiguredPlatforms(), 10000).catch(() => []),
+  ])
   const logsP = api.readLogTail('gateway', 20).catch(() => '')
 
   // 第一波：服务状态 + 配置 + 版本 → 立即渲染统计卡片
@@ -200,7 +201,7 @@ async function _loadDashboardDataInner(page, fullRefresh) {
   if (shouldLoadStatusSummary) {
     try {
       statusSummary = (!_dashboardInitialized || fullRefresh || !_dashboardStatusSummaryCache)
-        ? await withTimeout(api.getStatusSummary(), 15000)
+        ? await withTimeout(api.getStatusSummary(), 10000)
         : _dashboardStatusSummaryCache
       _dashboardStatusSummaryCache = statusSummary
     } catch {

@@ -322,6 +322,20 @@ export function renderSidebar(el) {
             if (eng) {
               navigate(eng.isReady() ? eng.getDefaultRoute() : eng.getSetupRoute())
             }
+          }).catch(err => {
+            console.error('[sidebar] 切换引擎失败:', err)
+            toast(t('engine.switchFailed') || '引擎切换失败，请稍后重试', 'error')
+            renderSidebar(el)
+            // 恢复内容区：重新加载当前路由或显示错误占位
+            const contentEl = document.getElementById('content')
+            if (contentEl) {
+              const hash = window.location.hash.slice(1) || '/'
+              if (hash) {
+                reloadCurrentRoute()
+              } else {
+                contentEl.innerHTML = `<div class="page" style="padding:32px;color:var(--error)">加载失败，请刷新页面重试</div>`
+              }
+            }
           })
         }
         return
