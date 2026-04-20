@@ -3233,6 +3233,22 @@ function showSettings() {
     const n = fallbackDrafts.filter(f => f && f.enabled !== false && f.baseUrl && f.model).length
     fallbackCountEl.textContent = `${n} ${t('assistant.fallbackEnabledSuffix')}`
   }
+  // #Compat-3: 重设计 —— 极简一行 + 厂商预设快捷添加
+  const fallbackPrimaryModelEl = overlay.querySelector('#ast-fallback-primary-model')
+  const fallbackPrimaryHostEl = overlay.querySelector('#ast-fallback-primary-host')
+  const fallbackPresetsEl = overlay.querySelector('#ast-fallback-presets')
+  // 从 baseUrl 提取 hostname 用于紧凑显示
+  const hostOf = (url) => {
+    try { return new URL(url).host } catch { return url || '' }
+  }
+  // 渲染主模型只读行（从当前表单读取，不从 _config）
+  const renderPrimaryRow = () => {
+    if (!fallbackPrimaryModelEl) return
+    const model = overlay.querySelector('#ast-model')?.value?.trim() || ''
+    const base = overlay.querySelector('#ast-baseurl')?.value?.trim() || ''
+    fallbackPrimaryModelEl.textContent = model || t('assistant.fallbackUnnamedModel')
+    fallbackPrimaryHostEl.textContent = base ? hostOf(base) : ''
+  }
   const renderFallbackList = () => {
     if (!fallbackListEl) return
     if (fallbackDrafts.length === 0) {
