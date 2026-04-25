@@ -112,4 +112,12 @@ export function initI18n() {
     _lang = 'en'
   }
   _dict = LANGS[_lang] || LANGS[FALLBACK]
+
+  // 桥接 splash 启动屏的语言切换：splash 在 dispatch 'clawpanel-lang-change' 后，应用同步切换
+  if (typeof window !== 'undefined') {
+    window.addEventListener('clawpanel-lang-change', (e) => {
+      const next = e?.detail
+      if (next && LANGS[next] && next !== _lang) setLang(next)
+    })
+  }
 }

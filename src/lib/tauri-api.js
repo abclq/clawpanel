@@ -290,7 +290,14 @@ export const api = {
 
   // 面板配置 (clawpanel.json)
   getOpenclawDir: () => invoke('get_openclaw_dir'),
-  relaunchApp: () => invoke('relaunch_app'),
+  // Tauri: 重启应用进程；Web: 没有应用进程概念，刷新浏览器即可拿到新状态
+  relaunchApp: () => {
+    if (!isTauriRuntime()) {
+      try { window.location.reload() } catch {}
+      return Promise.resolve({ ok: true, mode: 'web-reload' })
+    }
+    return invoke('relaunch_app')
+  },
   readPanelConfig: () => invoke('read_panel_config'),
   writePanelConfig: (config) => { invalidate(); return invoke('write_panel_config', { config }).then(r => { invoke('invalidate_path_cache').catch(() => {}); return r }) },
   testProxy: (url) => invoke('test_proxy', { url: url || null }),
@@ -428,6 +435,9 @@ export const api = {
   hermesDashboardThemeSet: (name) => invoke('hermes_dashboard_theme_set', { name }),
   hermesDashboardPlugins: () => invoke('hermes_dashboard_plugins'),
   hermesDashboardPluginsRescan: () => invoke('hermes_dashboard_plugins_rescan'),
+  hermesDashboardProbe: () => invoke('hermes_dashboard_probe'),
+  hermesDashboardStart: () => invoke('hermes_dashboard_start'),
+  hermesDashboardStop: () => invoke('hermes_dashboard_stop'),
   hermesToolsetsList: () => invoke('hermes_toolsets_list'),
   hermesCronJobsList: () => invoke('hermes_cron_jobs_list'),
   hermesSkillsList: () => invoke('hermes_skills_list'),

@@ -144,6 +144,8 @@ export default {
   configNotReady: _('配置未加载完成，请稍候', 'Config not loaded yet, please wait', '設定未載入完成，請稍候'),
   fetchRemoteFailed: _('无法获取模型列表，请检查网络或稍后重试', 'Cannot fetch model list. Check network or try later.', '無法取得模型列表，請檢查網路或稍后重試'),
   configLoadFailed: _('加载配置失败', 'Failed to load config', '載入設定失敗'),
+  configLoadFailedHint: _('请确认 Gateway 配置文件可读取，或刷新页面重试。如问题持续，可点击下方查看技术详情。', 'Please make sure the Gateway config file is accessible, or refresh the page to retry. Expand the details below if the problem persists.', '請確認 Gateway 設定檔可讀取，或重新整理頁面重試。如問題持續，可點擊下方查看技術詳情。'),
+  configLoadDetails: _('查看技术详情', 'Show technical details', '查看技術詳情'),
   autoFixUrl: _('已自动修复模型接口地址（如 Ollama /v1）', 'Auto-fixed model API URLs (e.g. Ollama /v1)', '已自動修复模型介面位址（如 Ollama /v1）'),
   saveFailed: _('保存失败', 'Save failed', '儲存失敗', '保存失敗', '저장 실패'),
   autoSaveFailed: _('自动保存失败', 'Auto-save failed', '自動儲存失敗'),

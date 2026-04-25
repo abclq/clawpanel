@@ -426,9 +426,16 @@
 }
 
 .page {
-  padding: var(--space-xl) var(--space-2xl);
-  max-width: 1200px;
+  /* 水平 padding 在宽屏自动放大，避免内容贴边；垂直保持 --space-xl */
+  padding: var(--space-xl) clamp(var(--space-xl), 3vw, var(--space-3xl));
+  width: 100%;
   animation: pageIn 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* 可选：对长文本/表单为主的页面（如 关于、设置、安全），可加 .page-narrow 以保持可读性 */
+.page.page-narrow {
+  max-width: 960px;
+  margin: 0 auto;
 }
 
 .page-header {

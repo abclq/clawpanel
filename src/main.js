@@ -887,6 +887,8 @@ async function checkGlobalUpdate() {
 }
 
 function startUpdateChecker() {
+  // Web 模式：浏览器每次刷新都拿最新前端，前端热更新无意义；跳过避免 404 噪音
+  if (!isTauri) return
   // 启动后 5 秒检查一次
   setTimeout(checkGlobalUpdate, 5000)
   // 之后每 30 分钟检查一次

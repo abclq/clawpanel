@@ -34,7 +34,7 @@
     "description": "支持 OpenClaw 和 Hermes Agent 双引擎的多 AI Agent 可视化管理面板，基于 Tauri v2 的跨平台桌面应用。内置晴辰助手支持工具调用，晴辰云 AI 接口一键接入。支持仪表盘监控、多模型配置、Hermes Agent 对话、消息渠道管理、内置 QQ 机器人、实时 AI 聊天、记忆管理、Agent 管理、网关配置、内网穿透等功能。支持 11 种语言。",
     "url": "https://claw.qt.cool/",
     "downloadUrl": "https://github.com/qingchencloud/clawpanel/releases/latest",
-    "softwareVersion": "0.13.4",
+    "softwareVersion": "0.14.0",
     "author": {
       "@type": "Organization",
       "name": "晴辰云 QingchenCloud",
@@ -225,6 +225,26 @@
     .screenshot-frame:hover::after { opacity: 1; }
     .screenshot-frame img { width: 100%; display: block; }
 
+    .hermes-feature { margin: -8px 0 112px; padding: 1px; border-radius: 28px; background: linear-gradient(135deg, rgba(214,177,92,0.75), rgba(99,102,241,0.28), rgba(34,211,238,0.18)); box-shadow: 0 32px 90px -28px rgba(0,0,0,0.55); }
+    .hermes-feature-inner { position: relative; overflow: hidden; border-radius: 27px; padding: 36px; background: radial-gradient(circle at 20% 0%, rgba(214,177,92,0.18), transparent 36%), linear-gradient(135deg, #120f0b 0%, #17120d 48%, #07080d 100%); color: #f8f2e3; }
+    .hermes-feature-inner::before { content:''; position:absolute; inset:0; background-image: linear-gradient(rgba(214,177,92,0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(214,177,92,0.08) 1px, transparent 1px); background-size: 42px 42px; mask-image: linear-gradient(90deg, transparent, #000 18%, transparent 88%); pointer-events:none; }
+    .hermes-feature-head { position: relative; z-index: 1; display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); gap: 36px; align-items: center; margin-bottom: 28px; }
+    .hermes-kicker { display: inline-flex; align-items: center; gap: 8px; padding: 5px 12px; border: 1px solid rgba(214,177,92,0.28); border-radius: 99px; background: rgba(214,177,92,0.08); color: #d6b15c; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 18px; }
+    .hermes-kicker .pulse { width: 6px; height: 6px; border-radius: 50%; background: #d6b15c; animation: pulse 2s ease-in-out infinite; }
+    .hermes-title { font-family: Georgia, 'Times New Roman', serif; font-size: clamp(2rem, 4vw, 3.2rem); line-height: 1.05; letter-spacing: -0.045em; margin-bottom: 18px; }
+    .hermes-desc { color: rgba(248,242,227,0.72); line-height: 1.85; max-width: 520px; margin-bottom: 22px; }
+    .hermes-points { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .hermes-point { padding: 12px 14px; border: 1px solid rgba(214,177,92,0.16); border-radius: 14px; background: rgba(255,255,255,0.035); color: rgba(248,242,227,0.78); font-size: 13px; }
+    .hermes-point strong { display: block; color: #f8f2e3; font-size: 14px; margin-bottom: 3px; }
+    .hermes-main-shot { position: relative; z-index: 1; border-radius: 22px; padding: 8px; background: linear-gradient(135deg, rgba(214,177,92,0.24), rgba(255,255,255,0.04)); border: 1px solid rgba(214,177,92,0.22); cursor: zoom-in; transform: perspective(1000px) rotateY(-4deg) rotateX(2deg); transition: transform 0.55s cubic-bezier(0.16,1,0.3,1), box-shadow 0.55s; }
+    .hermes-main-shot:hover { transform: perspective(1000px) rotateY(0) rotateX(0) translateY(-4px); box-shadow: 0 26px 70px -24px rgba(214,177,92,0.5); }
+    .hermes-main-shot img { width: 100%; aspect-ratio: 16/10; object-fit: cover; border-radius: 16px; border: 1px solid rgba(255,255,255,0.08); }
+    .hermes-shot-grid { position: relative; z-index: 1; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+    .hermes-shot { overflow: hidden; border: 1px solid rgba(214,177,92,0.18); border-radius: 16px; background: rgba(255,255,255,0.04); cursor: zoom-in; transition: transform 0.35s, border-color 0.35s, box-shadow 0.35s; }
+    .hermes-shot:hover { transform: translateY(-5px); border-color: rgba(214,177,92,0.45); box-shadow: 0 18px 42px -24px rgba(214,177,92,0.7); }
+    .hermes-shot img { width: 100%; aspect-ratio: 16/10; object-fit: cover; }
+    .hermes-shot-label { padding: 10px 12px; color: rgba(248,242,227,0.82); font-size: 12px; border-top: 1px solid rgba(214,177,92,0.12); }
+
     /* ══════════════ Gallery ══════════════ */
     .gallery-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 16px; margin-bottom: 24px; }
     .gallery-card { border-radius: 12px; overflow: hidden; border: 1px solid var(--border); box-shadow: var(--card-shadow); transition: transform 0.4s cubic-bezier(0.16,1,0.3,1), box-shadow 0.4s, border-color 0.4s; cursor: zoom-in; position: relative; }
@@ -288,6 +308,7 @@
     .doc-card p { color: var(--text-s); font-size: 13px; margin-bottom: 8px; }
     .doc-tags { display: flex; flex-wrap: wrap; gap: 6px; }
     .doc-tag { padding: 2px 8px; background: rgba(255,255,255,0.06); border-radius: 4px; font-size: 11px; color: var(--text-t); }
+    .doc-card--featured { grid-column: 1 / -1; border-color: rgba(214,177,92,0.28); background: linear-gradient(135deg, rgba(214,177,92,0.08), var(--bg-card)); }
     @media (max-width: 640px) { .docs-grid { grid-template-columns: 1fr; } }
 
     /* Markdown Reader Modal */
@@ -316,6 +337,7 @@
     .md-reader-body blockquote { border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0; color: var(--text-s); background: var(--surface); border-radius: 0 8px 8px 0; }
     .md-reader-body a { color: var(--accent); text-decoration: none; }
     .md-reader-body a:hover { text-decoration: underline; }
+    .md-reader-body img { width: 100%; border-radius: 12px; border: 1px solid var(--border); box-shadow: var(--card-shadow); margin: 10px 0 22px; cursor: zoom-in; }
     .md-reader-body hr { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
     .md-loading { text-align: center; padding: 60px; color: var(--text-t); }
 
@@ -430,6 +452,8 @@
     @media (max-width: 1024px) {
       .showcase-row { grid-template-columns: 1fr; gap: 32px; }
       .showcase-row .img-first { order: -1; }
+      .hermes-feature-head { grid-template-columns: 1fr; }
+      .hermes-main-shot { transform: none; }
       .gallery-grid, .info-grid { grid-template-columns: repeat(2,1fr); }
       .stats-grid { grid-template-columns: repeat(2,1fr); }
       .tech-grid { grid-template-columns: 1fr; }
@@ -448,6 +472,9 @@
       .section-title { font-size: 1.75rem; }
       .showcase-title { font-size: 1.5rem; }
       .showcase-row { margin-bottom: 72px; }
+      .hermes-feature { margin-bottom: 72px; }
+      .hermes-feature-inner { padding: 28px; }
+      .hermes-shot-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
       .community-banner { padding: 56px 0; }
       .community-banner-inner { grid-template-columns: 1fr; gap: 32px; }
@@ -508,6 +535,7 @@
       .showcase-row { margin-bottom: 56px; gap: 24px; }
       .showcase-desc { font-size: 14px; }
       .showcase-list li { font-size: 13px; }
+      .hermes-points { grid-template-columns: 1fr; }
 
       .community-banner { padding: 40px 0; }
       .community-banner-text h2 { font-size: 1.5rem; }
@@ -526,6 +554,8 @@
       .hero-inner { padding: 32px 16px 64px; }
       .section-title { font-size: 1.4rem; }
       .showcase-title { font-size: 1.25rem; }
+      .hermes-feature-inner { padding: 20px; }
+      .hermes-shot-grid { grid-template-columns: 1fr; }
 
       .gallery-grid { grid-template-columns: 1fr; }
       .info-grid { grid-template-columns: 1fr; }
@@ -745,6 +775,33 @@
       <div class="section-header">
         <h2 class="reveal section-title" data-i18n="feat.title">强大的 <span class="gradient-text">功能矩阵</span></h2>
         <p class="reveal section-desc" data-i18n="feat.desc">一个面板，管理 OpenClaw & Hermes Agent 双引擎</p>
+      </div>
+
+      <div class="reveal hermes-feature">
+        <div class="hermes-feature-inner">
+          <div class="hermes-feature-head">
+            <div>
+              <div class="hermes-kicker"><span class="pulse"></span><span data-i18n="hermes.kicker">Hermes Agent 第二引擎</span></div>
+              <h3 class="hermes-title" data-i18n="hermes.title">让 AI Agent 拥有会话、记忆与人格的长期生命线</h3>
+              <p class="hermes-desc" data-i18n="hermes.desc">ClawPanel 不只是 OpenClaw 的控制台，也内置 Hermes Agent 管理能力：你可以直接管理会话、长期记忆、灵魂档案、工具调用和消息渠道，把 Agent 从“临时聊天”升级为可持续运营的智能体。</p>
+              <div class="hermes-points">
+                <div class="hermes-point"><strong data-i18n="hermes.p1.t">长期记忆</strong><span data-i18n="hermes.p1.d">Notes / User Profile / Soul 三份 Markdown 持续沉淀上下文。</span></div>
+                <div class="hermes-point"><strong data-i18n="hermes.p2.t">会话运营</strong><span data-i18n="hermes.p2.d">统一查看对话、消息流、工具调用与运行状态。</span></div>
+                <div class="hermes-point"><strong data-i18n="hermes.p3.t">人格塑造</strong><span data-i18n="hermes.p3.d">把 Agent 的表达风格、价值观和偏好固化为可编辑资产。</span></div>
+                <div class="hermes-point"><strong data-i18n="hermes.p4.t">多渠道连接</strong><span data-i18n="hermes.p4.d">面向 QQ、Telegram、Discord 等外部渠道做统一管理。</span></div>
+              </div>
+            </div>
+            <div class="hermes-main-shot" onclick="openLightbox('./h00.png')">
+              <img src="./h00.png" alt="Hermes Agent 总览" loading="lazy">
+            </div>
+          </div>
+          <div class="hermes-shot-grid">
+            <div class="hermes-shot" onclick="openLightbox('./h00.png')"><img src="./h00.png" alt="Hermes Agent 总览" loading="lazy"><div class="hermes-shot-label" data-i18n="hermes.s1">Hermes Agent 控制台</div></div>
+            <div class="hermes-shot" onclick="openLightbox('./h01.png')"><img src="./h01.png" alt="Hermes Agent 记忆" loading="lazy"><div class="hermes-shot-label" data-i18n="hermes.s2">Agent 长期记忆</div></div>
+            <div class="hermes-shot" onclick="openLightbox('./h02.png')"><img src="./h02.png" alt="Hermes Agent 会话" loading="lazy"><div class="hermes-shot-label" data-i18n="hermes.s3">会话与消息流</div></div>
+            <div class="hermes-shot" onclick="openLightbox('./h03.png')"><img src="./h03.png" alt="Hermes Agent 工具" loading="lazy"><div class="hermes-shot-label" data-i18n="hermes.s4">工具与运行细节</div></div>
+          </div>
+        </div>
       </div>
 
       <!-- 仪表盘 -->
@@ -1054,6 +1111,19 @@
         <p class="reveal section-desc" data-i18n="docs.desc">遇到问题？这里有你需要的一切</p>
       </div>
       <div class="docs-grid">
+        <div class="reveal doc-card doc-card--featured" onclick="openDoc('hermes-agent.md','Hermes Agent 图文指南')">
+          <div class="doc-icon" style="background:rgba(214,177,92,0.14);color:#d6b15c">✦</div>
+          <div>
+            <h3 data-i18n="doc5.t">Hermes Agent 图文指南</h3>
+            <p data-i18n="doc5.d">了解 Hermes Agent 的会话、长期记忆、灵魂档案、工具调用和多渠道能力，并查看最新界面截图。</p>
+            <div class="doc-tags">
+              <span class="doc-tag">Hermes Agent</span>
+              <span class="doc-tag" data-i18n="doc5.t1">长期记忆</span>
+              <span class="doc-tag" data-i18n="doc5.t2">图文展示</span>
+              <span class="doc-tag" data-i18n="doc5.t3">产品价值</span>
+            </div>
+          </div>
+        </div>
         <div class="reveal doc-card" onclick="openDoc('linux-deploy.md','Linux 服务器部署指南')">
           <div class="doc-icon" style="background:rgba(234,179,8,0.12);color:#eab308"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></div>
           <div>
@@ -1155,7 +1225,7 @@
     <div class="orb orb-2" style="top:auto;bottom:-100px"></div>
     <div class="container-sm" style="position:relative;z-index:10">
       <div class="section-header">
-        <div class="reveal download-version"><span class="pulse"></span> <span id="dl-badge" data-i18n="dl.badge">v0.13.4 最新版</span></div>
+        <div class="reveal download-version"><span class="pulse"></span> <span id="dl-badge" data-i18n="dl.badge">v0.14.0 最新版</span></div>
         <h2 class="reveal section-title" data-i18n="dl.title"><span class="gradient-text">下载安装</span></h2>
         <p class="reveal section-desc" data-i18n="dl.desc">选择你的操作系统，一键下载安装</p>
       </div>
@@ -1165,11 +1235,11 @@
           <h3>macOS</h3>
           <p class="dl-desc" data-i18n="dl.mac.d">支持 Apple Silicon 和 Intel 芯片</p>
           <div class="dl-links">
-            <a class="dl-link" href="https://claw.qt.cool/proxy/dl/github.com/qingchencloud/clawpanel/releases/latest/download/ClawPanel_0.13.4_aarch64.dmg" target="_blank" rel="noopener">
+            <a class="dl-link" href="https://claw.qt.cool/proxy/dl/github.com/qingchencloud/clawpanel/releases/latest/download/ClawPanel_0.14.0_aarch64.dmg" target="_blank" rel="noopener">
               Apple Silicon (M1/M2/M3/M4)
               <span class="dl-format">.dmg</span>
             </a>
-            <a class="dl-link" href="https://claw.qt.cool/proxy/dl/github.com/qingchencloud/clawpanel/releases/latest/download/ClawPanel_0.13.4_x64.dmg" target="_blank" rel="noopener">
+            <a class="dl-link" href="https://claw.qt.cool/proxy/dl/github.com/qingchencloud/clawpanel/releases/latest/download/ClawPanel_0.14.0_x64.dmg" target="_blank" rel="noopener">
               <span data-i18n="dl.mac.intel">Intel 芯片</span>
               <span class="dl-format">.dmg</span>
             </a>
@@ -1187,15 +1257,15 @@
           <h3>Windows</h3>
           <p class="dl-desc" data-i18n="dl.win.d">支持 Windows 10 及以上版本</p>
           <div class="dl-links">
-            <a class="dl-link" href="https://claw.qt.cool/proxy/dl/github.com/qingchencloud/clawpanel/releases/latest/download/ClawPanel_0.13.4_x64-setup.exe" target="_blank" rel="noopener">
+            <a class="dl-link" href="https://claw.qt.cool/proxy/dl/github.com/qingchencloud/clawpanel/releases/latest/download/ClawPanel_0.14.0_x64-setup.exe" target="_blank" rel="noopener">
               <span data-i18n="dl.win.exe">安装程序</span>
               <span class="dl-format">.exe</span>
             </a>
-            <a class="dl-link" href="https://claw.qt.cool/proxy/dl/github.com/qingchencloud/clawpanel/releases/latest/download/ClawPanel_0.13.4_x64-setup-full.exe" target="_blank" rel="noopener">
+            <a class="dl-link" href="https://claw.qt.cool/proxy/dl/github.com/qingchencloud/clawpanel/releases/latest/download/ClawPanel_0.14.0_x64-setup-full.exe" target="_blank" rel="noopener">
               <span data-i18n="dl.win.full">完整包（含 WebView2）</span>
               <span class="dl-format">.exe</span>
             </a>
-            <a class="dl-link" href="https://claw.qt.cool/proxy/dl/github.com/qingchencloud/clawpanel/releases/latest/download/ClawPanel_0.13.4_x64_en-US.msi" target="_blank" rel="noopener">
+            <a class="dl-link" href="https://claw.qt.cool/proxy/dl/github.com/qingchencloud/clawpanel/releases/latest/download/ClawPanel_0.14.0_x64_en-US.msi" target="_blank" rel="noopener">
               <span data-i18n="dl.win.msi">MSI 安装包</span>
               <span class="dl-format">.msi</span>
             </a>
@@ -1206,11 +1276,11 @@
           <h3>Linux</h3>
           <p class="dl-desc" data-i18n="dl.linux.d">支持主流 Linux 发行版</p>
           <div class="dl-links">
-            <a class="dl-link" href="https://claw.qt.cool/proxy/dl/github.com/qingchencloud/clawpanel/releases/latest/download/ClawPanel_0.13.4_amd64.AppImage" target="_blank" rel="noopener">
+            <a class="dl-link" href="https://claw.qt.cool/proxy/dl/github.com/qingchencloud/clawpanel/releases/latest/download/ClawPanel_0.14.0_amd64.AppImage" target="_blank" rel="noopener">
               <span data-i18n="dl.linux.ai">通用版</span>
               <span class="dl-format">.AppImage</span>
             </a>
-            <a class="dl-link" href="https://claw.qt.cool/proxy/dl/github.com/qingchencloud/clawpanel/releases/latest/download/ClawPanel_0.13.4_amd64.deb" target="_blank" rel="noopener">
+            <a class="dl-link" href="https://claw.qt.cool/proxy/dl/github.com/qingchencloud/clawpanel/releases/latest/download/ClawPanel_0.14.0_amd64.deb" target="_blank" rel="noopener">
               Debian / Ubuntu
               <span class="dl-format">.deb</span>
             </a>
@@ -1562,8 +1632,13 @@
           return;
         }
         var rawPath = file.startsWith('../') ? file.replace('../', '') : 'docs/' + file;
-        fetch(GITHUB_RAW + rawPath)
+        var localPath = file.startsWith('../') ? file : file;
+        fetch(localPath)
           .then(function(res) { if (!res.ok) throw new Error(res.status); return res.text(); })
+          .catch(function() {
+            return fetch(GITHUB_RAW + rawPath)
+              .then(function(res) { if (!res.ok) throw new Error(res.status); return res.text(); });
+          })
           .then(function(md) {
             docCache[file] = md;
             renderDoc(md, content);
@@ -1589,6 +1664,9 @@
           a.href = GITHUB_BLOB + 'docs/' + href;
           a.target = '_blank';
         }
+      });
+      container.querySelectorAll('img').forEach(function(img) {
+        img.addEventListener('click', function() { openLightbox(img.src); });
       });
       container.scrollTop = 0;
       document.getElementById('mdReader').scrollTop = 0;
@@ -1671,6 +1749,14 @@
       'feat.tag.overview':'Full Overview','feat.tag.ready':'Ready to Use','feat.tag.soul':'Soul Transfer',
       'feat.tag.core':'Core Feature','feat.tag.config':'Config Center','feat.tag.data':'Data Management',
       'feat.tag.security':'Security','feat.tag.agent':'Smart Agent',
+      'hermes.kicker':'Hermes Agent Second Engine',
+      'hermes.title':'Give your AI Agent a long-term lifeline for sessions, memory, and persona',
+      'hermes.desc':'ClawPanel is not only an OpenClaw console. It also includes Hermes Agent management: operate sessions, persistent memory, soul files, tool calls, and messaging channels directly, upgrading Agents from temporary chats into continuously operated intelligent systems.',
+      'hermes.p1.t':'Persistent Memory','hermes.p1.d':'Notes / User Profile / Soul Markdown files continuously accumulate context.',
+      'hermes.p2.t':'Session Operations','hermes.p2.d':'View conversations, message streams, tool calls, and runtime status in one place.',
+      'hermes.p3.t':'Persona Shaping','hermes.p3.d':'Turn voice, values, and preferences into editable Agent assets.',
+      'hermes.p4.t':'Multi-Channel Links','hermes.p4.d':'Unify management for QQ, Telegram, Discord, and other external channels.',
+      'hermes.s1':'Hermes Agent Console','hermes.s2':'Agent Persistent Memory','hermes.s3':'Sessions & Message Stream','hermes.s4':'Tools & Runtime Details',
       'sc1.title':'Dashboard — Status at a Glance',
       'sc1.desc':'Gateway status, version info, Agent count, model pool overview, plus tunnel status, service monitoring and real-time log stream. All OpenClaw metrics on one screen.',
       'sc1.l1':'Gateway / Tunnel / Service real-time status cards',
@@ -1763,6 +1849,8 @@
       'doc3.t1':'Install Guide','doc3.t2':'Features','doc3.t3':'Source Build','doc3.t4':'FAQ',
       'doc4.t':'Changelog','doc4.d':'New features, bug fixes and improvements for each version',
       'doc4.t1':'New Features','doc4.t2':'Bug Fixes','doc4.t3':'Version History',
+      'doc5.t':'Hermes Agent Visual Guide','doc5.d':'Explore Hermes Agent sessions, persistent memory, soul files, tool calls, and multi-channel capabilities with the latest interface screenshots.',
+      'doc5.t1':'Persistent Memory','doc5.t2':'Visual Guide','doc5.t3':'Product Value',
       'eco.title':'<span class="gradient-text">Ecosystem</span>',
       'eco.desc':'ClawPanel supports the OpenClaw & Hermes Agent ecosystems',
       'eco1.d':'AI Agent Framework — ClawPanel\'s core management target',

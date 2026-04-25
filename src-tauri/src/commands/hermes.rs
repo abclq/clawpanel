@@ -775,6 +775,270 @@ fn hermes_gateway_port() -> u16 {
     8642 // Hermes 默认端口
 }
 
+/// Hermes Dashboard 端口 - 从 config.yaml 的 dashboard.port 读取，默认 9119
+fn hermes_dashboard_port() -> u16 {
+    let config_path = hermes_home().join("config.yaml");
+    if let Ok(content) = std::fs::read_to_string(&config_path) {
+        let mut in_dashboard = false;
+        for line in content.lines() {
+            let t = line.trim();
+            if t.is_empty() || t.starts_with('#') {
+                continue;
+            }
+            let indent = line.len() - line.trim_start().len();
+            if indent == 0 {
+                in_dashboard = t == "dashboard:" || t.starts_with("dashboard:");
+                continue;
+            }
+            if in_dashboard && t.starts_with("port:") {
+                if let Ok(port) = t.trim_start_matches("port:").trim().parse::<u16>() {
+                    if port > 0 {
+                        return port;
+                    }
+                }
+            }
+        }
+    }
+    9119 // Hermes Dashboard 默认端口
+}
+
+/// 探测 Hermes Dashboard 是否在运行（TCP 连接 127.0.0.1 上的 dashboard 端口）
+/// 返回 { running: bool, port: u16 }，前端据此决定是否打开浏览器或提示用户启动
+#[tauri::command]
+pub async fn hermes_dashboard_probe() -> Result<Value, String> {
+    let port = hermes_dashboard_port();
+    let addr = format!("127.0.0.1:{port}");
+    let socket_addr: std::net::SocketAddr = addr
+        .parse()
+        .map_err(|e| format!("address parse error: {e}"))?;
+    let running = tokio::task::spawn_blocking(move || {
+        std::net::TcpStream::connect_timeout(&socket_addr, std::time::Duration::from_millis(800))
+            .is_ok()
+    })
+    .await
+    .unwrap_or(false);
+    Ok(serde_json::json!({ "running": running, "port": port }))
+}
+
+/// 我们 spawn 的 Dashboard 进程 PID（0 = 没有）
+static DASH_PID: AtomicU32 = AtomicU32::new(0);
+
+/// 精准杀掉我们 spawn 的 Dashboard 进程（taskkill /F /PID）
+fn kill_dashboard_pid() -> bool {
+    let pid = DASH_PID.load(Ordering::SeqCst);
+    if pid == 0 {
+        return false;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = std::process::Command::new("taskkill");
+        cmd.args(["/F", "/PID", &pid.to_string()]);
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let ok = cmd.output().map(|o| o.status.success()).unwrap_or(false);
+        if ok {
+            DASH_PID.store(0, Ordering::SeqCst);
+        }
+        ok
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let ok = std::process::Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if ok {
+            DASH_PID.store(0, Ordering::SeqCst);
+        }
+        ok
+    }
+}
+
+/// 启动 Hermes Dashboard 服务（`hermes dashboard`），idempotent
+/// 行为：
+///   1. 端口已可达 → 直接返回 `started: true, already_running: true`
+///   2. 否则 spawn `hermes dashboard`，等最多 90s（首次会 npm build 前端）
+///   3. 进程提前退出 → 读日志尾部检测 deps_missing / port_in_use
+/// 返回 `{ started, kind?, port, pid?, exit_code?, log_tail? }`
+#[tauri::command]
+pub async fn hermes_dashboard_start() -> Result<Value, String> {
+    let port = hermes_dashboard_port();
+    let addr_str = format!("127.0.0.1:{port}");
+    let socket_addr: std::net::SocketAddr = addr_str
+        .parse()
+        .map_err(|e| format!("address parse error: {e}"))?;
+
+    // 1. 已运行？
+    if std::net::TcpStream::connect_timeout(&socket_addr, std::time::Duration::from_millis(500))
+        .is_ok()
+    {
+        return Ok(serde_json::json!({
+            "started": true,
+            "already_running": true,
+            "port": port,
+        }));
+    }
+
+    // 2. 清掉残留 PID（来自上一次 spawn）
+    let _ = kill_dashboard_pid();
+
+    let home = hermes_home();
+    let log_path = home.join("dashboard-run.log");
+    let log_file = std::fs::File::create(&log_path)
+        .map_err(|e| format!("创建日志文件失败: {e}"))?;
+    let log_err = log_file
+        .try_clone()
+        .map_err(|e| format!("克隆日志句柄失败: {e}"))?;
+
+    let enhanced = hermes_enhanced_path();
+    let mut cmd = std::process::Command::new("hermes");
+    cmd.args(["dashboard"])
+        .current_dir(&home)
+        .env("PATH", &enhanced)
+        .stdin(std::process::Stdio::null())
+        .stdout(log_file)
+        .stderr(log_err);
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+
+    // 注入 .env（与 gateway 启动一致）
+    let env_path = home.join(".env");
+    if let Ok(env_content) = std::fs::read_to_string(&env_path) {
+        for line in env_content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((key, val)) = line.split_once('=') {
+                cmd.env(key.trim(), val.trim());
+            }
+        }
+    }
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("spawn hermes dashboard failed: {e}"))?;
+    let pid = child.id();
+    DASH_PID.store(pid, Ordering::SeqCst);
+
+    // 3. 等待 - 端口起来 / 进程提前死 / 超时
+    // 90s 是为了覆盖首次启动的 npm build（dashboard 文档说前端没构建会 auto build on first launch）
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    while std::time::Instant::now() < deadline {
+        // 进程提前退出？
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                DASH_PID.store(0, Ordering::SeqCst);
+                let log_raw = std::fs::read_to_string(&log_path).unwrap_or_default();
+                let tail = log_raw
+                    .lines()
+                    .rev()
+                    .take(40)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let lower = log_raw.to_lowercase();
+                let kind = if lower.contains("web ui dependencies not installed")
+                    || lower.contains("no module named 'fastapi'")
+                    || (lower.contains("import error") && lower.contains("fastapi"))
+                {
+                    "deps_missing"
+                } else if lower.contains("no module named 'fcntl'")
+                    || lower.contains("no module named 'termios'")
+                    || lower.contains("no module named 'pty'")
+                    || lower.contains("no module named 'tty'")
+                    || lower.contains("no module named 'pwd'")
+                    || lower.contains("no module named 'grp'")
+                {
+                    // Hermes 在 pty_bridge.py / memory_tool.py 等处无条件 import POSIX-only
+                    // 标准库（fcntl/termios/pty/tty/pwd/grp），Windows 上根本不存在
+                    // 上游 issue：https://github.com/NousResearch/hermes-agent/issues/5246
+                    "posix_only_module"
+                } else if lower.contains("address already in use")
+                    || lower.contains("address in use")
+                    || (lower.contains("port") && lower.contains("already in use"))
+                {
+                    "port_in_use"
+                } else {
+                    "spawn_failed"
+                };
+                return Ok(serde_json::json!({
+                    "started": false,
+                    "kind": kind,
+                    "exit_code": status.code(),
+                    "port": port,
+                    "log_tail": tail,
+                }));
+            }
+            Ok(None) => {
+                // 还活着，探端口
+                if std::net::TcpStream::connect_timeout(
+                    &socket_addr,
+                    std::time::Duration::from_millis(300),
+                )
+                .is_ok()
+                {
+                    // PID 仍记录在 DASH_PID，供后续 stop 使用
+                    return Ok(serde_json::json!({
+                        "started": true,
+                        "already_running": false,
+                        "port": port,
+                        "pid": pid,
+                    }));
+                }
+            }
+            Err(e) => {
+                // try_wait 异常：异常本身罕见，先记录并跳出
+                let log_raw = std::fs::read_to_string(&log_path).unwrap_or_default();
+                let tail = log_raw
+                    .lines()
+                    .rev()
+                    .take(40)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                return Ok(serde_json::json!({
+                    "started": false,
+                    "kind": "spawn_failed",
+                    "port": port,
+                    "log_tail": tail,
+                    "error": format!("try_wait error: {e}"),
+                }));
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+
+    // 4. 超时（进程还活着但端口没起来；常见于首次构建超过 90s）
+    let log_raw = std::fs::read_to_string(&log_path).unwrap_or_default();
+    let tail = log_raw
+        .lines()
+        .rev()
+        .take(40)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(serde_json::json!({
+        "started": false,
+        "kind": "timeout",
+        "port": port,
+        "pid": pid,
+        "log_tail": tail,
+    }))
+}
+
+/// 停止我们 spawn 的 Dashboard 进程
+#[tauri::command]
+pub async fn hermes_dashboard_stop() -> Result<bool, String> {
+    Ok(kill_dashboard_pid())
+}
+
 // ---------------------------------------------------------------------------
 // install_hermes — 一键安装（下载 uv → uv tool install hermes-agent）
 // ---------------------------------------------------------------------------

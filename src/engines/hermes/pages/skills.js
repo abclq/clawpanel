@@ -108,6 +108,12 @@ export function render() {
   let fileContent = ''
   let loadingFile = false
 
+  // Toolsets state — backend returns { raw: <stdout> }; we parse rows on the fly.
+  // toolsets is null when never loaded, [] when loaded but empty/parse-failed.
+  let toolsets = null          // [{ name, enabled, description }]
+  let toolsetsRaw = ''         // raw stdout, kept for fallback display when parsing fails
+  let toolsetsLoading = true
+
   // ============================================================ loaders
 
   async function loadSkills() {
@@ -122,6 +128,61 @@ export function render() {
     }
     loading = false
     draw()
+  }
+
+  /**
+   * Strip ANSI escape sequences (color/style/cursor) from a string.
+   * Hermes' `tools list` may include them when stdout is detected as a TTY,
+   * even though we capture via pipe — be defensive.
+   */
+  function stripAnsi(s) {
+    if (!s) return ''
+    // Standard CSI sequences: ESC [ ... letter
+    return String(s).replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '')
+  }
+
+  /**
+   * Parse `hermes tools list --platform <p>` stdout. Format observed
+   * (Hermes 0.6+):
+   *
+   *   Built-in toolsets (cli):
+   *   ✓ enabled    web              🔍 Web Search & Scraping
+   *   ✗ disabled   image_gen        🎨 Image Generation
+   *   ...
+   *
+   * Returns an array; empty array means parse failed or no rows.
+   */
+  function parseToolsets(raw) {
+    const clean = stripAnsi(raw || '')
+    const out = []
+    for (const line of clean.split(/\r?\n/)) {
+      // Use [^\s] explicitly because emoji/multi-codepoint description part needs greedy tail.
+      const m = line.match(/^\s*([✓✗])\s+(enabled|disabled)\s+(\S+)\s+(.+?)\s*$/u)
+      if (!m) continue
+      out.push({
+        name: m[3],
+        enabled: m[1] === '✓' || m[2] === 'enabled',
+        description: m[4],
+      })
+    }
+    return out
+  }
+
+  async function loadToolsets() {
+    toolsetsLoading = true
+    draw()
+    try {
+      const r = await api.hermesToolsetsList()
+      toolsetsRaw = r?.raw || ''
+      toolsets = parseToolsets(toolsetsRaw)
+    } catch (e) {
+      console.error('Failed to load toolsets:', e)
+      toolsetsRaw = ''
+      toolsets = []
+    } finally {
+      toolsetsLoading = false
+      draw()
+    }
   }
 
   async function loadDetail(skill) {
@@ -301,6 +362,103 @@ export function render() {
     `
   }
 
+  function renderToolsets() {
+    // 加载中骨架屏
+    if (toolsetsLoading) {
+      return `
+        <section class="hm-toolsets">
+          <div class="hm-toolsets-head">
+            <div class="hm-toolsets-title-block">
+              <div class="hm-toolsets-title">${t('engine.toolsetsTitle')}</div>
+              <div class="hm-toolsets-sub">${t('engine.toolsetsSubtitle')}</div>
+            </div>
+          </div>
+          <div class="hm-toolsets-grid">
+            ${Array.from({ length: 8 }).map(() =>
+              `<div class="hm-toolset-card hm-toolset-card--skel"><div class="hm-skel" style="width:55%;height:14px;margin-bottom:8px"></div><div class="hm-skel" style="width:80%;height:11px"></div></div>`
+            ).join('')}
+          </div>
+        </section>
+      `
+    }
+
+    const items = toolsets || []
+    const activeCount = items.filter(x => x.enabled).length
+    const total = items.length
+
+    // 解析失败但有 raw 输出 → 显示原始内容
+    if (total === 0 && toolsetsRaw && toolsetsRaw.trim()) {
+      return `
+        <section class="hm-toolsets">
+          <div class="hm-toolsets-head">
+            <div class="hm-toolsets-title-block">
+              <div class="hm-toolsets-title">${t('engine.toolsetsTitle')}</div>
+              <div class="hm-toolsets-sub">${t('engine.toolsetsSubtitle')}</div>
+            </div>
+            <button class="hm-btn hm-btn--ghost hm-btn--sm" id="hm-toolsets-refresh">
+              ${ICONS.refresh} ${t('engine.skillsRefresh')}
+            </button>
+          </div>
+          <div class="hm-toolsets-fallback">
+            <div class="hm-toolsets-fallback-hint">${t('engine.toolsetsParseFailed')}</div>
+            <pre class="hm-toolsets-fallback-pre">${escHtml(stripAnsi(toolsetsRaw))}</pre>
+          </div>
+        </section>
+      `
+    }
+
+    // 完全空（hermes 没装/版本太老）
+    if (total === 0) {
+      return `
+        <section class="hm-toolsets">
+          <div class="hm-toolsets-head">
+            <div class="hm-toolsets-title-block">
+              <div class="hm-toolsets-title">${t('engine.toolsetsTitle')}</div>
+              <div class="hm-toolsets-sub">${t('engine.toolsetsSubtitle')}</div>
+            </div>
+            <button class="hm-btn hm-btn--ghost hm-btn--sm" id="hm-toolsets-refresh">
+              ${ICONS.refresh} ${t('engine.skillsRefresh')}
+            </button>
+          </div>
+          <div class="hm-toolsets-empty">${t('engine.toolsetsEmpty')}</div>
+        </section>
+      `
+    }
+
+    // 正常态
+    const countLabel = t('engine.toolsetsActiveCount')
+      .replace('{n}', String(activeCount))
+      .replace('{total}', String(total))
+    return `
+      <section class="hm-toolsets">
+        <div class="hm-toolsets-head">
+          <div class="hm-toolsets-title-block">
+            <div class="hm-toolsets-title">
+              ${t('engine.toolsetsTitle')}
+              <span class="hm-toolsets-count">${countLabel}</span>
+            </div>
+            <div class="hm-toolsets-sub">${t('engine.toolsetsSubtitle')}</div>
+          </div>
+          <button class="hm-btn hm-btn--ghost hm-btn--sm" id="hm-toolsets-refresh">
+            ${ICONS.refresh} ${t('engine.skillsRefresh')}
+          </button>
+        </div>
+        <div class="hm-toolsets-grid">
+          ${items.map(it => `
+            <div class="hm-toolset-card ${it.enabled ? 'is-on' : 'is-off'}" title="${escHtml(it.description)}">
+              <div class="hm-toolset-card-row">
+                <span class="hm-toolset-status ${it.enabled ? 'is-on' : 'is-off'}">${it.enabled ? '✓' : '✗'}</span>
+                <span class="hm-toolset-name">${escHtml(it.name)}</span>
+              </div>
+              <div class="hm-toolset-desc">${escHtml(it.description)}</div>
+            </div>
+          `).join('')}
+        </div>
+        <div class="hm-toolsets-hint">${t('engine.toolsetsHint')}</div>
+      </section>
+    `
+  }
+
   function renderDetail() {
     if (!activeSkill) return renderEmpty()
     if (loadingDetail) {
@@ -394,6 +552,8 @@ export function render() {
         </div>
       </div>
 
+      ${renderToolsets()}
+
       <div class="hm-skills-layout">
         ${renderSidebar()}
         <section class="hm-skills-main">${renderDetail()}</section>
@@ -411,6 +571,7 @@ export function render() {
     })
 
     el.querySelector('#hm-skills-refresh')?.addEventListener('click', () => loadSkills())
+    el.querySelector('#hm-toolsets-refresh')?.addEventListener('click', () => loadToolsets())
 
     el.querySelectorAll('.hm-skill-cat-header').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -454,5 +615,6 @@ export function render() {
   }
 
   loadSkills()
+  loadToolsets()
   return el
 }

@@ -219,6 +219,44 @@ export function render() {
     draw()
   }
 
+  function renderOverview() {
+    const all = SECTIONS.map(section => ({
+      section,
+      stats: contentStats(data[section.key] || ''),
+      filled: Boolean((data[section.key] || '').trim()),
+    }))
+    const totalWords = all.reduce((sum, item) => sum + item.stats.words, 0)
+    const filledCount = all.filter(item => item.filled).length
+    const latest = Math.max(0, ...SECTIONS.map(section => mtimes[section.key] || 0))
+    return `
+      <div class="hm-mem-overview">
+        <div class="hm-mem-overview-copy">
+          <div class="hm-mem-kicker">${t('engine.memoryOverviewKicker')}</div>
+          <div class="hm-mem-overview-title">${t('engine.memoryOverviewTitle')}</div>
+          <div class="hm-mem-overview-desc">${t('engine.memoryOverviewDesc')}</div>
+        </div>
+        <div class="hm-mem-overview-stats">
+          <div class="hm-mem-stat">
+            <span class="hm-mem-stat-label">${t('engine.memoryFiles')}</span>
+            <strong>3</strong>
+          </div>
+          <div class="hm-mem-stat">
+            <span class="hm-mem-stat-label">${t('engine.memoryFilled')}</span>
+            <strong>${filledCount}/3</strong>
+          </div>
+          <div class="hm-mem-stat">
+            <span class="hm-mem-stat-label">${t('engine.memoryTotalWords')}</span>
+            <strong>${totalWords}</strong>
+          </div>
+          <div class="hm-mem-stat">
+            <span class="hm-mem-stat-label">${t('engine.memoryLatest')}</span>
+            <strong>${latest ? escHtml(fmtMtime(latest)) : '—'}</strong>
+          </div>
+        </div>
+      </div>
+    `
+  }
+
   function renderSection(section) {
     const content = data[section.key] || ''
     const { chars, words } = contentStats(content)
@@ -231,7 +269,7 @@ export function render() {
     </span>`
 
     return `
-      <div class="hm-panel hm-mem-panel" data-key="${section.key}">
+      <div class="hm-panel hm-mem-panel hm-mem-panel--${section.key}" data-key="${section.key}">
         <div class="hm-panel-header">
           <div class="hm-panel-title">
             <span class="hm-panel-title-icon">${section.icon}</span>
@@ -243,12 +281,17 @@ export function render() {
           </div>
         </div>
         <div class="hm-panel-body">
+          <div class="hm-mem-card-topline">
+            <div class="hm-mem-card-index">${section.key.toUpperCase()}</div>
+            <div class="hm-mem-card-meter"><span style="width:${Math.min(100, Math.max(8, words / 8))}%"></span></div>
+          </div>
           <div class="hm-mem-desc">${t(section.descKey)}</div>
           ${content.trim()
             ? `<div class="hm-mem-rendered markdown-body">${mdToHtml(content)}</div>`
             : `<div class="hm-mem-empty">
                 <span class="hm-mem-empty-title">${t('engine.memoryEmpty')}</span>
                 <span class="hm-muted">${t(section.descKey)}</span>
+                <button class="hm-btn hm-btn--ghost hm-btn--sm hm-mem-edit hm-mem-empty-cta" data-key="${section.key}">${ICONS.edit} ${t('engine.memoryEdit')}</button>
               </div>`}
         </div>
       </div>
@@ -272,6 +315,8 @@ export function render() {
           </button>
         </div>
       </div>
+
+      ${!loading && !loadError ? renderOverview() : ''}
 
       ${loadError ? `
         <div class="hm-panel" style="margin-bottom:18px">

@@ -7,12 +7,20 @@
 
 ## [未发布]
 
+## [0.14.0] - 2026-04-25
+
 ### 新功能 (Features)
 
-- **心甜Claw 引擎入口** — 新增第三个引擎模式「心甜Claw」，提供产品介绍页、官网/下载入口、专属视觉样式与多语言文案
-- **Hermes 服务商注册表** — 新增 22 个 Hermes Provider 注册信息，支持 API Key、OAuth、外部进程与聚合服务商，安装向导和仪表盘可动态加载服务商与模型配置
-- **Hermes .env 高级编辑** — 新增非托管环境变量编辑页，可安全编辑自定义变量，并避免覆盖 ClawPanel 托管的 Provider 密钥
+- **心甜Claw 引擎入口** — 新增第三个引擎模式「心甜Claw」，提供产品介绍页、官网/下载入口、专属视觉样式与多语言文案，logo 图标资源同步更新
+- **Hermes 服务商注册表** — 新增 22 个 Hermes Provider 注册信息（17 个 api_key、3 个 OAuth、1 个外部进程、1 个聚合占位），支持 API Key、OAuth、外部进程与聚合服务商，安装向导和仪表盘可动态加载服务商与模型配置
+- **Hermes .env 高级编辑** — 新增非托管环境变量编辑页 `/h/env`，三个新 Tauri 命令（`hermes_env_read_unmanaged` / `hermes_env_set` / `hermes_env_delete`）严格拒绝触碰 ClawPanel 托管的 Provider 密钥，敏感值在 UI 中自动遮罩
 - **Hermes 会话与用量分析增强** — 新增轻量会话摘要、按 Profile 浏览历史会话、Usage Analytics 后端统计与扩展主题页数据入口
+- **Hermes Dashboard 自动拉起** — 仪表盘"打开 Hermes 面板"和扩展页相关链接点击时自动探活 9119 端口，未运行则后台 spawn 进程并轮询启动结果，附带依赖未装与 Windows 不兼容（POSIX-only 模块）的专属错误模态
+- **Hermes Skills 工具集面板** — Skills 页顶部新增 Toolsets 区，解析 `hermes tools list` 输出，按平台显示 enabled/disabled 状态与刷新按钮，可视化 20 个内置工具集的启用情况
+- **Hermes Agent 黑金特色区（官网）** — `docs/index.html` 新增 Hermes Agent 编辑风专题展示（4 张高清截图 h00-h03 + 4 个能力点矩阵），新增「Hermes Agent 图文指南」文档卡片与 `docs/hermes-agent.md` 视觉指南
+- **Boot Manifest 启动页改版** — `index.html` 启动页升级为 IDE/Linear/Vercel 风格 manifest 列表，4 步骤错峰淡入动画，支持 zh/en 双语切换并通过 `clawpanel-lang-change` 与应用 i18n 同步
+- **官网 Markdown 阅读器图片放大** — 文档读阅模态中的图片支持点击全屏 lightbox 浏览
+- **Hermes Memory 概览卡** — Memory 页头部新增编辑风 overview 卡（kicker + 大标题 + 描述 + 4 块统计：记忆文件数 / 已填写 / 总词数 / 最近更新）
 
 ### 改进 (Improvements)
 
@@ -22,12 +30,21 @@
 - **日志下载反馈** — 桌面端日志下载保存到系统 `Downloads/ClawPanel` 并显示真实路径；Web 端继续浏览器下载并明确提示查看默认下载目录
 - **侧边栏导航补全** — 补齐 Hermes 会话浏览、扩展与主题等导航项图标与文案
 - **模型备选管理 UI** — 合并 PR #232，将主/备模型面板改为可折叠瀑布流编辑器，支持候选池分组、拖拽排序和备选提升为主模型
+- **模型加载失败 UX 重做** — `src/pages/models.js` 配置加载失败不再是一行红字；改为带图标的错误卡 + 友好提示 + 可折叠技术详情（含 stack）+ 重试按钮，错误信息全 HTML 转义
+- **`.page` 布局优化** — 水平 padding 改用 `clamp(--space-xl, 3vw, --space-3xl)`，宽屏不再贴边；新增 `.page-narrow` 类（`max-width: 960px`）供长文本/表单页保持可读性
+- **Memory 单列断点提早** — 1100px 起切单列，避免 1024px viewport 下 copy 列被压到 230px、标题被迫 4 行
+- **Web 模式跳过热更新检查** — Web 浏览器每次刷新自动拿最新前端，前端热更新无意义；跳过 `check_frontend_update` 调用，减少 dev console 404 噪音
 
 ### 修复 (Fixes)
 
-- **Hermes Gateway 启动自修复** — 启动前自动检查并修复 `platforms.api_server.enabled`，避免升级或手动编辑配置后 Gateway 缺失 `/v1/runs` 能力
+- **Hermes Gateway 启动自修复** — 启动前自动检查并修复 `platforms.api_server.enabled`，避免升级或手动编辑配置后 Gateway 缺失 `/v1/runs` 能力，含 7 个 unit test 覆盖各种 YAML 形态；变更前自动写时间戳备份 `config.yaml.bak-<epoch>`，前端订阅 `hermes-config-patched` 事件并 toast 提示
+- **Memory 页 Overview 穿模** — `.hermes-memory-page` 上一代旧设计遗留的 `display: flex; height: 100%` 把 5 个子项压在 899px viewport 里互相挤压，导致 overview 被压到 110px（自然 227px），标题溢出穿过半透明 stat 卡片；移除 flex 列约束，改回自然块级流，让外层 `#content` 滚动
+- **Skills 页 hero/toolsets 被压缩** — 新加的 Toolsets 区与 hero 在 flex 列里争抢空间，hero 自然 240px 被压到 165px；hero + toolsets 锁 `flex-shrink: 0`，只让两栏 layout 区伸缩
+- **Web 模式 Skills 页 ReferenceError** — `dev-api.js` 的 `hermes_skills_list` 调用了未定义的 `readHermesDisabledSkills`，导致 Web 模式打开 Skills 页直接报错；补上 `_readHermesDisabledSkills` helper，与 Rust 端 `read_disabled_skills` 同语义（缩进感知 YAML 解析）
 - **Web/桌面下载行为分流** — `hermes_logs_download` 根据运行时区分桌面真实落盘与 Web Blob 下载，避免 Web 模式误保存到服务端目录
-- **普通记忆文件下载提示** — Blob 下载提示改为说明浏览器默认下载目录，减少“下载没落点”的误解
+- **普通记忆文件下载提示** — Blob 下载提示改为说明浏览器默认下载目录，减少"下载没落点"的误解
+- **`models.js` 多处 typo** — 修复 5 处 `star/start`、`abor/abort`、`textConten/textContent`、`resul/result` 错字（疑似上一次编辑被中断的残留）
+- **死代码清理** — 删除 `src/style/pages.css` 中 56 行 `.hm-memory-*` 旧布局规则（编辑改版后已改用 `.hm-mem-*` 前缀，老类零引用）；CSS lint 顺手补 `line-clamp` 标准属性
 - **Dependabot #11** — 升级 `rustls-webpki` 至 `0.103.13`，修复畸形 CRL BIT STRING 触发 panic 的拒绝服务风险
 - **Dependabot #12** — 升级 `postcss` 至 `8.5.10`，修复 CSS stringify 输出中的 XSS 风险
 - **rand 依赖更新** — 升级直接使用的 `rand` 至 `0.8.6`；Tauri 构建期传递依赖中的 `rand 0.7.3` 仍需等待上游解除

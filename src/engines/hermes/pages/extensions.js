@@ -123,6 +123,42 @@ export function render() {
 
     el.querySelector('#hm-ext-refresh')?.addEventListener('click', load)
     el.querySelector('#hm-ext-rescan')?.addEventListener('click', rescan)
+    // 拦截 Dashboard 本地链接：probe → auto-start → 打开。避免直接打开浏览器看到 ERR_CONNECTION_REFUSED
+    el.querySelectorAll('a[href^="http://127.0.0.1:9119"]').forEach(a => {
+      a.addEventListener('click', async (ev) => {
+        ev.preventDefault()
+        const openWith = async (port) => {
+          const url = a.href.replace(/:9119(\/?)/, ':' + port + '$1')
+          if (window.__TAURI_INTERNALS__) {
+            const { open } = await import('@tauri-apps/plugin-shell')
+            await open(url)
+          } else {
+            window.open(url, '_blank', 'noopener,noreferrer')
+          }
+        }
+        // 1. probe
+        const probe = await api.hermesDashboardProbe().catch(() => ({ running: false, port: 9119 }))
+        if (probe?.running) {
+          try { await openWith(probe.port || 9119) }
+          catch (err) { toast(t('engine.dashNativePanelOpenFail') + ': ' + (err?.message || err), 'error') }
+          return
+        }
+        // 2. auto-start
+        const r = await api.hermesDashboardStart().catch(() => ({ started: false, kind: 'spawn_failed', port: probe?.port || 9119 }))
+        if (r?.started) {
+          try { await openWith(r.port || 9119) }
+          catch (err) { toast(t('engine.dashNativePanelOpenFail') + ': ' + (err?.message || err), 'error') }
+          return
+        }
+        // 3. 失败 → toast（dashboard 页面有完整安装流程，这里只引导）
+        const port = r?.port || probe?.port || 9119
+        if (r?.kind === 'deps_missing') {
+          toast(t('engine.dashNativePanelDepHint'), 'warning', { duration: 6000 })
+        } else {
+          toast(t('engine.dashNativePanelDown', { port }), 'warning')
+        }
+      })
+    })
     el.querySelectorAll('.hm-theme-choice').forEach(btn => {
       btn.addEventListener('click', async () => {
         const name = btn.dataset.theme

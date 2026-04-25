@@ -34,19 +34,21 @@ const HERMES_DASHBOARD_URL = 'http://127.0.0.1:9119/'
 
 /**
  * Open `url` in the user's system browser. Tauri desktop uses the shell
- * plugin (which respects `xdg-open` / `start` / `open`); Web mode falls back
- * to `window.open` with a `noopener` to avoid tab-jacking.
+ * plugin (which respects `xdg-open` / `start` / `open`); Web mode uses
+ * `window.open` with `noopener` to avoid tab-jacking. Errors propagate so
+ * the caller can decide how to surface them — silent fallback hid real
+ * scope/CSP errors and made "9119 打不开" hard to diagnose.
  */
 async function openExternalUrl(url) {
   if (!url) return
-  try {
-    if (window.__TAURI_INTERNALS__) {
-      const { open } = await import('@tauri-apps/plugin-shell')
-      await open(url)
-      return
-    }
-  } catch (_) { /* fall through to window.open */ }
-  window.open(url, '_blank', 'noopener,noreferrer')
+  if (window.__TAURI_INTERNALS__) {
+    const { open } = await import('@tauri-apps/plugin-shell')
+    await open(url)
+    return
+  }
+  // Web 模式：打开用户浏览器中的新标签
+  const win = window.open(url, '_blank', 'noopener,noreferrer')
+  if (!win) throw new Error('popup blocked')
 }
 
 export function render() {
@@ -463,14 +465,235 @@ export function render() {
     // Open panel card
     el.querySelector('.hm-dash-open-panel')?.addEventListener('click', () => { window.location.hash = '#/h/chat' })
     // Open Hermes native dashboard in system browser
+    // 流程：Probe → 没起就 auto-start → start 失败再看是否依赖缺失走安装流程
     el.querySelector('.hm-dash-open-native')?.addEventListener('click', async (e) => {
-      const href = e.currentTarget.dataset.href
+      const btn = e.currentTarget
+      const href = btn.dataset.href
       if (!href) return
+      const origText = btn.textContent
+      btn.disabled = true
+      btn.textContent = t('engine.dashNativePanelChecking')
+
+      const tryOpen = async (port) => {
+        const url = href.replace(/:9119(\/?$)/, ':' + port + '$1')
+        await openExternalUrl(url)
+      }
+
+      // 共用：调用 hermesDashboardStart，带"首次启动"提示，端口起来后开浏览器
+      // 返回 { ok, kind?, port, log_tail? } —— ok=true 时已经打开浏览器
+      const startAndOpen = async () => {
+        btn.textContent = t('engine.dashNativePanelStarting')
+        // 首次启动可能慢（Hermes 会跑 npm build 构建前端），给用户一个 toast 安抚
+        let firstHintTimer = null
+        const showFirstHint = async () => {
+          const { toast } = await import('../../../components/toast.js')
+          toast(t('engine.dashNativePanelStartFirstHint'), 'info', { duration: 8000 })
+        }
+        firstHintTimer = setTimeout(showFirstHint, 5000)
+        try {
+          const result = await api.hermesDashboardStart().catch((err) => ({
+            started: false, kind: 'spawn_failed', port: 9119,
+            log_tail: String(err?.message || err),
+          }))
+          if (result?.started) {
+            try {
+              await tryOpen(result.port || 9119)
+              return { ok: true, ...result }
+            } catch (err) {
+              const { toast } = await import('../../../components/toast.js')
+              toast(t('engine.dashNativePanelOpenFail') + ': ' + (err?.message || err), 'error')
+              return { ok: false, kind: 'open_failed', ...result }
+            }
+          }
+          return { ok: false, ...(result || {}) }
+        } finally {
+          if (firstHintTimer) clearTimeout(firstHintTimer)
+        }
+      }
+
       try {
-        await openExternalUrl(href)
+        const probe = await api.hermesDashboardProbe().catch(() => ({ running: false, port: 9119 }))
+        if (probe?.running) {
+          await tryOpen(probe.port || 9119)
+          return
+        }
+
+        // 自动启动 Dashboard
+        const startResult = await startAndOpen()
+        if (startResult.ok) return
+
+        // 启动失败，按 kind 分发
+        const port = startResult.port || probe?.port || 9119
+        const { toast } = await import('../../../components/toast.js')
+
+        if (startResult.kind === 'timeout') {
+          toast(t('engine.dashNativePanelStartTimeout', { port }), 'warning', { duration: 6000 })
+          return
+        }
+        if (startResult.kind === 'port_in_use') {
+          toast(t('engine.dashNativePanelStartPortBusy', { port }), 'warning', { duration: 6000 })
+          return
+        }
+        if (startResult.kind === 'posix_only_module') {
+          // Hermes Agent 上游 bug：pty_bridge.py / memory_tool.py 在 Windows 上 import fcntl 等 POSIX-only 模块
+          // 见 https://github.com/NousResearch/hermes-agent/issues/5246
+          // 没办法在前端绕过——只能告诉用户原因和替代方案
+          const { showContentModal } = await import('../../../components/modal.js')
+          const m = showContentModal({
+            title: t('engine.dashNativePanelWindowsTitle'),
+            width: 580,
+            content: `
+              <p style="margin:0 0 14px;line-height:1.6;color:var(--text-secondary)">
+                ${t('engine.dashNativePanelWindowsDesc')}
+              </p>
+              <ul style="margin:0 0 12px 20px;padding:0;line-height:1.7;color:var(--text-primary)">
+                <li>${t('engine.dashNativePanelWindowsAlt1')}</li>
+                <li>${t('engine.dashNativePanelWindowsAlt2')}</li>
+              </ul>
+              <pre style="margin:0;padding:10px 12px;background:var(--surface-2,#f5f5f4);border:1px solid var(--border,#e5e5e5);border-radius:6px;font-family:var(--hm-font-mono,monospace);font-size:11px;color:var(--text-tertiary,#888);max-height:120px;overflow:auto;white-space:pre-wrap;word-break:break-all">${(startResult.log_tail || '').split('\n').slice(-6).join('\n').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'})[c])}</pre>
+            `,
+            buttons: [
+              { label: t('engine.dashNativePanelWindowsReportLink'), className: 'btn btn-secondary btn-sm', id: 'hm-dash-issue-link' },
+            ],
+          })
+          m.querySelector('#hm-dash-issue-link')?.addEventListener('click', async () => {
+            try { await openExternalUrl('https://github.com/NousResearch/hermes-agent/issues/5246') }
+            catch {}
+          })
+          return
+        }
+        if (startResult.kind !== 'deps_missing') {
+          // spawn_failed / 其他未知 → 显示日志尾部摘要
+          const detail = (startResult.log_tail || '').split('\n').slice(-3).join('\n').trim()
+          toast(t('engine.dashNativePanelStartGeneric') + (detail ? ': ' + detail : ''), 'error', { duration: 8000 })
+          return
+        }
+
+        // —— 依赖缺失（fastapi/uvicorn）：弹安装引导 modal ——
+        const { showContentModal, showUpgradeModal } = await import('../../../components/modal.js')
+        const overlay = showContentModal({
+          title: t('engine.dashNativePanelDownTitle'),
+          width: 560,
+          content: `
+            <p style="margin:0 0 10px;line-height:1.6;color:var(--text-secondary)">
+              ${t('engine.dashNativePanelDepHint')}
+            </p>
+            <pre style="margin:0 0 12px;padding:12px 14px;background:var(--surface-2,#f5f5f4);border:1px solid var(--border,#e5e5e5);border-radius:6px;font-family:var(--hm-font-mono,monospace);font-size:13px;color:var(--text-primary);user-select:all;white-space:pre-wrap;word-break:break-all"><code>uv tool install --force 'hermes-agent[web] @ git+https://github.com/NousResearch/hermes-agent.git'</code></pre>
+            <p style="margin:0;font-size:12px;color:var(--text-tertiary,#999);line-height:1.6">
+              ${t('engine.dashNativePanelDown', { port })}
+            </p>
+          `,
+          buttons: [
+            { label: t('common.copy') || 'Copy', className: 'btn btn-secondary btn-sm', id: 'hm-dash-copy-cmd' },
+            { label: t('common.retry') || 'Retry', className: 'btn btn-secondary btn-sm', id: 'hm-dash-retry' },
+            { label: t('engine.dashNativePanelInstallWeb'), className: 'btn btn-primary btn-sm', id: 'hm-dash-install-web' },
+          ],
+        })
+        overlay.querySelector('#hm-dash-copy-cmd')?.addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(`uv tool install --force 'hermes-agent[web] @ git+https://github.com/NousResearch/hermes-agent.git'`)
+            toast(t('common.copied') || 'Copied', 'success')
+          } catch {}
+        })
+        overlay.querySelector('#hm-dash-retry')?.addEventListener('click', async () => {
+          // 重试：先 probe，再 auto-start
+          overlay.close()
+          const retryProbe = await api.hermesDashboardProbe().catch(() => ({ running: false, port }))
+          if (retryProbe?.running) {
+            try { await tryOpen(retryProbe.port || port) }
+            catch (err) { toast(t('engine.dashNativePanelOpenFail') + ': ' + (err?.message || err), 'error') }
+            return
+          }
+          const r = await startAndOpen()
+          if (!r.ok) {
+            toast(t('engine.dashNativePanelDown', { port: r.port || port }), 'warning')
+          }
+        })
+        overlay.querySelector('#hm-dash-install-web')?.addEventListener('click', async () => {
+          overlay.close()
+          // 进度 modal 复用现有 showUpgradeModal（已有日志窗 + 进度条 + 任务栏最小化）
+          const um = showUpgradeModal(t('engine.dashNativePanelInstallWebTitle'))
+          um.setProgressLabels({
+            preparing: t('engine.dashNativePanelInstallWebTitle'),
+            downloading: t('engine.dashNativePanelInstallWebTitle'),
+            installing: t('engine.dashNativePanelInstallWebTitle'),
+            done: t('engine.dashNativePanelInstallWebDone'),
+          })
+          let unlisten = null
+          // Gateway 是否运行 → 装前停、装后重启。Windows 下 uv 无法覆盖被占用的
+          // ~/.local/bin/hermes.exe（os error 32），所以必须先释放文件锁。
+          let gatewayWasRunning = false
+          try {
+            await api.hermesHealthCheck()
+            gatewayWasRunning = true
+          } catch { /* gateway not running, no pre-stop needed */ }
+
+          let installOk = false
+          try {
+            if (window.__TAURI_INTERNALS__) {
+              const { listen } = await import('@tauri-apps/api/event')
+              const u1 = await listen('hermes-install-log', (ev) => um.appendLog(String(ev.payload)))
+              const u2 = await listen('hermes-install-progress', (ev) => um.setProgress(Number(ev.payload) || 0))
+              unlisten = () => { u1(); u2() }
+            }
+
+            if (gatewayWasRunning) {
+              um.appendLog(t('engine.dashNativePanelInstallStoppingGw'))
+              try {
+                await api.hermesGatewayAction('stop')
+                await new Promise(r => setTimeout(r, 800))
+                um.appendLog(t('engine.dashNativePanelInstallGwStopped'))
+              } catch (err) {
+                um.appendLog(t('engine.dashNativePanelInstallGwWarn') + ': ' + (err?.message || err))
+              }
+            }
+
+            await api.installHermes('uv-tool', ['web'])
+            um.setDone(t('engine.dashNativePanelInstallWebDone'))
+            installOk = true
+          } catch (err) {
+            const msg = String(err?.message || err).replace(/^Error:\s*/, '')
+            um.setError(t('engine.dashNativePanelInstallWebFailed') + ': ' + msg)
+          } finally {
+            if (unlisten) { unlisten() }
+            if (gatewayWasRunning) {
+              um.appendLog(t('engine.dashNativePanelInstallRestartingGw'))
+              try {
+                await api.hermesGatewayAction('start')
+                um.appendLog(t('engine.dashNativePanelInstallGwRestarted'))
+              } catch (err) {
+                um.appendLog(t('engine.dashNativePanelInstallGwWarn') + ': ' + (err?.message || err))
+              }
+            }
+          }
+
+          // 安装成功 → 自动启动 dashboard 并打开浏览器，省去用户跑命令的步骤
+          if (installOk) {
+            um.appendLog('')
+            um.appendLog('▶ ' + t('engine.dashNativePanelStarting'))
+            const startRes = await api.hermesDashboardStart().catch((err) => ({
+              started: false, kind: 'spawn_failed',
+              log_tail: String(err?.message || err),
+            }))
+            if (startRes?.started) {
+              um.appendLog('✓ Dashboard @ 127.0.0.1:' + (startRes.port || port))
+              try {
+                await tryOpen(startRes.port || port)
+              } catch (err) {
+                um.appendLog('⚠ ' + t('engine.dashNativePanelOpenFail') + ': ' + (err?.message || err))
+              }
+            } else {
+              const detail = (startRes?.log_tail || '').split('\n').slice(-3).join('\n').trim()
+              um.appendLog('⚠ ' + t('engine.dashNativePanelStartGeneric') + (detail ? ': ' + detail : ''))
+            }
+          }
+        })
       } catch (err) {
         const { toast } = await import('../../../components/toast.js')
         toast(t('engine.dashNativePanelOpenFail') + ': ' + (err?.message || err), 'error')
+      } finally {
+        btn.disabled = false
+        btn.textContent = origText
       }
     })
     // Provider presets — 点击填充 URL

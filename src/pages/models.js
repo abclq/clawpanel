@@ -10,6 +10,12 @@ import { API_TYPES, PROVIDER_PRESETS, QTCOOL, MODEL_PRESETS, fetchQtcoolModels }
 import { t } from '../lib/i18n.js'
 import { scheduleGatewayRestart, fireRestartNow, cancelPendingRestart, onRestartState } from '../lib/gateway-restart-queue.js'
 
+// HTML 转义，防止错误信息中的特殊字符破坏页面或被注入
+function escapeHtml(str) {
+  if (str == null) return ''
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
 export async function render() {
   const page = document.createElement('div')
   page.className = 'page'
@@ -88,8 +94,29 @@ async function loadConfig(page, state) {
     renderDefaultBar(page, state)
     renderProviders(page, state)
   } catch (e) {
-    listEl.innerHTML = '<div style="color:var(--error);padding:20px">' + t('models.configLoadFailed') + ': ' + e + '</div>'
-    toast(t('models.configLoadFailed') + ': ' + e, 'error')
+    console.error('[models] loadConfig failed:', e)
+    const detail = escapeHtml(e?.stack || e?.message || String(e))
+    const shortMsg = escapeHtml(e?.message || String(e))
+    listEl.innerHTML = `
+      <div class="models-load-error" style="padding:36px 20px;text-align:center;max-width:560px;margin:0 auto">
+        <div style="display:inline-flex;align-items:center;justify-content:center;width:48px;height:48px;border-radius:50%;background:rgba(239,68,68,0.10);color:var(--error);margin-bottom:14px">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="12" y1="8" x2="12" y2="12"/>
+            <line x1="12" y1="16" x2="12.01" y2="16"/>
+          </svg>
+        </div>
+        <div style="color:var(--text-primary);font-weight:600;font-size:15px;margin-bottom:6px">${t('models.configLoadFailed')}</div>
+        <div style="color:var(--text-secondary);font-size:13px;line-height:1.65;margin-bottom:18px">${t('models.configLoadFailedHint')}</div>
+        <details style="text-align:left;margin-bottom:18px">
+          <summary style="cursor:pointer;color:var(--text-tertiary);font-size:12px;padding:4px 0;user-select:none">${t('models.configLoadDetails')}</summary>
+          <pre style="margin-top:8px;padding:10px 12px;background:var(--bg-secondary);border:1px solid var(--border-primary);border-radius:6px;font-size:11px;color:var(--text-secondary);white-space:pre-wrap;word-break:break-all;max-height:220px;overflow:auto;text-align:left">${detail}</pre>
+        </details>
+        <button class="btn btn-primary btn-sm" id="models-retry-load">${t('models.retryRestart')}</button>
+      </div>
+    `
+    listEl.querySelector('#models-retry-load')?.addEventListener('click', () => loadConfig(page, state))
+    toast(`${t('models.configLoadFailed')}: ${shortMsg}`, 'error')
   }
 }
 
@@ -116,7 +143,7 @@ function collectAllModels(config) {
       if (id) result.push({ provider: pk, modelId: id, full: `${pk}/${id}` })
     }
   }
-  return resul
+  return result
 }
 
 function getApiTypeLabel(apiType) {
@@ -1513,7 +1540,7 @@ async function handleBatchTest(section, state, providerKey) {
     const start = Date.now()
     try {
       await api.testModel(provider.baseUrl, provider.apiKey || '', modelId, provider.api || 'openai-completions')
-      const elapsed = Date.now() - star
+      const elapsed = Date.now() - start
       if (model && typeof model === 'object') {
         model.latency = elapsed
         model.lastTestAt = Date.now()
@@ -1522,7 +1549,7 @@ async function handleBatchTest(section, state, providerKey) {
       }
       ok++
     } catch (e) {
-      const elapsed = Date.now() - star
+      const elapsed = Date.now() - start
       if (model && typeof model === 'object') {
         model.latency = null
         model.lastTestAt = Date.now()
@@ -1554,7 +1581,7 @@ async function handleBatchTest(section, state, providerKey) {
     newBtn.classList.add('btn-secondary')
   }
 
-  const aborted = ctrl.abor
+  const aborted = ctrl.abort
   autoSave(state)
   if (aborted) {
     toast(t('models.batchTestAborted', { ok, fail, skip: ids.length - ok - fail }), 'warning')
@@ -1678,13 +1705,13 @@ async function testModel(btn, state, providerKey, idx) {
   const modelId = typeof model === 'string' ? model : model.id
 
   btn.disabled = true
-  const origText = btn.textConten
+  const origText = btn.textContent
   btn.textContent = t('models.testing')
 
   const start = Date.now()
   try {
     const reply = await api.testModel(provider.baseUrl, provider.apiKey || '', modelId, provider.api || 'openai-completions')
-    const elapsed = Date.now() - star
+    const elapsed = Date.now() - start
     // 记录到模型对象
     if (typeof model === 'object') {
       model.latency = elapsed
@@ -1707,7 +1734,7 @@ async function testModel(btn, state, providerKey, idx) {
       toast(t('models.testOk', { model: modelId, time: (elapsed / 1000).toFixed(1), reply: reply.slice(0, 50) }), 'success')
     }
   } catch (e) {
-    const elapsed = Date.now() - star
+    const elapsed = Date.now() - start
     if (typeof model === 'object') {
       model.latency = null
       model.lastTestAt = Date.now()
@@ -1717,7 +1744,7 @@ async function testModel(btn, state, providerKey, idx) {
     toast(t('models.testFail', { model: modelId, time: (elapsed / 1000).toFixed(1), error: e }), 'error', { duration: 8000 })
   } finally {
     btn.disabled = false
-    btn.textContent = origTex
+    btn.textContent = origText
     // 刷新卡片显示最新状态
     const page = btn.closest('.page')
     if (page) {

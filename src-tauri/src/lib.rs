@@ -263,6 +263,9 @@ pub fn run() {
             hermes::hermes_dashboard_theme_set,
             hermes::hermes_dashboard_plugins,
             hermes::hermes_dashboard_plugins_rescan,
+            hermes::hermes_dashboard_probe,
+            hermes::hermes_dashboard_start,
+            hermes::hermes_dashboard_stop,
             hermes::hermes_toolsets_list,
             hermes::hermes_cron_jobs_list,
         ])

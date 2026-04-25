@@ -5124,6 +5124,102 @@ fn normalize_base_url_for_api(raw: &str, api_type: &str) -> String {
     }
 }
 
+fn is_valid_env_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return false;
+    }
+    chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+}
+
+fn model_api_key_env_ref(raw: &str) -> Result<Option<String>, String> {
+    let value = raw.trim();
+    if value.starts_with("${") && value.ends_with('}') {
+        let key = &value[2..value.len() - 1];
+        if is_valid_env_key(key) {
+            return Ok(Some(key.to_string()));
+        }
+        return Err(format!("无效的环境变量引用: {value}"));
+    }
+    if let Some(key) = value.strip_prefix('$') {
+        if !key.is_empty() && is_valid_env_key(key) {
+            return Ok(Some(key.to_string()));
+        }
+    }
+    Ok(None)
+}
+
+fn parse_dotenv_line(line: &str) -> Option<(String, String)> {
+    let line = line.trim().trim_start_matches('\u{feff}');
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+    let line = line.strip_prefix("export ").unwrap_or(line).trim();
+    let (key, value) = line.split_once('=')?;
+    let key = key.trim();
+    if !is_valid_env_key(key) {
+        return None;
+    }
+    let mut value = value.trim().to_string();
+    if value.len() >= 2 {
+        let bytes = value.as_bytes();
+        if (bytes[0] == b'"' && bytes[value.len() - 1] == b'"')
+            || (bytes[0] == b'\'' && bytes[value.len() - 1] == b'\'')
+        {
+            value = value[1..value.len() - 1].to_string();
+        }
+    }
+    Some((key.to_string(), value))
+}
+
+fn model_env_values() -> HashMap<String, String> {
+    let mut values = HashMap::new();
+    if let Ok(cfg) = load_openclaw_json() {
+        if let Some(env) = cfg.get("env").and_then(|v| v.as_object()) {
+            for (key, value) in env {
+                if !is_valid_env_key(key) {
+                    continue;
+                }
+                if let Some(s) = value.as_str() {
+                    values.insert(key.clone(), s.to_string());
+                } else if value.is_number() || value.is_boolean() {
+                    values.insert(key.clone(), value.to_string());
+                }
+            }
+        }
+    }
+    let env_path = super::openclaw_dir().join(".env");
+    if let Ok(content) = fs::read_to_string(env_path) {
+        for line in content.lines() {
+            if let Some((key, value)) = parse_dotenv_line(line) {
+                values.entry(key).or_insert(value);
+            }
+        }
+    }
+    values
+}
+
+fn resolve_model_api_key(api_key: &str) -> Result<String, String> {
+    let Some(key) = model_api_key_env_ref(api_key)? else {
+        return Ok(api_key.to_string());
+    };
+    let values = model_env_values();
+    if let Some(value) = values.get(&key).filter(|v| !v.is_empty()) {
+        return Ok(value.clone());
+    }
+    if let Ok(value) = std::env::var(&key) {
+        if !value.is_empty() {
+            return Ok(value);
+        }
+    }
+    Err(format!(
+        "API Key 引用了环境变量 {key}，但未在 openclaw.json env、~/.openclaw/.env 或当前进程环境中找到"
+    ))
+}
+
 fn extract_error_message(text: &str, status: reqwest::StatusCode) -> String {
     serde_json::from_str::<serde_json::Value>(text)
         .ok()
@@ -5147,6 +5243,7 @@ pub async fn test_model(
 ) -> Result<String, String> {
     let api_type = normalize_model_api_type(api_type.as_deref().unwrap_or("openai-completions"));
     let base = normalize_base_url_for_api(&base_url, api_type);
+    let api_key = resolve_model_api_key(&api_key)?;
 
     let client =
         crate::commands::build_http_client_no_proxy(std::time::Duration::from_secs(30), None)
@@ -5420,6 +5517,7 @@ pub async fn test_model_verbose(
     let api_type_norm =
         normalize_model_api_type(api_type.as_deref().unwrap_or("openai-completions"));
     let base = normalize_base_url_for_api(&base_url, api_type_norm);
+    let api_key = resolve_model_api_key(&api_key)?;
     let start = Instant::now();
 
     let client =
@@ -5649,6 +5747,7 @@ pub async fn list_remote_models(
 ) -> Result<Vec<String>, String> {
     let api_type = normalize_model_api_type(api_type.as_deref().unwrap_or("openai-completions"));
     let base = normalize_base_url_for_api(&base_url, api_type);
+    let api_key = resolve_model_api_key(&api_key)?;
 
     let client =
         crate::commands::build_http_client_no_proxy(std::time::Duration::from_secs(15), None)

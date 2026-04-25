@@ -3078,6 +3078,72 @@ function _normalizeBaseUrl(raw) {
   return base
 }
 
+function isValidEnvKey(key) {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(key || '')
+}
+
+function modelApiKeyEnvRef(raw) {
+  const value = String(raw || '').trim()
+  if (value.startsWith('${') && value.endsWith('}')) {
+    const key = value.slice(2, -1)
+    if (isValidEnvKey(key)) return key
+    throw new Error(`无效的环境变量引用: ${value}`)
+  }
+  if (value.startsWith('$')) {
+    const key = value.slice(1)
+    if (isValidEnvKey(key)) return key
+  }
+  return null
+}
+
+function parseDotenvLine(line) {
+  let text = String(line || '').trim().replace(/^\uFEFF/, '')
+  if (!text || text.startsWith('#')) return null
+  if (text.startsWith('export ')) text = text.slice(7).trim()
+  const eq = text.indexOf('=')
+  if (eq < 0) return null
+  const key = text.slice(0, eq).trim()
+  if (!isValidEnvKey(key)) return null
+  let value = text.slice(eq + 1).trim()
+  if (value.length >= 2) {
+    const first = value[0]
+    const last = value[value.length - 1]
+    if ((first === '"' && last === '"') || (first === '\'' && last === '\'')) {
+      value = value.slice(1, -1)
+    }
+  }
+  return [key, value]
+}
+
+function modelEnvValues() {
+  const values = {}
+  const cfg = readOpenclawConfigOptional()
+  if (cfg.env && typeof cfg.env === 'object' && !Array.isArray(cfg.env)) {
+    for (const [key, value] of Object.entries(cfg.env)) {
+      if (!isValidEnvKey(key)) continue
+      if (typeof value === 'string') values[key] = value
+      else if (typeof value === 'number' || typeof value === 'boolean') values[key] = String(value)
+    }
+  }
+  const envPath = path.join(OPENCLAW_DIR, '.env')
+  if (fs.existsSync(envPath)) {
+    for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+      const parsed = parseDotenvLine(line)
+      if (parsed && values[parsed[0]] === undefined) values[parsed[0]] = parsed[1]
+    }
+  }
+  return values
+}
+
+function resolveModelApiKey(apiKey) {
+  const key = modelApiKeyEnvRef(apiKey)
+  if (!key) return apiKey || ''
+  const values = modelEnvValues()
+  if (values[key]) return values[key]
+  if (process.env[key]) return process.env[key]
+  throw new Error(`API Key 引用了环境变量 ${key}，但未在 openclaw.json env、~/.openclaw/.env 或当前进程环境中找到`)
+}
+
 // 从 SSE 流文本中累积 OpenAI 风格的 delta.content / delta.reasoning_content
 // 同时兼容 Anthropic streaming (content_block_delta)
 // 格式示例：
@@ -4978,6 +5044,7 @@ const handlers = {
     const type = ['anthropic', 'anthropic-messages'].includes(apiType) ? 'anthropic-messages'
       : apiType === 'google-gemini' ? 'google-gemini'
       : 'openai-completions'
+    apiKey = resolveModelApiKey(apiKey)
     let base = _normalizeBaseUrl(baseUrl)
     // 仅 Anthropic 强制补 /v1，OpenAI 兼容类不强制（火山引擎等用 /v3）
     if (type === 'anthropic-messages' && !/\/v1$/i.test(base)) base += '/v1'
@@ -5049,6 +5116,7 @@ const handlers = {
     const type = ['anthropic', 'anthropic-messages'].includes(apiType) ? 'anthropic-messages'
       : apiType === 'google-gemini' ? 'google-gemini'
       : 'openai-completions'
+    apiKey = resolveModelApiKey(apiKey)
     let base = _normalizeBaseUrl(baseUrl)
     if (type === 'anthropic-messages' && !/\/v1$/i.test(base)) base += '/v1'
     const t0 = Date.now()
@@ -5155,6 +5223,7 @@ const handlers = {
     const type = ['anthropic', 'anthropic-messages'].includes(apiType) ? 'anthropic-messages'
       : apiType === 'google-gemini' ? 'google-gemini'
       : 'openai-completions'
+    apiKey = resolveModelApiKey(apiKey)
     let base = _normalizeBaseUrl(baseUrl)
     // 仅 Anthropic 强制补 /v1，OpenAI 兼容类不强制（火山引擎等用 /v3）
     if (type === 'anthropic-messages' && !/\/v1$/i.test(base)) base += '/v1'
@@ -5543,6 +5612,26 @@ const handlers = {
     const cfg = fs.existsSync(CONFIG_PATH) ? JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')) : {}
     const bindings = cfg.bindings || []
     return { bindings }
+  },
+
+  get_agent_bindings({ agentId } = {}) {
+    const cfg = fs.existsSync(CONFIG_PATH) ? JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')) : {}
+    const all = Array.isArray(cfg.bindings) ? cfg.bindings : []
+    const bindings = agentId ? all.filter(b => b?.agentId === agentId) : all
+    return { bindings }
+  },
+
+  delete_agent_all_bindings({ agentId } = {}) {
+    if (!agentId) throw new Error('agentId required')
+    const cfg = readOpenclawConfigOptional()
+    const before = Array.isArray(cfg.bindings) ? cfg.bindings.length : 0
+    cfg.bindings = (cfg.bindings || []).filter(b => b?.agentId !== agentId)
+    const removed = before - cfg.bindings.length
+    if (removed > 0) {
+      writeOpenclawConfigFile(cfg)
+      triggerGatewayReloadNonBlocking('delete_agent_all_bindings')
+    }
+    return { ok: true, removed }
   },
 
   save_agent_binding({ agentId, channel, accountId, bindingConfig }) {
@@ -7185,6 +7274,137 @@ const handlers = {
     return { ok: true, count: handlers.hermes_dashboard_plugins().length }
   },
 
+  async hermes_dashboard_probe() {
+    const port = handlers._hermesDashboardPort()
+    const running = await _tcpProbe('127.0.0.1', port, 800)
+    return { running, port }
+  },
+
+  // 共用：解析 dashboard.port（缩进感知，避免误匹配 gateway 块的 port）
+  _hermesDashboardPort() {
+    let port = 9119
+    try {
+      const cfg = path.join(hermesHome(), 'config.yaml')
+      if (fs.existsSync(cfg)) {
+        const raw = fs.readFileSync(cfg, 'utf8')
+        let inDashboard = false
+        for (const line of raw.split('\n')) {
+          const t = line.trim()
+          if (!t || t.startsWith('#')) continue
+          const indent = line.length - line.trimStart().length
+          if (indent === 0) { inDashboard = t === 'dashboard:' || t.startsWith('dashboard:'); continue }
+          if (inDashboard && t.startsWith('port:')) {
+            const p = parseInt(t.replace(/^port:/, '').trim(), 10)
+            if (Number.isFinite(p) && p > 0) { port = p; break }
+          }
+        }
+      }
+    } catch {}
+    return port
+  },
+
+  async hermes_dashboard_start() {
+    const port = handlers._hermesDashboardPort()
+    // 1. 已运行？
+    if (await _tcpProbe('127.0.0.1', port, 500)) {
+      return { started: true, already_running: true, port }
+    }
+    // 2. 清残留 PID
+    if (handlers._dashPid) {
+      try { process.kill(handlers._dashPid, 'SIGKILL') } catch {}
+      handlers._dashPid = 0
+    }
+    const home = hermesHome()
+    const logPath = path.join(home, 'dashboard-run.log')
+    let out, err
+    try {
+      out = fs.openSync(logPath, 'w')
+      err = fs.openSync(logPath, 'a')
+    } catch (e) {
+      throw new Error(`创建日志文件失败: ${e.message || e}`)
+    }
+    // 注入 .env
+    const envVars = { ...process.env, PATH: hermesEnhancedPath() }
+    const envPath = path.join(home, '.env')
+    if (fs.existsSync(envPath)) {
+      for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
+        const t = line.trim()
+        if (!t || t.startsWith('#')) continue
+        const eq = t.indexOf('=')
+        if (eq > 0) envVars[t.slice(0, eq).trim()] = t.slice(eq + 1).trim()
+      }
+    }
+    const child = spawn('hermes', ['dashboard'], {
+      cwd: home,
+      env: envVars,
+      stdio: ['ignore', out, err],
+      detached: true,
+      windowsHide: true,
+    })
+    child.unref()
+    const pid = child.pid
+    handlers._dashPid = pid
+
+    let earlyExitCode = null
+    let earlyExitFlag = false
+    child.once('exit', (code) => { earlyExitCode = code; earlyExitFlag = true })
+
+    // 3. 等待 - 端口起来 / 进程提前死 / 超时（90s 覆盖首次 npm build）
+    const deadline = Date.now() + 90000
+    while (Date.now() < deadline) {
+      if (earlyExitFlag) {
+        handlers._dashPid = 0
+        const raw = fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : ''
+        const tail = raw.split('\n').slice(-40).join('\n')
+        const lower = raw.toLowerCase()
+        let kind = 'spawn_failed'
+        if (lower.includes('web ui dependencies not installed')
+          || lower.includes("no module named 'fastapi'")
+          || (lower.includes('import error') && lower.includes('fastapi'))) {
+          kind = 'deps_missing'
+        } else if (lower.includes("no module named 'fcntl'")
+          || lower.includes("no module named 'termios'")
+          || lower.includes("no module named 'pty'")
+          || lower.includes("no module named 'tty'")
+          || lower.includes("no module named 'pwd'")
+          || lower.includes("no module named 'grp'")) {
+          // Hermes 上游 bug: pty_bridge.py / memory_tool.py 在 Windows 上 import POSIX-only 模块
+          // https://github.com/NousResearch/hermes-agent/issues/5246
+          kind = 'posix_only_module'
+        } else if (lower.includes('address already in use')
+          || lower.includes('address in use')
+          || (lower.includes('port') && lower.includes('already in use'))) {
+          kind = 'port_in_use'
+        }
+        return { started: false, kind, exit_code: earlyExitCode, port, log_tail: tail }
+      }
+      if (await _tcpProbe('127.0.0.1', port, 300)) {
+        return { started: true, already_running: false, port, pid }
+      }
+      await new Promise(r => setTimeout(r, 500))
+    }
+    // 超时
+    const raw = fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : ''
+    const tail = raw.split('\n').slice(-40).join('\n')
+    return { started: false, kind: 'timeout', port, pid, log_tail: tail }
+  },
+
+  async hermes_dashboard_stop() {
+    if (!handlers._dashPid) return false
+    try {
+      if (isWindows) {
+        spawnSync('taskkill', ['/F', '/PID', String(handlers._dashPid)], { windowsHide: true })
+      } else {
+        process.kill(handlers._dashPid, 'SIGKILL')
+      }
+      handlers._dashPid = 0
+      return true
+    } catch {
+      handlers._dashPid = 0
+      return false
+    }
+  },
+
   hermes_toolsets_list() {
     const r = runHermesSilent('hermes', ['tools', 'list', '--platform', 'cli'])
     return { raw: r.ok ? r.stdout : '' }
@@ -7623,10 +7843,41 @@ const handlers = {
     })
   },
 
+  // 解析 ~/.hermes/config.yaml 中 `skills.disabled` 列表（与 Rust 端
+  // commands/hermes.rs:read_disabled_skills 同语义；缩进感知）
+  _readHermesDisabledSkills() {
+    const configPath = path.join(hermesHome(), 'config.yaml')
+    if (!fs.existsSync(configPath)) return []
+    let raw
+    try { raw = fs.readFileSync(configPath, 'utf8') } catch { return [] }
+    const out = []
+    let inSkills = false
+    let inDisabled = false
+    for (let line of raw.split('\n')) {
+      // 去掉行内注释
+      const hash = line.indexOf('#')
+      if (hash >= 0) line = line.slice(0, hash)
+      const trimmedFull = line.replace(/\s+$/, '')
+      if (!trimmedFull) continue
+      const indent = trimmedFull.length - trimmedFull.trimStart().length
+      const body = trimmedFull.trimStart()
+      if (indent === 0) {
+        inSkills = body.startsWith('skills:')
+        inDisabled = false
+      } else if (inSkills && indent === 2 && body.startsWith('disabled:')) {
+        inDisabled = true
+      } else if (inSkills && inDisabled && indent >= 4 && body.startsWith('- ')) {
+        const name = body.replace(/^-\s+/, '').trim().replace(/^["']|["']$/g, '')
+        if (name) out.push(name)
+      }
+    }
+    return out
+  },
+
   hermes_skills_list() {
     const skillsDir = path.join(hermesHome(), 'skills')
     if (!fs.existsSync(skillsDir)) return []
-    const disabled = readHermesDisabledSkills()
+    const disabled = handlers._readHermesDisabledSkills()
     const isEnabled = (name) => !disabled.includes(name)
 
     const categories = []
@@ -7861,6 +8112,69 @@ const handlers = {
       if (fs.existsSync(home)) fs.rmSync(home, { recursive: true, force: true })
     }
     return 'Hermes Agent 已卸载'
+  },
+
+  // ============================================================================
+  // Web 模式兼容 stub —— 桌面专属或尚未移植的命令
+  // ----------------------------------------------------------------------------
+  // 返回安全默认值（避免 UI 报错）或抛出明确错误（仅在用户主动触发时显示）。
+  // 这些命令的 Rust 端实现位于 src-tauri/src/commands/* ，移植后请删除对应 stub。
+  // ============================================================================
+
+  // —— 前端热更新（Tauri 桌面专属，浏览器刷新即得最新）——
+  check_frontend_update() { return { hasUpdate: false } },
+  download_frontend_update() { throw new Error('Web 模式无需前端热更新，刷新浏览器即可') },
+  rollback_frontend_update() { throw new Error('Web 模式不支持前端热更新回滚') },
+  get_update_status() { return { status: 'idle', mode: 'web' } },
+  check_panel_update() { return { hasUpdate: false } },
+
+  // —— 应用重启（Web 端由 tauri-api.js 包装层直接调 location.reload，到这里说明绕过了包装）——
+  relaunch_app() { throw new Error('Web 模式请直接刷新浏览器') },
+
+  // —— Cloudflare Tunnel / ClawApp 安装（Tauri 桌面专属）——
+  install_cftunnel() { throw new Error('Web 模式不支持安装 Cloudflare Tunnel，请使用桌面客户端') },
+  cftunnel_action() { throw new Error('Web 模式不支持操作 Cloudflare Tunnel，请使用桌面客户端') },
+  get_cftunnel_status() { return { installed: false, running: false, mode: 'web' } },
+  get_cftunnel_logs() { return '' },
+  install_clawapp() { throw new Error('Web 模式不支持安装 ClawApp 移动端，请使用桌面客户端') },
+  get_clawapp_status() { return { installed: false, mode: 'web' } },
+
+  // —— 渠道插件状态/操作（暂未在 Node 实现，先抛友好错误）——
+  check_weixin_plugin_status() {
+    // 静默返回未安装即可，UI 会显示"未安装"
+    return { installed: false, version: null, plugin: null }
+  },
+  diagnose_channel() {
+    return { ok: false, error: 'Web 模式暂未实现渠道诊断，请使用桌面客户端' }
+  },
+  run_channel_action() {
+    throw new Error('Web 模式暂未实现渠道操作，请使用桌面客户端')
+  },
+  repair_qqbot_channel_setup() {
+    throw new Error('Web 模式暂未实现 QQ Bot 自动修复，请使用桌面客户端')
+  },
+
+  // —— 系统体检（暂未在 Node 实现）——
+  doctor_check() {
+    return { success: false, output: '', errors: 'Web 模式暂未实现 openclaw doctor，请使用桌面客户端' }
+  },
+  doctor_fix() {
+    return { success: false, output: '', errors: 'Web 模式暂未实现 openclaw doctor --fix，请使用桌面客户端' }
+  },
+
+  // —— 配置/Skills 校验（暂未在 Node 实现）——
+  validate_openclaw_config() {
+    // 至少做一次基本 JSON 形状校验
+    try {
+      const cfg = readOpenclawConfigOptional()
+      if (!cfg || typeof cfg !== 'object') throw new Error('配置文件为空或格式错误')
+      return { ok: true, warnings: [] }
+    } catch (e) {
+      return { ok: false, errors: [String(e?.message || e)] }
+    }
+  },
+  skills_validate() {
+    throw new Error('Web 模式暂未实现 Skills 校验，请使用桌面客户端')
   },
 }
 

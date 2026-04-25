@@ -99,10 +99,11 @@
 }
 
 [data-engine="xintian"] .xt-stage {
+  /* 移除 1240px 硬限，宽屏填满；水平 padding 自适应。
+     内部 .xt-hero / .xt-section-head 自带 max-width 保证可读性。 */
   position: relative;
-  max-width: 1240px;
-  margin: 0 auto;
-  padding: 56px 48px 96px;
+  width: 100%;
+  padding: 56px clamp(20px, 4vw, 80px) 96px;
 }
 
 @media (max-width: 860px) {
