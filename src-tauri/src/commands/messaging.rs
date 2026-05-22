@@ -148,6 +148,7 @@ fn preserve_messaging_credential_refs(
         "signingSecret",
         "token",
         "tokenFile",
+        "webhookSecret",
     ] {
         if !form_obj.contains_key(key) {
             continue;
@@ -188,6 +189,7 @@ fn channel_root_has_messaging_credential(root: &Map<String, Value>) -> bool {
         "signingSecret",
         "token",
         "tokenFile",
+        "webhookSecret",
     ]
     .iter()
     .any(|key| has_configured_messaging_value(root.get(*key)))
@@ -237,14 +239,38 @@ fn required_channel_credential_fields(
     }
 }
 
-fn channel_diagnosis_credentials_ready(platform: &str, form: &Map<String, Value>) -> bool {
-    let required_fields = required_channel_credential_fields(platform, form);
-    if required_fields.is_empty() {
-        return channel_root_has_messaging_credential(form);
+fn channel_any_credential_fields(platform: &str) -> Vec<(&'static str, &'static str)> {
+    match platform_storage_key(platform) {
+        "zalo" => vec![("botToken", "Bot Token"), ("tokenFile", "Token File")],
+        _ => vec![],
     }
-    required_fields
+}
+
+fn channel_diagnosis_credentials_ready(platform: &str, form: &Map<String, Value>) -> bool {
+    if platform_storage_key(platform) == "zalouser" {
+        return true;
+    }
+    let required_fields = required_channel_credential_fields(platform, form);
+    if !required_fields.is_empty() {
+        return required_fields
+            .iter()
+            .all(|(key, _)| has_configured_messaging_value(form.get(*key)));
+    }
+    let any_fields = channel_any_credential_fields(platform);
+    if !any_fields.is_empty() {
+        return any_fields
+            .iter()
+            .any(|(key, _)| has_configured_messaging_value(form.get(*key)));
+    }
+    channel_root_has_messaging_credential(form)
+}
+
+fn credential_labels(fields: &[(&'static str, &'static str)]) -> String {
+    fields
         .iter()
-        .all(|(key, _)| has_configured_messaging_value(form.get(*key)))
+        .map(|(_, label)| *label)
+        .collect::<Vec<_>>()
+        .join(" / ")
 }
 
 fn json_string_list(value: Option<&Value>) -> Vec<String> {
@@ -314,35 +340,50 @@ fn build_openclaw_channel_diagnosis(
     }));
 
     let required_fields = required_channel_credential_fields(storage_key, form);
+    let any_fields = channel_any_credential_fields(storage_key);
     let missing: Vec<&str> = required_fields
         .iter()
         .filter(|(key, _)| !has_configured_messaging_value(form.get(*key)))
         .map(|(_, label)| *label)
         .collect();
-    let credential_ok = if required_fields.is_empty() {
-        channel_root_has_messaging_credential(form)
+    let any_credential_ok = if any_fields.is_empty() {
+        false
     } else {
-        missing.is_empty()
+        any_fields
+            .iter()
+            .any(|(key, _)| has_configured_messaging_value(form.get(*key)))
     };
-    let required_labels = required_fields
-        .iter()
-        .map(|(_, label)| *label)
-        .collect::<Vec<_>>()
-        .join(" / ");
+    let credential_ok = if storage_key == "zalouser" {
+        config_exists
+    } else if !required_fields.is_empty() {
+        missing.is_empty()
+    } else if !any_fields.is_empty() {
+        any_credential_ok
+    } else {
+        channel_root_has_messaging_credential(form)
+    };
+    let required_labels = credential_labels(&required_fields);
+    let any_labels = credential_labels(&any_fields);
     checks.push(json!({
         "id": "credentials",
         "ok": credential_ok,
-        "title": "必要凭证字段",
-        "detail": if credential_ok {
-            if required_fields.is_empty() {
-                "已检测到可用凭证字段。".to_string()
-            } else {
+        "title": if storage_key == "zalouser" { "登录/会话配置" } else { "必要凭证字段" },
+        "detail": if storage_key == "zalouser" {
+            "Zalo Personal 通过二维码登录保存本地会话；配置已保存后，请按手动命令完成或刷新登录。".to_string()
+        } else if credential_ok {
+            if !required_fields.is_empty() {
                 format!("已填写 {}。", required_labels)
+            } else if !any_fields.is_empty() {
+                format!("已填写 {} 其中一项。", any_labels)
+            } else {
+                "已检测到可用凭证字段。".to_string()
             }
-        } else if missing.is_empty() {
-            "未检测到可用凭证字段，请检查渠道配置。".to_string()
-        } else {
+        } else if !missing.is_empty() {
             format!("缺少 {}，请补齐后保存。", missing.join(" / "))
+        } else if !any_fields.is_empty() {
+            format!("缺少 {}，至少填写一项后保存。", any_labels)
+        } else {
+            "未检测到可用凭证字段，请检查渠道配置。".to_string()
         }
     }));
 
@@ -519,6 +560,42 @@ fn put_bool_from_form(entry: &mut Map<String, Value>, key: &str, raw: &str) {
     }
 }
 
+fn put_number_from_form(entry: &mut Map<String, Value>, key: &str, raw: &str) {
+    let value = raw.trim();
+    if value.is_empty() {
+        return;
+    }
+    if let Ok(number) = value.parse::<f64>() {
+        if let Some(json_number) = serde_json::Number::from_f64(number) {
+            entry.insert(key.into(), Value::Number(json_number));
+        }
+    }
+}
+
+fn normalize_numeric_form_value(map: &mut Map<String, Value>, key: &str) {
+    let Some(value) = map.get(key).cloned() else {
+        return;
+    };
+    match value {
+        Value::String(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                map.remove(key);
+                return;
+            }
+            if let Ok(number) = trimmed.parse::<f64>() {
+                if let Some(json_number) = serde_json::Number::from_f64(number) {
+                    map.insert(key.into(), Value::Number(json_number));
+                }
+            }
+        }
+        Value::Null => {
+            map.remove(key);
+        }
+        _ => {}
+    }
+}
+
 fn put_bool_value_if_present(entry: &mut Map<String, Value>, key: &str, value: Option<&Value>) {
     match value {
         Some(Value::Bool(v)) => {
@@ -581,7 +658,15 @@ fn normalize_messaging_platform_form(
 
     let needs_access_defaults = matches!(
         storage_key,
-        "telegram" | "discord" | "feishu" | "slack" | "signal" | "msteams" | "whatsapp"
+        "telegram"
+            | "discord"
+            | "feishu"
+            | "slack"
+            | "signal"
+            | "msteams"
+            | "whatsapp"
+            | "zalo"
+            | "zalouser"
     );
     let has_dm_field = normalized.contains_key("dmPolicy") || needs_access_defaults;
     let has_group_field = normalized.contains_key("groupPolicy") || needs_access_defaults;
@@ -629,6 +714,34 @@ fn normalize_messaging_platform_form(
                 };
                 normalized.insert("requireMention".into(), Value::Bool(value));
             }
+        }
+    }
+
+    if normalized.contains_key("groupAllowFrom") {
+        let items = json_array_from_csv_value(normalized.get("groupAllowFrom"));
+        normalized.insert("groupAllowFrom".into(), Value::Array(items));
+    }
+
+    normalize_numeric_form_value(&mut normalized, "mediaMaxMb");
+    normalize_numeric_form_value(&mut normalized, "historyLimit");
+
+    if storage_key == "zalouser" && normalized.contains_key("dangerouslyAllowNameMatching") {
+        let value = match normalized.get("dangerouslyAllowNameMatching") {
+            Some(Value::Bool(v)) => Some(*v),
+            Some(Value::String(raw)) => {
+                let trimmed = raw.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(bool_from_form_value(trimmed).unwrap_or(false))
+                }
+            }
+            _ => None,
+        };
+        if let Some(v) = value {
+            normalized.insert("dangerouslyAllowNameMatching".into(), Value::Bool(v));
+        } else {
+            normalized.remove("dangerouslyAllowNameMatching");
         }
     }
 
@@ -1253,6 +1366,8 @@ pub async fn read_platform_config(
                             k.clone(),
                             Value::String(if b { "true" } else { "false" }.into()),
                         );
+                    } else if v.is_number() {
+                        form.insert(k.clone(), Value::String(v.to_string()));
                     }
                 }
             }
@@ -1390,6 +1505,112 @@ pub async fn save_messaging_platform(
                 account_id.as_deref(),
                 entry,
             )?;
+        }
+        "zalo" => {
+            let bot_token = form_string(form_obj, "botToken");
+            let token_file = form_string(form_obj, "tokenFile");
+            if bot_token.is_empty() && token_file.is_empty() {
+                return Err("Bot Token 或 Token File 至少填写一项".into());
+            }
+
+            let mut entry = Map::new();
+            entry.insert("enabled".into(), Value::Bool(true));
+            put_string(&mut entry, "botToken", bot_token);
+            put_string(&mut entry, "tokenFile", token_file);
+            put_string(
+                &mut entry,
+                "webhookUrl",
+                form_string(form_obj, "webhookUrl"),
+            );
+            put_string(
+                &mut entry,
+                "webhookSecret",
+                form_string(form_obj, "webhookSecret"),
+            );
+            put_string(
+                &mut entry,
+                "webhookPath",
+                form_string(form_obj, "webhookPath"),
+            );
+            put_string(&mut entry, "proxy", form_string(form_obj, "proxy"));
+            put_string(
+                &mut entry,
+                "responsePrefix",
+                form_string(form_obj, "responsePrefix"),
+            );
+            put_string(&mut entry, "dmPolicy", form_string(form_obj, "dmPolicy"));
+            put_string(
+                &mut entry,
+                "groupPolicy",
+                form_string(form_obj, "groupPolicy"),
+            );
+            put_array_from_form_value(&mut entry, "allowFrom", form_obj.get("allowFrom"));
+            put_array_from_form_value(&mut entry, "groupAllowFrom", form_obj.get("groupAllowFrom"));
+            if let Some(value) = form_obj.get("mediaMaxMb").and_then(|v| v.as_f64()) {
+                if let Some(number) = serde_json::Number::from_f64(value) {
+                    entry.insert("mediaMaxMb".into(), Value::Number(number));
+                }
+            } else {
+                put_number_from_form(
+                    &mut entry,
+                    "mediaMaxMb",
+                    &form_string(form_obj, "mediaMaxMb"),
+                );
+            }
+            preserve_messaging_credential_refs(&mut entry, form_obj, &current_saved);
+            merge_channel_entry_for_account(
+                channels_map,
+                &storage_key,
+                account_id.as_deref(),
+                entry,
+            )?;
+            ensure_plugin_allowed(&mut cfg, "zalo")?;
+        }
+        "zalouser" => {
+            let mut entry = Map::new();
+            entry.insert("enabled".into(), Value::Bool(true));
+            put_string(&mut entry, "profile", form_string(form_obj, "profile"));
+            put_string(
+                &mut entry,
+                "messagePrefix",
+                form_string(form_obj, "messagePrefix"),
+            );
+            put_string(
+                &mut entry,
+                "responsePrefix",
+                form_string(form_obj, "responsePrefix"),
+            );
+            put_string(&mut entry, "dmPolicy", form_string(form_obj, "dmPolicy"));
+            put_string(
+                &mut entry,
+                "groupPolicy",
+                form_string(form_obj, "groupPolicy"),
+            );
+            put_array_from_form_value(&mut entry, "allowFrom", form_obj.get("allowFrom"));
+            put_array_from_form_value(&mut entry, "groupAllowFrom", form_obj.get("groupAllowFrom"));
+            put_bool_value_if_present(
+                &mut entry,
+                "dangerouslyAllowNameMatching",
+                form_obj.get("dangerouslyAllowNameMatching"),
+            );
+            if let Some(value) = form_obj.get("historyLimit").and_then(|v| v.as_f64()) {
+                if let Some(number) = serde_json::Number::from_f64(value) {
+                    entry.insert("historyLimit".into(), Value::Number(number));
+                }
+            } else {
+                put_number_from_form(
+                    &mut entry,
+                    "historyLimit",
+                    &form_string(form_obj, "historyLimit"),
+                );
+            }
+            merge_channel_entry_for_account(
+                channels_map,
+                &storage_key,
+                account_id.as_deref(),
+                entry,
+            )?;
+            ensure_plugin_allowed(&mut cfg, "zalouser")?;
         }
         "qqbot" => {
             let app_id = form_obj
@@ -1891,6 +2112,11 @@ pub async fn verify_bot_token(platform: String, form: Value) -> Result<Value, St
         "feishu" => verify_feishu(&client, form_obj).await,
         "dingtalk" | "dingtalk-connector" => verify_dingtalk(&client, form_obj).await,
         "slack" => verify_slack(&client, form_obj).await,
+        "zalo" => verify_zalo(&client, form_obj).await,
+        "zalouser" => Ok(json!({
+            "valid": true,
+            "warnings": ["Zalo Personal 通过二维码登录维护本地会话；请使用 openclaw channels status --probe 检查登录状态"]
+        })),
         "matrix" => verify_matrix(&client, form_obj).await,
         "signal" => verify_signal(&client, form_obj).await,
         "msteams" => verify_msteams(&client, form_obj).await,
@@ -4482,6 +4708,64 @@ async fn verify_telegram(
         Ok(json!({
             "valid": false,
             "errors": [desc]
+        }))
+    }
+}
+
+// ── Zalo Bot 凭证校验 ─────────────────────────────────────
+
+async fn verify_zalo(client: &reqwest::Client, form: &Map<String, Value>) -> Result<Value, String> {
+    let bot_token = form
+        .get("botToken")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let token_file = form
+        .get("tokenFile")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+
+    if bot_token.is_empty() {
+        if token_file.is_empty() {
+            return Ok(json!({ "valid": false, "errors": ["请填写 Bot Token 或 Token File"] }));
+        }
+        return Ok(json!({
+            "valid": true,
+            "warnings": ["已配置 Token File；桌面端不会读取外部文件做在线校验"]
+        }));
+    }
+
+    let resp = client
+        .post(format!(
+            "https://bot-api.zaloplatforms.com/bot{}/getMe",
+            bot_token
+        ))
+        .header("Content-Type", "application/json")
+        .send()
+        .await
+        .map_err(|e| format!("Zalo API 连接失败: {}", e))?;
+
+    let body: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("解析响应失败: {}", e))?;
+
+    if body.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+        Ok(json!({
+            "valid": true,
+            "errors": [],
+            "details": ["Zalo Bot Token 已通过 getMe 校验"]
+        }))
+    } else {
+        let msg = body
+            .get("description")
+            .or_else(|| body.get("message"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("Zalo Bot Token 无效");
+        Ok(json!({
+            "valid": false,
+            "errors": [msg]
         }))
     }
 }

@@ -365,6 +365,101 @@ test('通用渠道诊断会识别钉钉 Client ID 和 Client Secret', () => {
   assert.equal(result.checks.find(item => item.id === 'online_verify')?.ok, true)
 })
 
+test('Zalo 渠道保存会补齐策略并保留 Bot Token 或 Token File', () => {
+  const tokenForm = normalizeMessagingPlatformForm('zalo', {
+    botToken: 'zalo-token',
+    groupAllowFrom: 'group-1, group-2',
+    mediaMaxMb: '25',
+  })
+  const tokenFileForm = normalizeMessagingPlatformForm('zalo', {
+    tokenFile: '/run/secrets/zalo-token',
+  })
+
+  assert.equal(tokenForm.botToken, 'zalo-token')
+  assert.equal(tokenForm.dmPolicy, 'pairing')
+  assert.equal(tokenForm.groupPolicy, 'allowlist')
+  assert.deepEqual(tokenForm.groupAllowFrom, ['group-1', 'group-2'])
+  assert.equal(tokenForm.mediaMaxMb, 25)
+  assert.equal(tokenFileForm.tokenFile, '/run/secrets/zalo-token')
+})
+
+test('OpenClaw 渠道保存会写入 Zalo 多账号配置', () => {
+  const cfg = { channels: {} }
+
+  mergeOpenClawMessagingPlatformConfig(cfg, {
+    platform: 'zalo',
+    accountId: 'vn',
+    form: {
+      botToken: 'zalo-token',
+      groupAllowFrom: 'thread-1',
+      mediaMaxMb: '30',
+    },
+  })
+
+  assert.equal(cfg.channels.zalo.defaultAccount, 'vn')
+  assert.equal(cfg.channels.zalo.accounts.vn.botToken, 'zalo-token')
+  assert.deepEqual(cfg.channels.zalo.accounts.vn.groupAllowFrom, ['thread-1'])
+  assert.equal(cfg.channels.zalo.accounts.vn.mediaMaxMb, 30)
+})
+
+test('Zalo 诊断接受 Bot Token 或 Token File 二选一', () => {
+  const tokenResult = buildOpenClawChannelDiagnosis({
+    platform: 'zalo',
+    configExists: true,
+    channelEnabled: true,
+    form: { botToken: 'zalo-token' },
+  })
+  const fileResult = buildOpenClawChannelDiagnosis({
+    platform: 'zalo',
+    configExists: true,
+    channelEnabled: true,
+    form: { tokenFile: '/run/secrets/zalo-token' },
+  })
+  const missingResult = buildOpenClawChannelDiagnosis({
+    platform: 'zalo',
+    configExists: true,
+    channelEnabled: true,
+    form: {},
+  })
+
+  assert.equal(tokenResult.checks.find(item => item.id === 'credentials')?.ok, true)
+  assert.equal(fileResult.checks.find(item => item.id === 'credentials')?.ok, true)
+  assert.equal(missingResult.checks.find(item => item.id === 'credentials')?.ok, false)
+  assert.match(missingResult.checks.find(item => item.id === 'credentials')?.detail || '', /Bot Token.*Token File/)
+})
+
+test('Zalo Personal 保存和诊断按二维码会话型渠道处理', () => {
+  const form = normalizeMessagingPlatformForm('zalouser', {
+    profile: 'work',
+    dangerouslyAllowNameMatching: 'true',
+    allowFrom: '12345, Alice',
+    groupAllowFrom: 'group-1',
+    historyLimit: '12',
+  })
+  const cfg = { channels: {} }
+
+  mergeOpenClawMessagingPlatformConfig(cfg, {
+    platform: 'zalouser',
+    accountId: 'work',
+    form,
+  })
+  const result = buildOpenClawChannelDiagnosis({
+    platform: 'zalouser',
+    configExists: true,
+    channelEnabled: true,
+    form: buildMessagingPlatformFormValues('zalouser', cfg.channels.zalouser.accounts.work),
+  })
+
+  assert.equal(cfg.channels.zalouser.defaultAccount, 'work')
+  assert.equal(cfg.channels.zalouser.accounts.work.profile, 'work')
+  assert.equal(cfg.channels.zalouser.accounts.work.dangerouslyAllowNameMatching, true)
+  assert.deepEqual(cfg.channels.zalouser.accounts.work.allowFrom, ['12345', 'Alice'])
+  assert.deepEqual(cfg.channels.zalouser.accounts.work.groupAllowFrom, ['group-1'])
+  assert.equal(cfg.channels.zalouser.accounts.work.historyLimit, 12)
+  assert.equal(result.checks.find(item => item.id === 'credentials')?.ok, true)
+  assert.equal(result.checks.find(item => item.id === 'credentials')?.title, '登录/会话配置')
+})
+
 test('Discord 渠道保存会保留运行时需要的 applicationId', () => {
   const cfg = { channels: {} }
 

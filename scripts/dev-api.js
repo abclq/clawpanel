@@ -2438,7 +2438,7 @@ export function normalizeMessagingPlatformForm(platform, form = {}) {
   if (!Object.hasOwn(normalized, 'allowFrom') && Object.hasOwn(normalized, 'allowedUsers')) {
     normalized.allowFrom = normalized.allowedUsers
   }
-  const needsAccessDefaults = ['telegram', 'discord', 'feishu', 'slack', 'signal', 'msteams', 'whatsapp'].includes(storageKey)
+  const needsAccessDefaults = ['telegram', 'discord', 'feishu', 'slack', 'signal', 'msteams', 'whatsapp', 'zalo', 'zalouser'].includes(storageKey)
   const hasDmField = Object.hasOwn(normalized, 'dmPolicy') || needsAccessDefaults
   const hasGroupField = Object.hasOwn(normalized, 'groupPolicy') || needsAccessDefaults
 
@@ -2461,6 +2461,32 @@ export function normalizeMessagingPlatformForm(platform, form = {}) {
       } else if (Object.hasOwn(normalized, 'requireMention')) {
         normalized.requireMention = normalized.requireMention === true || normalized.requireMention === 'true'
       }
+    }
+  }
+
+  if (Object.hasOwn(normalized, 'groupAllowFrom')) {
+    normalized.groupAllowFrom = csvToStringArray(normalized.groupAllowFrom)
+  }
+
+  for (const key of ['mediaMaxMb', 'historyLimit']) {
+    if (!Object.hasOwn(normalized, key)) continue
+    const value = String(normalized[key] || '').trim()
+    if (!value) {
+      delete normalized[key]
+      continue
+    }
+    const numberValue = Number(value)
+    if (Number.isFinite(numberValue) && numberValue >= 0) {
+      normalized[key] = numberValue
+    }
+  }
+
+  if (storageKey === 'zalouser' && Object.hasOwn(normalized, 'dangerouslyAllowNameMatching')) {
+    const value = String(normalized.dangerouslyAllowNameMatching || '').trim()
+    if (!value) {
+      delete normalized.dangerouslyAllowNameMatching
+    } else {
+      normalized.dangerouslyAllowNameMatching = value === 'true'
     }
   }
 
@@ -2565,6 +2591,7 @@ const MESSAGING_CREDENTIAL_FIELDS = [
   'signingSecret',
   'token',
   'tokenFile',
+  'webhookSecret',
 ]
 
 function hasConfiguredMessagingValue(value) {
@@ -2576,6 +2603,14 @@ function hasConfiguredMessagingValue(value) {
 function channelRootHasMessagingCredential(root) {
   if (!root || typeof root !== 'object' || Array.isArray(root)) return false
   return MESSAGING_CREDENTIAL_FIELDS.some(key => hasConfiguredMessagingValue(root[key]))
+}
+
+function channelAnyCredentialFields(platform) {
+  const storageKey = platformStorageKey(platform)
+  if (storageKey === 'zalo') {
+    return [['botToken', 'Bot Token'], ['tokenFile', 'Token File']]
+  }
+  return []
 }
 
 const CHANNEL_DIAG_REQUIRED_FIELDS = {
@@ -2605,9 +2640,14 @@ function requiredChannelCredentialFields(platform, form = {}) {
 }
 
 function channelDiagnosisCredentialsReady(platform, form = {}) {
+  if (platformStorageKey(platform) === 'zalouser') return true
   const requiredFields = requiredChannelCredentialFields(platform, form)
   if (requiredFields.length) {
     return requiredFields.every(([key]) => hasConfiguredMessagingValue(form?.[key]))
+  }
+  const anyFields = channelAnyCredentialFields(platform)
+  if (anyFields.length) {
+    return anyFields.some(([key]) => hasConfiguredMessagingValue(form?.[key]))
   }
   return channelRootHasMessagingCredential(form)
 }
@@ -2648,22 +2688,29 @@ export function buildOpenClawChannelDiagnosis({
   })
 
   const requiredFields = requiredChannelCredentialFields(storageKey, form)
+  const anyFields = channelAnyCredentialFields(storageKey)
   const missing = requiredFields
     .filter(([key]) => !hasConfiguredMessagingValue(form?.[key]))
     .map(([, label]) => label)
   const hasAnyCredential = channelRootHasMessagingCredential(form)
-  const credentialOk = requiredFields.length ? missing.length === 0 : hasAnyCredential
+  const anyCredentialOk = anyFields.length ? anyFields.some(([key]) => hasConfiguredMessagingValue(form?.[key])) : false
+  const credentialOk = storageKey === 'zalouser'
+    ? !!configExists
+    : (requiredFields.length ? missing.length === 0 : (anyFields.length ? anyCredentialOk : hasAnyCredential))
+  const anyLabels = anyFields.map(([, label]) => label).join(' / ')
   checks.push({
     id: 'credentials',
     ok: credentialOk,
-    title: '必要凭证字段',
-    detail: credentialOk
-      ? (requiredFields.length
-          ? `已填写 ${requiredFields.map(([, label]) => label).join(' / ')}。`
-          : '已检测到可用凭证字段。')
-      : (missing.length
-          ? `缺少 ${missing.join(' / ')}，请补齐后保存。`
-          : '未检测到可用凭证字段，请检查渠道配置。'),
+    title: storageKey === 'zalouser' ? '登录/会话配置' : '必要凭证字段',
+    detail: storageKey === 'zalouser'
+      ? 'Zalo Personal 通过二维码登录保存本地会话；配置已保存后，请按手动命令完成或刷新登录。'
+      : (credentialOk
+          ? (requiredFields.length
+              ? `已填写 ${requiredFields.map(([, label]) => label).join(' / ')}。`
+              : (anyFields.length ? `已填写 ${anyLabels} 其中一项。` : '已检测到可用凭证字段。'))
+          : (missing.length
+              ? `缺少 ${missing.join(' / ')}，请补齐后保存。`
+              : (anyFields.length ? `缺少 ${anyLabels}，至少填写一项后保存。` : '未检测到可用凭证字段，请检查渠道配置。'))),
   })
 
   if (verifyError) {
@@ -2824,6 +2871,8 @@ export function buildMessagingPlatformFormValues(platform, saved = {}, options =
       if (csv) form[key] = csv
     } else if (typeof value === 'boolean') {
       form[key] = value ? 'true' : 'false'
+    } else if (typeof value === 'number') {
+      form[key] = String(value)
     }
   }
   return form
@@ -3316,6 +3365,25 @@ function buildOpenClawMessagingPlatformEntry(platform, form, currentSaved = {}) 
     entry.reactionNotifications = form.reactionNotifications
     entry.typingIndicator = form.typingIndicator
     entry.resolveSenderNames = form.resolveSenderNames
+  } else if (storageKey === 'zalo') {
+    for (const key of ['botToken', 'tokenFile', 'webhookUrl', 'webhookSecret', 'webhookPath', 'proxy', 'responsePrefix']) {
+      if (form[key]) entry[key] = form[key]
+    }
+    entry.dmPolicy = form.dmPolicy
+    entry.groupPolicy = form.groupPolicy
+    if (Array.isArray(form.allowFrom) && form.allowFrom.length) entry.allowFrom = form.allowFrom
+    if (Array.isArray(form.groupAllowFrom) && form.groupAllowFrom.length) entry.groupAllowFrom = form.groupAllowFrom
+    if (typeof form.mediaMaxMb === 'number') entry.mediaMaxMb = form.mediaMaxMb
+  } else if (storageKey === 'zalouser') {
+    for (const key of ['profile', 'messagePrefix', 'responsePrefix']) {
+      if (form[key]) entry[key] = form[key]
+    }
+    entry.dmPolicy = form.dmPolicy
+    entry.groupPolicy = form.groupPolicy
+    if (Array.isArray(form.allowFrom) && form.allowFrom.length) entry.allowFrom = form.allowFrom
+    if (Array.isArray(form.groupAllowFrom) && form.groupAllowFrom.length) entry.groupAllowFrom = form.groupAllowFrom
+    if (typeof form.historyLimit === 'number') entry.historyLimit = form.historyLimit
+    if (typeof form.dangerouslyAllowNameMatching === 'boolean') entry.dangerouslyAllowNameMatching = form.dangerouslyAllowNameMatching
   } else {
     Object.assign(entry, form)
   }
@@ -4903,6 +4971,27 @@ const handlers = {
       } catch (e) {
         return { valid: false, errors: [`Telegram API 连接失败: ${e.message}`] }
       }
+    }
+    if (platform === 'zalo') {
+      if (form.botToken) {
+        try {
+          const resp = await fetch(`https://bot-api.zaloplatforms.com/bot${form.botToken}/getMe`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: AbortSignal.timeout(15000),
+          })
+          const body = await resp.json()
+          if (body.ok) return { valid: true, errors: [], details: ['Zalo Bot Token 已通过 getMe 校验'] }
+          return { valid: false, errors: [body.description || body.message || 'Zalo Bot Token 无效'] }
+        } catch (e) {
+          return { valid: false, errors: [`Zalo API 连接失败: ${e.message}`] }
+        }
+      }
+      if (form.tokenFile) return { valid: true, warnings: ['已配置 Token File；Web 模式不会读取外部文件做在线校验'] }
+      return { valid: false, errors: ['请填写 Bot Token 或 Token File'] }
+    }
+    if (platform === 'zalouser') {
+      return { valid: true, warnings: ['Zalo Personal 通过二维码登录维护本地会话；请使用 openclaw channels status --probe 检查登录状态'] }
     }
     if (platform === 'discord') {
       try {

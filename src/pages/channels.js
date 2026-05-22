@@ -36,6 +36,12 @@ const GROUP_POLICY_OPTIONS = (allLabel, { mention = false } = {}) => [
   { value: 'disabled', label: t('channels.groupDisabled') },
 ]
 
+const BOOLEAN_OPTIONS = [
+  { value: '', label: t('channels.policyDefault') },
+  { value: 'true', label: t('channels.enable') },
+  { value: 'false', label: t('channels.disable') },
+]
+
 const PLATFORM_REGISTRY = {
   qqbot: {
     label: t('channels.qqbotLabel'),
@@ -129,6 +135,65 @@ const PLATFORM_REGISTRY = {
     ],
     configKey: 'telegram',
     pairingChannel: 'telegram',
+  },
+  zalo: {
+    label: 'Zalo',
+    iconName: 'send',
+    desc: t('channels.zaloDesc'),
+    guide: [
+      t('channels.zaloGuide1'),
+      t('channels.zaloGuide2'),
+      t('channels.zaloGuide3'),
+      t('channels.zaloGuide4'),
+      t('channels.zaloGuide5'),
+    ],
+    guideFooter: t('channels.zaloGuideFooter'),
+    fields: [
+      { key: 'botToken', label: 'Bot Token', placeholder: t('channels.zaloBotTokenPh'), secret: true, required: false, hint: t('channels.zaloBotTokenHint') },
+      { key: 'tokenFile', label: 'Token File', placeholder: t('channels.zaloTokenFilePh'), required: false, hint: t('channels.zaloTokenFileHint') },
+      { key: 'webhookUrl', label: 'Webhook URL', placeholder: 'https://example.com/zalo-webhook', required: false },
+      { key: 'webhookSecret', label: 'Webhook Secret', placeholder: t('channels.zaloWebhookSecretPh'), secret: true, required: false },
+      { key: 'webhookPath', label: 'Webhook Path', placeholder: '/zalo-webhook', required: false },
+      { key: 'dmPolicy', label: t('channels.dmPolicy'), type: 'select', options: DM_POLICY_OPTIONS, required: false },
+      { key: 'groupPolicy', label: t('channels.groupPolicy'), type: 'select', options: GROUP_POLICY_OPTIONS(t('channels.groupAllGroups')), required: false },
+      { key: 'allowFrom', label: 'Allow From', placeholder: t('channels.zaloAllowFromPh'), required: false, hint: t('channels.zaloAllowFromHint') },
+      { key: 'groupAllowFrom', label: 'Group Allow From', placeholder: t('channels.zaloGroupAllowFromPh'), required: false, hint: t('channels.groupAllowFromHint') },
+      { key: 'mediaMaxMb', label: 'Media Max MB', placeholder: '50', required: false },
+      { key: 'proxy', label: 'Proxy', placeholder: 'http://127.0.0.1:7890', required: false },
+      { key: 'responsePrefix', label: 'Response Prefix', placeholder: t('channels.optionalEg', { example: '[AI]' }), required: false },
+    ],
+    requiredAny: [{ keys: ['botToken', 'tokenFile'], label: t('channels.zaloTokenOrFile') }],
+    configKey: 'zalo',
+    pairingChannel: 'zalo',
+    pluginRequired: '@openclaw/zalo@latest',
+    pluginId: 'zalo',
+  },
+  zalouser: {
+    label: 'Zalo Personal',
+    iconName: 'message-circle',
+    desc: t('channels.zalouserDesc'),
+    guide: [
+      t('channels.zalouserGuide1'),
+      t('channels.zalouserGuide2'),
+      t('channels.zalouserGuide3'),
+      t('channels.zalouserGuide4'),
+      t('channels.zalouserGuide5'),
+    ],
+    guideFooter: t('channels.zalouserGuideFooter'),
+    fields: [
+      { key: 'profile', label: 'Profile', placeholder: 'default', required: false, hint: t('channels.zalouserProfileHint') },
+      { key: 'dangerouslyAllowNameMatching', label: t('channels.zalouserNameMatching'), type: 'select', options: BOOLEAN_OPTIONS, required: false, hint: t('channels.zalouserNameMatchingHint') },
+      { key: 'dmPolicy', label: t('channels.dmPolicy'), type: 'select', options: DM_POLICY_OPTIONS, required: false },
+      { key: 'groupPolicy', label: t('channels.groupPolicy'), type: 'select', options: GROUP_POLICY_OPTIONS(t('channels.groupAllGroups')), required: false },
+      { key: 'allowFrom', label: 'Allow From', placeholder: t('channels.zalouserAllowFromPh'), required: false, hint: t('channels.zalouserAllowFromHint') },
+      { key: 'groupAllowFrom', label: 'Group Allow From', placeholder: t('channels.zalouserGroupAllowFromPh'), required: false, hint: t('channels.groupAllowFromHint') },
+      { key: 'historyLimit', label: 'History Limit', placeholder: '20', required: false },
+      { key: 'messagePrefix', label: 'Message Prefix', placeholder: t('channels.optionalEg', { example: '[Zalo]' }), required: false },
+      { key: 'responsePrefix', label: 'Response Prefix', placeholder: t('channels.optionalEg', { example: '[AI]' }), required: false },
+    ],
+    configKey: 'zalouser',
+    pluginRequired: '@openclaw/zalouser@latest',
+    pluginId: 'zalouser',
   },
   discord: {
     label: 'Discord',
@@ -440,7 +505,7 @@ function applyRouteIntent(page, state) {
 // ── 已配置平台渲染 ──
 
 // ── 多账号支持的平台：与 OpenClaw 的 accounts/defaultAccount 配置模型保持一致 ──
-const MULTI_INSTANCE_PLATFORMS = ['telegram', 'discord', 'slack', 'feishu', 'dingtalk', 'dingtalk-connector', 'qqbot']
+const MULTI_INSTANCE_PLATFORMS = ['telegram', 'discord', 'slack', 'feishu', 'dingtalk', 'dingtalk-connector', 'qqbot', 'zalo', 'zalouser']
 
 function supportsMessagingMultiAccount(pid) {
   return MULTI_INSTANCE_PLATFORMS.includes(pid)
@@ -1334,16 +1399,25 @@ function getManualCommandSpecs(pid, reg) {
     ]
   }
 
-  if (!['qqbot', 'feishu', 'dingtalk'].includes(pid) || !reg.pluginRequired) {
+  if (!reg.pluginRequired) {
     return []
   }
 
-  return [{
+  const commands = [{
     id: 'install',
     title: t('channels.manualInstallCommand'),
     hint: t('channels.manualInstallHint', { platform: reg.label }),
     command: `openclaw plugins install ${reg.pluginRequired}`,
   }]
+  if (pid === 'zalouser') {
+    commands.push({
+      id: 'login',
+      title: t('channels.manualLoginCommand'),
+      hint: t('channels.zalouserManualLoginHint'),
+      command: 'openclaw channels login --channel zalouser',
+    })
+  }
+  return commands
 }
 
 function buildManualCommandPanel(commandSpecs) {
@@ -2298,6 +2372,12 @@ async function openConfigDialog(pid, page, state, accountId) {
         return
       }
     }
+    for (const group of reg.requiredAny || []) {
+      if (!group.keys.some(key => form[key])) {
+        toast(t('channels.pleaseFill', { field: group.label }), 'warning')
+        return
+      }
+    }
     btnVerify.disabled = true
     btnVerify.textContent = t('channels.verifying')
     resultEl.innerHTML = ''
@@ -2331,6 +2411,12 @@ async function openConfigDialog(pid, page, state, accountId) {
     for (const f of reg.fields) {
       if (isFieldRequired(f, form) && !form[f.key]) {
         toast(t('channels.pleaseFill', { field: f.label }), 'warning')
+        return
+      }
+    }
+    for (const group of reg.requiredAny || []) {
+      if (!group.keys.some(key => form[key])) {
+        toast(t('channels.pleaseFill', { field: group.label }), 'warning')
         return
       }
     }

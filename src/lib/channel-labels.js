@@ -8,6 +8,8 @@ export const CHANNEL_LABELS = {
   discord: 'Discord',
   slack: 'Slack',
   whatsapp: 'WhatsApp',
+  zalo: 'Zalo',
+  zalouser: 'Zalo Personal',
   msteams: 'Microsoft Teams',
   signal: 'Signal',
   matrix: 'Matrix',
