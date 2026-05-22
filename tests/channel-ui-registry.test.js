@@ -17,3 +17,25 @@ test('Discord 渠道 UI 会暴露服务器频道 allowlist 配置字段', () => 
   assert.match(discordBlock, /key:\s*'guildId'/)
   assert.match(discordBlock, /key:\s*'channelId'/)
 })
+
+test('iMessage 渠道 UI 会暴露桥接运行配置字段', () => {
+  const imessageBlock = getRegistryBlock('imessage')
+
+  for (const field of [
+    'cliPath',
+    'dbPath',
+    'remoteHost',
+    'service',
+    'allowFrom',
+    'groupAllowFrom',
+    'probeTimeoutMs',
+    'attachmentRoots',
+    'remoteAttachmentRoots',
+    'sendReadReceipts',
+    'coalesceSameSenderDms',
+  ]) {
+    assert.match(imessageBlock, new RegExp(`key:\\s*'${field}'`))
+  }
+  assert.match(imessageBlock, /pluginRequired:\s*'@openclaw\/imessage@latest'/)
+  assert.match(imessageBlock, /pluginId:\s*'imessage'/)
+})

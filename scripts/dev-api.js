@@ -2438,7 +2438,7 @@ export function normalizeMessagingPlatformForm(platform, form = {}) {
   if (!Object.hasOwn(normalized, 'allowFrom') && Object.hasOwn(normalized, 'allowedUsers')) {
     normalized.allowFrom = normalized.allowedUsers
   }
-  const needsAccessDefaults = ['telegram', 'discord', 'feishu', 'slack', 'signal', 'msteams', 'whatsapp', 'zalo', 'zalouser', 'line', 'mattermost', 'googlechat'].includes(storageKey)
+  const needsAccessDefaults = ['telegram', 'discord', 'feishu', 'slack', 'signal', 'msteams', 'whatsapp', 'zalo', 'zalouser', 'line', 'mattermost', 'googlechat', 'imessage'].includes(storageKey)
   const hasDmField = Object.hasOwn(normalized, 'dmPolicy') || needsAccessDefaults
   const hasGroupField = Object.hasOwn(normalized, 'groupPolicy') || needsAccessDefaults
 
@@ -2472,11 +2472,11 @@ export function normalizeMessagingPlatformForm(platform, form = {}) {
     normalized.allowedUserIds = csvToStringArray(normalized.allowedUserIds)
   }
 
-  for (const key of ['promptStarters', 'delegatedAuthScopes']) {
+  for (const key of ['promptStarters', 'delegatedAuthScopes', 'attachmentRoots', 'remoteAttachmentRoots']) {
     if (Object.hasOwn(normalized, key)) normalized[key] = csvToStringArray(normalized[key])
   }
 
-  for (const key of ['mediaMaxMb', 'historyLimit', 'dmHistoryLimit', 'textChunkLimit', 'rateLimitPerMinute', 'httpPort', 'webhookPort', 'feedbackReflectionCooldownMs']) {
+  for (const key of ['mediaMaxMb', 'historyLimit', 'dmHistoryLimit', 'textChunkLimit', 'probeTimeoutMs', 'rateLimitPerMinute', 'httpPort', 'webhookPort', 'feedbackReflectionCooldownMs']) {
     if (!Object.hasOwn(normalized, key)) continue
     const value = String(normalized[key] || '').trim()
     if (!value) {
@@ -2489,7 +2489,7 @@ export function normalizeMessagingPlatformForm(platform, form = {}) {
     }
   }
 
-  for (const key of ['dangerouslyAllowNameMatching', 'dangerouslyAllowPrivateNetwork', 'dangerouslyAllowInheritedWebhookPath', 'allowInsecureSsl', 'allowBots', 'blockStreaming', 'useManagedIdentity', 'typingIndicator', 'welcomeCard', 'groupWelcomeCard', 'feedbackEnabled', 'feedbackReflection', 'delegatedAuthEnabled', 'ssoEnabled']) {
+  for (const key of ['dangerouslyAllowNameMatching', 'dangerouslyAllowPrivateNetwork', 'dangerouslyAllowInheritedWebhookPath', 'allowInsecureSsl', 'allowBots', 'blockStreaming', 'useManagedIdentity', 'typingIndicator', 'welcomeCard', 'groupWelcomeCard', 'feedbackEnabled', 'feedbackReflection', 'delegatedAuthEnabled', 'ssoEnabled', 'configWrites', 'includeAttachments', 'sendReadReceipts', 'coalesceSameSenderDms']) {
     if (Object.hasOwn(normalized, key)) {
       const value = String(normalized[key] || '').trim()
       if (!value) {
@@ -2770,7 +2770,7 @@ export function buildOpenClawChannelDiagnosis({
     .map(group => group.label)
   const hasAnyCredential = channelRootHasMessagingCredential(form)
   const anyCredentialOk = anyFields.length ? anyFields.some(([key]) => hasConfiguredMessagingValue(form?.[key])) : false
-  const credentialOk = storageKey === 'zalouser'
+  const credentialOk = ['zalouser', 'imessage'].includes(storageKey)
     ? !!configExists
     : (requiredFields.length
         ? missing.length === 0
@@ -2781,9 +2781,13 @@ export function buildOpenClawChannelDiagnosis({
   checks.push({
     id: 'credentials',
     ok: credentialOk,
-    title: storageKey === 'zalouser' ? '登录/会话配置' : '必要凭证字段',
+    title: storageKey === 'zalouser' ? '登录/会话配置' : (storageKey === 'imessage' ? '桥接运行配置' : '必要凭证字段'),
     detail: storageKey === 'zalouser'
       ? 'Zalo Personal 通过二维码登录保存本地会话；配置已保存后，请按手动命令完成或刷新登录。'
+      : storageKey === 'imessage'
+        ? (configExists
+            ? 'iMessage 使用本机或远端桥接运行，不需要 Bot Token；已保存基础运行配置。'
+            : '尚未保存 iMessage 渠道配置，请先填写并保存。')
       : (credentialOk
           ? (requiredFields.length
               ? `已填写 ${requiredFields.map(([, label]) => label).join(' / ')}。`
@@ -3662,6 +3666,22 @@ function buildOpenClawMessagingPlatformEntry(platform, form, currentSaved = {}) 
     for (const key of ['historyLimit', 'dmHistoryLimit', 'textChunkLimit', 'mediaMaxMb']) {
       if (typeof form[key] === 'number') entry[key] = form[key]
     }
+  } else if (storageKey === 'imessage') {
+    for (const key of ['cliPath', 'dbPath', 'remoteHost', 'service', 'region', 'defaultTo', 'contextVisibility', 'chunkMode', 'reactionNotifications', 'responsePrefix']) {
+      if (form[key]) entry[key] = form[key]
+    }
+    entry.dmPolicy = form.dmPolicy
+    entry.groupPolicy = form.groupPolicy
+    if (Array.isArray(form.allowFrom) && form.allowFrom.length) entry.allowFrom = form.allowFrom
+    if (Array.isArray(form.groupAllowFrom) && form.groupAllowFrom.length) entry.groupAllowFrom = form.groupAllowFrom
+    if (Array.isArray(form.attachmentRoots) && form.attachmentRoots.length) entry.attachmentRoots = form.attachmentRoots
+    if (Array.isArray(form.remoteAttachmentRoots) && form.remoteAttachmentRoots.length) entry.remoteAttachmentRoots = form.remoteAttachmentRoots
+    for (const key of ['configWrites', 'includeAttachments', 'blockStreaming', 'sendReadReceipts', 'coalesceSameSenderDms']) {
+      if (typeof form[key] === 'boolean') entry[key] = form[key]
+    }
+    for (const key of ['historyLimit', 'dmHistoryLimit', 'mediaMaxMb', 'probeTimeoutMs', 'textChunkLimit']) {
+      if (typeof form[key] === 'number') entry[key] = form[key]
+    }
   } else if (storageKey === 'msteams') {
     for (const key of ['appId', 'appPassword', 'tenantId', 'authType', 'certificatePath', 'certificateThumbprint', 'managedIdentityClientId', 'replyStyle', 'sharePointSiteId', 'responsePrefix']) {
       if (form[key]) entry[key] = form[key]
@@ -3766,7 +3786,7 @@ export function mergeOpenClawMessagingPlatformConfig(cfg, { platform, form, acco
   const currentSaved = resolvePlatformConfigEntry(cfg.channels?.[storageKey], platform, normalizedAccountId) || {}
   const entry = buildOpenClawMessagingPlatformEntry(platform, normalizedForm, currentSaved)
   applyMessagingPlatformEntry(cfg, storageKey, normalizedAccountId, entry)
-  if (['zalo', 'zalouser', 'line', 'mattermost', 'synology-chat', 'googlechat', 'msteams'].includes(storageKey)) {
+  if (['zalo', 'zalouser', 'line', 'mattermost', 'synology-chat', 'googlechat', 'msteams', 'imessage'].includes(storageKey)) {
     ensureMessagingPluginAllowed(cfg, storageKey)
   }
   return { entry, accountId: normalizedAccountId, storageKey }

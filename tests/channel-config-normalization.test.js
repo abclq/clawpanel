@@ -920,6 +920,100 @@ test('Microsoft Teams 诊断会按认证模式检查动态必填凭证', () => {
   assert.equal(managedIdentity.checks.find(item => item.id === 'credentials')?.ok, true)
 })
 
+test('iMessage 渠道保存会写入桥接运行字段并启用插件', () => {
+  const cfg = { channels: {} }
+
+  mergeOpenClawMessagingPlatformConfig(cfg, {
+    platform: 'imessage',
+    form: {
+      cliPath: '/usr/local/bin/imsg',
+      dbPath: '~/Library/Messages/chat.db',
+      remoteHost: 'mac-mini.local',
+      service: 'auto',
+      region: 'US',
+      dmPolicy: 'allowlist',
+      allowFrom: '+15551234567, +15557654321',
+      defaultTo: '+15550001111',
+      groupPolicy: 'allowlist',
+      groupAllowFrom: 'chat-guid-1, chat-guid-2',
+      historyLimit: '80',
+      dmHistoryLimit: '20',
+      mediaMaxMb: '25',
+      probeTimeoutMs: '5000',
+      textChunkLimit: '1800',
+      includeAttachments: 'true',
+      attachmentRoots: '/Users/me/Downloads, /tmp/imessage',
+      remoteAttachmentRoots: '/mnt/messages',
+      sendReadReceipts: 'false',
+      coalesceSameSenderDms: 'true',
+      reactionNotifications: 'own',
+      responsePrefix: '[iMessage]',
+    },
+  })
+
+  const entry = cfg.channels.imessage
+  assert.equal(entry.cliPath, '/usr/local/bin/imsg')
+  assert.equal(entry.dbPath, '~/Library/Messages/chat.db')
+  assert.equal(entry.remoteHost, 'mac-mini.local')
+  assert.equal(entry.service, 'auto')
+  assert.equal(entry.region, 'US')
+  assert.equal(entry.dmPolicy, 'allowlist')
+  assert.deepEqual(entry.allowFrom, ['+15551234567', '+15557654321'])
+  assert.equal(entry.defaultTo, '+15550001111')
+  assert.equal(entry.groupPolicy, 'allowlist')
+  assert.deepEqual(entry.groupAllowFrom, ['chat-guid-1', 'chat-guid-2'])
+  assert.equal(entry.historyLimit, 80)
+  assert.equal(entry.dmHistoryLimit, 20)
+  assert.equal(entry.mediaMaxMb, 25)
+  assert.equal(entry.probeTimeoutMs, 5000)
+  assert.equal(entry.textChunkLimit, 1800)
+  assert.equal(entry.includeAttachments, true)
+  assert.deepEqual(entry.attachmentRoots, ['/Users/me/Downloads', '/tmp/imessage'])
+  assert.deepEqual(entry.remoteAttachmentRoots, ['/mnt/messages'])
+  assert.equal(entry.sendReadReceipts, false)
+  assert.equal(entry.coalesceSameSenderDms, true)
+  assert.equal(entry.reactionNotifications, 'own')
+  assert.equal(entry.responsePrefix, '[iMessage]')
+  assert.equal(cfg.plugins.entries.imessage.enabled, true)
+})
+
+test('iMessage 读取会回显桥接字段且诊断不要求 Bot Token', () => {
+  const values = buildMessagingPlatformFormValues('imessage', {
+    cliPath: '/usr/local/bin/imsg',
+    dbPath: '~/Library/Messages/chat.db',
+    remoteHost: 'mac-mini.local',
+    service: 'sms',
+    dmPolicy: 'open',
+    allowFrom: ['*'],
+    groupPolicy: 'allowlist',
+    groupAllowFrom: ['chat-guid-1'],
+    includeAttachments: true,
+    attachmentRoots: ['/Users/me/Downloads'],
+    sendReadReceipts: false,
+    historyLimit: 50,
+    responsePrefix: '[iMessage]',
+  })
+  const diagnosis = buildOpenClawChannelDiagnosis({
+    platform: 'imessage',
+    configExists: true,
+    channelEnabled: true,
+    form: values,
+  })
+
+  assert.equal(values.cliPath, '/usr/local/bin/imsg')
+  assert.equal(values.service, 'sms')
+  assert.equal(values.dmPolicy, 'open')
+  assert.equal(values.allowFrom, '*')
+  assert.equal(values.groupAllowFrom, 'chat-guid-1')
+  assert.equal(values.includeAttachments, 'true')
+  assert.equal(values.attachmentRoots, '/Users/me/Downloads')
+  assert.equal(values.sendReadReceipts, 'false')
+  assert.equal(values.historyLimit, '50')
+  assert.equal(values.responsePrefix, '[iMessage]')
+  assert.equal(diagnosis.checks.find(item => item.id === 'credentials')?.ok, true)
+  assert.match(diagnosis.checks.find(item => item.id === 'credentials')?.title || '', /桥接/)
+})
+
 test('Discord 渠道保存会保留运行时需要的 applicationId', () => {
   const cfg = { channels: {} }
 

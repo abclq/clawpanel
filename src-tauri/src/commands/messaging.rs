@@ -334,7 +334,7 @@ fn channel_any_credential_groups(
 }
 
 fn channel_diagnosis_credentials_ready(platform: &str, form: &Map<String, Value>) -> bool {
-    if platform_storage_key(platform) == "zalouser" {
+    if matches!(platform_storage_key(platform), "zalouser" | "imessage") {
         return true;
     }
     if platform_storage_key(platform) == "msteams" {
@@ -465,7 +465,7 @@ fn build_openclaw_channel_diagnosis(
             .iter()
             .any(|(key, _)| has_configured_messaging_value(form.get(*key)))
     };
-    let credential_ok = if storage_key == "zalouser" {
+    let credential_ok = if matches!(storage_key, "zalouser" | "imessage") {
         config_exists
     } else if !required_fields.is_empty() {
         missing.is_empty()
@@ -481,9 +481,21 @@ fn build_openclaw_channel_diagnosis(
     checks.push(json!({
         "id": "credentials",
         "ok": credential_ok,
-        "title": if storage_key == "zalouser" { "登录/会话配置" } else { "必要凭证字段" },
+        "title": if storage_key == "zalouser" {
+            "登录/会话配置"
+        } else if storage_key == "imessage" {
+            "桥接运行配置"
+        } else {
+            "必要凭证字段"
+        },
         "detail": if storage_key == "zalouser" {
             "Zalo Personal 通过二维码登录保存本地会话；配置已保存后，请按手动命令完成或刷新登录。".to_string()
+        } else if storage_key == "imessage" {
+            if config_exists {
+                "iMessage 使用本机或远端桥接运行，不需要 Bot Token；已保存基础运行配置。".to_string()
+            } else {
+                "尚未保存 iMessage 渠道配置，请先填写并保存。".to_string()
+            }
         } else if credential_ok {
             if !required_fields.is_empty() {
                 format!("已填写 {}。", required_labels)
@@ -703,6 +715,16 @@ fn put_number_from_form(entry: &mut Map<String, Value>, key: &str, raw: &str) {
     }
 }
 
+fn put_number_value_if_present(entry: &mut Map<String, Value>, key: &str, value: Option<&Value>) {
+    if let Some(number) = value.and_then(|v| v.as_f64()) {
+        if let Some(json_number) = serde_json::Number::from_f64(number) {
+            entry.insert(key.into(), Value::Number(json_number));
+        }
+        return;
+    }
+    put_number_from_form(entry, key, &value.and_then(|v| v.as_str()).unwrap_or(""));
+}
+
 fn normalize_numeric_form_value(map: &mut Map<String, Value>, key: &str) {
     let Some(value) = map.get(key).cloned() else {
         return;
@@ -801,6 +823,7 @@ fn normalize_messaging_platform_form(
             | "line"
             | "mattermost"
             | "googlechat"
+            | "imessage"
     );
     let has_dm_field = normalized.contains_key("dmPolicy") || needs_access_defaults;
     let has_group_field = normalized.contains_key("groupPolicy") || needs_access_defaults;
@@ -865,12 +888,18 @@ fn normalize_messaging_platform_form(
     normalize_numeric_form_value(&mut normalized, "historyLimit");
     normalize_numeric_form_value(&mut normalized, "dmHistoryLimit");
     normalize_numeric_form_value(&mut normalized, "textChunkLimit");
+    normalize_numeric_form_value(&mut normalized, "probeTimeoutMs");
     normalize_numeric_form_value(&mut normalized, "rateLimitPerMinute");
     normalize_numeric_form_value(&mut normalized, "httpPort");
     normalize_numeric_form_value(&mut normalized, "webhookPort");
     normalize_numeric_form_value(&mut normalized, "feedbackReflectionCooldownMs");
 
-    for key in ["promptStarters", "delegatedAuthScopes"] {
+    for key in [
+        "promptStarters",
+        "delegatedAuthScopes",
+        "attachmentRoots",
+        "remoteAttachmentRoots",
+    ] {
         if normalized.contains_key(key) {
             let items = json_array_from_csv_value(normalized.get(key));
             normalized.insert(key.into(), Value::Array(items));
@@ -892,6 +921,10 @@ fn normalize_messaging_platform_form(
         "feedbackReflection",
         "delegatedAuthEnabled",
         "ssoEnabled",
+        "configWrites",
+        "includeAttachments",
+        "sendReadReceipts",
+        "coalesceSameSenderDms",
     ] {
         if normalized.contains_key(key) {
             let value = match normalized.get(key) {
@@ -1496,6 +1529,44 @@ pub async fn read_platform_config(
                 "dmHistoryLimit",
                 "textChunkLimit",
                 "mediaMaxMb",
+            ] {
+                insert_number_as_string(&mut form, &saved, key);
+            }
+        }
+        "imessage" => {
+            for key in [
+                "cliPath",
+                "dbPath",
+                "remoteHost",
+                "service",
+                "region",
+                "defaultTo",
+                "contextVisibility",
+                "chunkMode",
+                "reactionNotifications",
+                "responsePrefix",
+            ] {
+                insert_string_if_present(&mut form, &saved, key);
+            }
+            insert_access_policy_form_values(&mut form, &saved, false, false);
+            insert_array_as_csv(&mut form, &saved, "groupAllowFrom");
+            insert_array_as_csv(&mut form, &saved, "attachmentRoots");
+            insert_array_as_csv(&mut form, &saved, "remoteAttachmentRoots");
+            for key in [
+                "configWrites",
+                "includeAttachments",
+                "blockStreaming",
+                "sendReadReceipts",
+                "coalesceSameSenderDms",
+            ] {
+                insert_bool_as_string(&mut form, &saved, key);
+            }
+            for key in [
+                "historyLimit",
+                "dmHistoryLimit",
+                "mediaMaxMb",
+                "probeTimeoutMs",
+                "textChunkLimit",
             ] {
                 insert_number_as_string(&mut form, &saved, key);
             }
@@ -2248,6 +2319,67 @@ pub async fn save_messaging_platform(
                 entry,
             )?;
         }
+        "imessage" => {
+            let mut entry = Map::new();
+            entry.insert("enabled".into(), Value::Bool(true));
+            for key in [
+                "cliPath",
+                "dbPath",
+                "remoteHost",
+                "service",
+                "region",
+                "defaultTo",
+                "contextVisibility",
+                "chunkMode",
+                "reactionNotifications",
+                "responsePrefix",
+            ] {
+                put_string(&mut entry, key, form_string(form_obj, key));
+            }
+            put_string(&mut entry, "dmPolicy", form_string(form_obj, "dmPolicy"));
+            put_string(
+                &mut entry,
+                "groupPolicy",
+                form_string(form_obj, "groupPolicy"),
+            );
+            put_array_from_form_value(&mut entry, "allowFrom", form_obj.get("allowFrom"));
+            put_array_from_form_value(&mut entry, "groupAllowFrom", form_obj.get("groupAllowFrom"));
+            put_array_from_form_value(
+                &mut entry,
+                "attachmentRoots",
+                form_obj.get("attachmentRoots"),
+            );
+            put_array_from_form_value(
+                &mut entry,
+                "remoteAttachmentRoots",
+                form_obj.get("remoteAttachmentRoots"),
+            );
+            for key in [
+                "configWrites",
+                "includeAttachments",
+                "blockStreaming",
+                "sendReadReceipts",
+                "coalesceSameSenderDms",
+            ] {
+                put_bool_value_if_present(&mut entry, key, form_obj.get(key));
+            }
+            for key in [
+                "historyLimit",
+                "dmHistoryLimit",
+                "mediaMaxMb",
+                "probeTimeoutMs",
+                "textChunkLimit",
+            ] {
+                put_number_value_if_present(&mut entry, key, form_obj.get(key));
+            }
+            merge_channel_entry_for_account(
+                channels_map,
+                &storage_key,
+                account_id.as_deref(),
+                entry,
+            )?;
+            ensure_plugin_allowed(&mut cfg, "imessage")?;
+        }
         "matrix" => {
             let homeserver = form_string(form_obj, "homeserver");
             let access_token = form_string(form_obj, "accessToken");
@@ -2825,6 +2957,10 @@ pub async fn verify_bot_token(platform: String, form: Value) -> Result<Value, St
         "matrix" => verify_matrix(&client, form_obj).await,
         "signal" => verify_signal(&client, form_obj).await,
         "msteams" => verify_msteams(&client, form_obj).await,
+        "imessage" => Ok(json!({
+            "valid": true,
+            "warnings": ["iMessage 使用本机或远端桥接运行，无需在线校验 Bot Token；请通过 Gateway 日志确认桥接进程状态"]
+        })),
         "whatsapp" => Ok(json!({
             "valid": true,
             "warnings": ["WhatsApp 使用扫码登录，无需在线校验凭证；请通过「启动扫码登录」完成配对"]
@@ -5765,6 +5901,62 @@ mod tests {
                 .get("resolveSenderNames")
                 .and_then(|v| v.as_bool()),
             Some(true)
+        );
+    }
+
+    #[test]
+    fn normalize_imessage_form_preserves_bridge_runtime_fields() {
+        let form = json!({
+            "dmPolicy": "allowlist",
+            "allowFrom": "+15551234567, +15557654321",
+            "groupPolicy": "allowlist",
+            "groupAllowFrom": "chat-guid-1, chat-guid-2",
+            "probeTimeoutMs": "5000",
+            "attachmentRoots": "/Users/me/Downloads, /tmp/imessage",
+            "includeAttachments": "true",
+            "sendReadReceipts": "false"
+        });
+        let normalized =
+            normalize_messaging_platform_form("imessage", form.as_object().expect("object"));
+
+        assert_eq!(
+            normalized.get("dmPolicy").and_then(|v| v.as_str()),
+            Some("allowlist")
+        );
+        assert_eq!(
+            normalized.get("probeTimeoutMs").and_then(|v| v.as_f64()),
+            Some(5000.0)
+        );
+        assert_eq!(
+            normalized
+                .get("includeAttachments")
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            normalized.get("sendReadReceipts").and_then(|v| v.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            normalized
+                .get("attachmentRoots")
+                .and_then(|v| v.as_array())
+                .map(|items| items.len()),
+            Some(2)
+        );
+        assert!(channel_diagnosis_credentials_ready("imessage", &normalized));
+        let diagnosis =
+            build_openclaw_channel_diagnosis("imessage", None, true, true, &normalized, None, None);
+        assert_eq!(
+            diagnosis
+                .get("checks")
+                .and_then(|v| v.as_array())
+                .and_then(|items| items
+                    .iter()
+                    .find(|item| item.get("id").and_then(|v| v.as_str()) == Some("credentials")))
+                .and_then(|item| item.get("title"))
+                .and_then(|v| v.as_str()),
+            Some("桥接运行配置")
         );
     }
 
