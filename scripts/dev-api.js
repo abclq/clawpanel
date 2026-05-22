@@ -2429,7 +2429,7 @@ function putWildcardAllowFromWhenOpen(entry, previousAllowFrom) {
 }
 
 function platformSupportsTopLevelRequireMention(platform) {
-  return ['feishu', 'slack', 'msteams', 'mattermost'].includes(platformStorageKey(platform))
+  return ['feishu', 'slack', 'msteams', 'mattermost', 'googlechat'].includes(platformStorageKey(platform))
 }
 
 export function normalizeMessagingPlatformForm(platform, form = {}) {
@@ -2438,7 +2438,7 @@ export function normalizeMessagingPlatformForm(platform, form = {}) {
   if (!Object.hasOwn(normalized, 'allowFrom') && Object.hasOwn(normalized, 'allowedUsers')) {
     normalized.allowFrom = normalized.allowedUsers
   }
-  const needsAccessDefaults = ['telegram', 'discord', 'feishu', 'slack', 'signal', 'msteams', 'whatsapp', 'zalo', 'zalouser', 'line', 'mattermost'].includes(storageKey)
+  const needsAccessDefaults = ['telegram', 'discord', 'feishu', 'slack', 'signal', 'msteams', 'whatsapp', 'zalo', 'zalouser', 'line', 'mattermost', 'googlechat'].includes(storageKey)
   const hasDmField = Object.hasOwn(normalized, 'dmPolicy') || needsAccessDefaults
   const hasGroupField = Object.hasOwn(normalized, 'groupPolicy') || needsAccessDefaults
 
@@ -2468,7 +2468,11 @@ export function normalizeMessagingPlatformForm(platform, form = {}) {
     normalized.groupAllowFrom = csvToStringArray(normalized.groupAllowFrom)
   }
 
-  for (const key of ['mediaMaxMb', 'historyLimit']) {
+  if (Object.hasOwn(normalized, 'allowedUserIds')) {
+    normalized.allowedUserIds = csvToStringArray(normalized.allowedUserIds)
+  }
+
+  for (const key of ['mediaMaxMb', 'historyLimit', 'dmHistoryLimit', 'textChunkLimit', 'rateLimitPerMinute']) {
     if (!Object.hasOwn(normalized, key)) continue
     const value = String(normalized[key] || '').trim()
     if (!value) {
@@ -2481,7 +2485,7 @@ export function normalizeMessagingPlatformForm(platform, form = {}) {
     }
   }
 
-  for (const key of ['dangerouslyAllowNameMatching', 'dangerouslyAllowPrivateNetwork']) {
+  for (const key of ['dangerouslyAllowNameMatching', 'dangerouslyAllowPrivateNetwork', 'dangerouslyAllowInheritedWebhookPath', 'allowInsecureSsl', 'allowBots', 'blockStreaming']) {
     if (Object.hasOwn(normalized, key)) {
       const value = String(normalized[key] || '').trim()
       if (!value) {
@@ -2593,6 +2597,9 @@ const MESSAGING_CREDENTIAL_FIELDS = [
   'gatewayToken',
   'password',
   'secretFile',
+  'serviceAccount',
+  'serviceAccountFile',
+  'serviceAccountRef',
   'signingSecret',
   'token',
   'tokenFile',
@@ -2614,6 +2621,13 @@ function channelAnyCredentialFields(platform) {
   const storageKey = platformStorageKey(platform)
   if (storageKey === 'zalo') {
     return [['botToken', 'Bot Token'], ['tokenFile', 'Token File']]
+  }
+  if (storageKey === 'googlechat') {
+    return [
+      ['serviceAccountFile', 'Service Account File'],
+      ['serviceAccount', 'Service Account JSON'],
+      ['serviceAccountRef', 'Service Account SecretRef'],
+    ]
   }
   return []
 }
@@ -2637,6 +2651,7 @@ const CHANNEL_DIAG_REQUIRED_FIELDS = {
   'dingtalk-connector': [['clientId', 'Client ID'], ['clientSecret', 'Client Secret']],
   msteams: [['appId', 'App ID'], ['appPassword', 'App Password']],
   mattermost: [['botToken', 'Bot Token'], ['baseUrl', 'Base URL']],
+  'synology-chat': [['token', 'Token'], ['incomingUrl', 'Incoming URL']],
   signal: [['account', 'Signal 账号']],
 }
 
@@ -2915,6 +2930,42 @@ export function buildMessagingPlatformFormValues(platform, saved = {}, options =
     putBoolFormValue(form, saved?.network, 'dangerouslyAllowPrivateNetwork')
     putStringFormValue(form, saved?.commands, 'callbackPath')
     putStringFormValue(form, saved?.commands, 'callbackUrl')
+    return form
+  }
+
+  if (storageKey === 'synology-chat') {
+    for (const key of ['token', 'incomingUrl', 'nasHost', 'webhookPath', 'botName']) {
+      putSecretAwareFormValue(form, saved, key)
+    }
+    putStringFormValue(form, saved, 'dmPolicy')
+    putCsvFormValue(form, saved, 'allowedUserIds')
+    if (typeof saved.rateLimitPerMinute === 'number') form.rateLimitPerMinute = String(saved.rateLimitPerMinute)
+    putBoolFormValue(form, saved, 'dangerouslyAllowNameMatching')
+    putBoolFormValue(form, saved, 'dangerouslyAllowInheritedWebhookPath')
+    putBoolFormValue(form, saved, 'allowInsecureSsl')
+    return form
+  }
+
+  if (storageKey === 'googlechat') {
+    for (const key of ['serviceAccount', 'serviceAccountFile', 'serviceAccountRef', 'audienceType', 'audience', 'appPrincipal', 'webhookPath', 'webhookUrl', 'botUser', 'chunkMode', 'replyToMode', 'typingIndicator', 'responsePrefix']) {
+      putSecretAwareFormValue(form, saved, key)
+    }
+    const dm = saved.dm && typeof saved.dm === 'object' ? saved.dm : {}
+    putStringFormValue(form, dm, 'policy')
+    if (form.policy && !form.dmPolicy) {
+      form.dmPolicy = form.policy
+      delete form.policy
+    }
+    putCsvFormValue(form, dm, 'allowFrom')
+    putStringFormValue(form, saved, 'groupPolicy')
+    putCsvFormValue(form, saved, 'groupAllowFrom')
+    putBoolFormValue(form, saved, 'requireMention')
+    putBoolFormValue(form, saved, 'dangerouslyAllowNameMatching')
+    putBoolFormValue(form, saved, 'allowBots')
+    putBoolFormValue(form, saved, 'blockStreaming')
+    for (const key of ['historyLimit', 'dmHistoryLimit', 'textChunkLimit', 'mediaMaxMb']) {
+      if (typeof saved[key] === 'number') form[key] = String(saved[key])
+    }
     return form
   }
 
@@ -3479,6 +3530,32 @@ function buildOpenClawMessagingPlatformEntry(platform, form, currentSaved = {}) 
     if (form.callbackPath) commands.callbackPath = form.callbackPath
     if (form.callbackUrl) commands.callbackUrl = form.callbackUrl
     if (Object.keys(commands).length) entry.commands = { ...(currentSaved?.commands || {}), ...commands }
+  } else if (storageKey === 'synology-chat') {
+    for (const key of ['token', 'incomingUrl', 'nasHost', 'webhookPath', 'botName']) {
+      if (form[key]) entry[key] = form[key]
+    }
+    entry.dmPolicy = form.dmPolicy || 'allowlist'
+    if (Array.isArray(form.allowedUserIds) && form.allowedUserIds.length) entry.allowedUserIds = form.allowedUserIds
+    if (typeof form.rateLimitPerMinute === 'number') entry.rateLimitPerMinute = form.rateLimitPerMinute
+    for (const key of ['dangerouslyAllowNameMatching', 'dangerouslyAllowInheritedWebhookPath', 'allowInsecureSsl']) {
+      if (typeof form[key] === 'boolean') entry[key] = form[key]
+    }
+  } else if (storageKey === 'googlechat') {
+    for (const key of ['serviceAccount', 'serviceAccountFile', 'serviceAccountRef', 'audienceType', 'audience', 'appPrincipal', 'webhookPath', 'webhookUrl', 'botUser', 'chunkMode', 'replyToMode', 'typingIndicator', 'responsePrefix']) {
+      if (form[key]) entry[key] = form[key]
+    }
+    const dm = { ...(currentSaved?.dm && typeof currentSaved.dm === 'object' ? currentSaved.dm : {}) }
+    if (form.dmPolicy) dm.policy = form.dmPolicy
+    if (Array.isArray(form.allowFrom)) dm.allowFrom = form.allowFrom
+    if (Object.keys(dm).length) entry.dm = dm
+    entry.groupPolicy = form.groupPolicy
+    if (Array.isArray(form.groupAllowFrom) && form.groupAllowFrom.length) entry.groupAllowFrom = form.groupAllowFrom
+    for (const key of ['dangerouslyAllowNameMatching', 'requireMention', 'allowBots', 'blockStreaming']) {
+      if (typeof form[key] === 'boolean') entry[key] = form[key]
+    }
+    for (const key of ['historyLimit', 'dmHistoryLimit', 'textChunkLimit', 'mediaMaxMb']) {
+      if (typeof form[key] === 'number') entry[key] = form[key]
+    }
   } else {
     Object.assign(entry, form)
   }
@@ -3494,6 +3571,9 @@ export function mergeOpenClawMessagingPlatformConfig(cfg, { platform, form, acco
   const currentSaved = resolvePlatformConfigEntry(cfg.channels?.[storageKey], platform, normalizedAccountId) || {}
   const entry = buildOpenClawMessagingPlatformEntry(platform, normalizedForm, currentSaved)
   applyMessagingPlatformEntry(cfg, storageKey, normalizedAccountId, entry)
+  if (['zalo', 'zalouser', 'line', 'mattermost', 'synology-chat', 'googlechat'].includes(storageKey)) {
+    ensureMessagingPluginAllowed(cfg, storageKey)
+  }
   return { entry, accountId: normalizedAccountId, storageKey }
 }
 
@@ -4961,16 +5041,16 @@ const handlers = {
       } else {
         setRootChannelEntry(entry)
       }
-    } else if (platform === 'line' || platform === 'mattermost') {
+    } else if (['line', 'mattermost', 'synology-chat', 'googlechat'].includes(storageKey)) {
       const built = buildOpenClawMessagingPlatformEntry(platform, form, currentSaved)
       applyMessagingPlatformEntry(cfg, storageKey, normalizedAccountId, built)
-      ensureMessagingPluginAllowed(cfg, platform)
+      ensureMessagingPluginAllowed(cfg, storageKey)
     } else {
       Object.assign(entry, form)
       preserveMessagingCredentialRefs(entry, form, currentSaved)
     }
 
-    if (platform !== 'qqbot' && platform !== 'feishu' && platform !== 'dingtalk' && platform !== 'dingtalk-connector' && platform !== 'line' && platform !== 'mattermost') {
+    if (platform !== 'qqbot' && platform !== 'feishu' && platform !== 'dingtalk' && platform !== 'dingtalk-connector' && !['line', 'mattermost', 'synology-chat', 'googlechat'].includes(storageKey)) {
       preserveMessagingCredentialRefs(entry, form, currentSaved)
       // 合并模式：保留用户通过 CLI 或手动编辑的自定义字段
       applyMessagingPlatformEntry(cfg, storageKey, normalizedAccountId, entry)

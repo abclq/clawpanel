@@ -569,6 +569,149 @@ test('Mattermost 诊断要求 Bot Token 和 Base URL', () => {
   assert.equal(ready.checks.find(item => item.id === 'credentials')?.ok, true)
 })
 
+test('Synology Chat 渠道保存会写入上游运行时字段并支持多账号', () => {
+  const cfg = { channels: {} }
+
+  mergeOpenClawMessagingPlatformConfig(cfg, {
+    platform: 'synology-chat',
+    accountId: 'nas',
+    form: {
+      token: 'synology-token',
+      incomingUrl: 'https://nas.example.com/webapi/entry.cgi',
+      nasHost: 'https://nas.example.com',
+      webhookPath: '/webhook/synology',
+      dmPolicy: 'allowlist',
+      allowedUserIds: 'alice, bob',
+      rateLimitPerMinute: '45',
+      botName: 'OpenClaw Ops',
+      dangerouslyAllowNameMatching: 'true',
+      dangerouslyAllowInheritedWebhookPath: 'true',
+      allowInsecureSsl: 'true',
+    },
+  })
+
+  const account = cfg.channels['synology-chat'].accounts.nas
+  assert.equal(cfg.channels['synology-chat'].defaultAccount, 'nas')
+  assert.equal(account.token, 'synology-token')
+  assert.equal(account.incomingUrl, 'https://nas.example.com/webapi/entry.cgi')
+  assert.equal(account.nasHost, 'https://nas.example.com')
+  assert.equal(account.webhookPath, '/webhook/synology')
+  assert.equal(account.dmPolicy, 'allowlist')
+  assert.deepEqual(account.allowedUserIds, ['alice', 'bob'])
+  assert.equal(account.rateLimitPerMinute, 45)
+  assert.equal(account.botName, 'OpenClaw Ops')
+  assert.equal(account.dangerouslyAllowNameMatching, true)
+  assert.equal(account.dangerouslyAllowInheritedWebhookPath, true)
+  assert.equal(account.allowInsecureSsl, true)
+  assert.equal(cfg.plugins.entries['synology-chat'].enabled, true)
+})
+
+test('Synology Chat 诊断要求 Token 和 Incoming URL', () => {
+  const missingUrl = buildOpenClawChannelDiagnosis({
+    platform: 'synology-chat',
+    configExists: true,
+    channelEnabled: true,
+    form: { token: 'synology-token' },
+  })
+  const ready = buildOpenClawChannelDiagnosis({
+    platform: 'synology-chat',
+    configExists: true,
+    channelEnabled: true,
+    form: {
+      token: 'synology-token',
+      incomingUrl: 'https://nas.example.com/webapi/entry.cgi',
+    },
+  })
+
+  assert.equal(missingUrl.checks.find(item => item.id === 'credentials')?.ok, false)
+  assert.match(missingUrl.checks.find(item => item.id === 'credentials')?.detail || '', /Incoming URL/)
+  assert.equal(ready.checks.find(item => item.id === 'credentials')?.ok, true)
+})
+
+test('Google Chat 渠道保存会写入 service account 与嵌套 DM 策略', () => {
+  const cfg = { channels: {} }
+
+  mergeOpenClawMessagingPlatformConfig(cfg, {
+    platform: 'googlechat',
+    accountId: 'workspace',
+    form: {
+      serviceAccountFile: '/run/secrets/googlechat.json',
+      audienceType: 'app-url',
+      audience: 'https://panel.example.com/googlechat',
+      webhookPath: '/googlechat',
+      webhookUrl: 'https://panel.example.com/googlechat',
+      dmPolicy: 'open',
+      allowFrom: 'users/123',
+      groupPolicy: 'mentioned',
+      groupAllowFrom: 'spaces/AAA',
+      dangerouslyAllowNameMatching: 'true',
+      requireMention: 'true',
+      mediaMaxMb: '20',
+      responsePrefix: '[AI]',
+    },
+  })
+
+  const account = cfg.channels.googlechat.accounts.workspace
+  assert.equal(cfg.channels.googlechat.defaultAccount, 'workspace')
+  assert.equal(account.serviceAccountFile, '/run/secrets/googlechat.json')
+  assert.equal(account.audienceType, 'app-url')
+  assert.equal(account.audience, 'https://panel.example.com/googlechat')
+  assert.equal(account.webhookPath, '/googlechat')
+  assert.equal(account.webhookUrl, 'https://panel.example.com/googlechat')
+  assert.deepEqual(account.dm, { policy: 'open', allowFrom: ['users/123', '*'] })
+  assert.equal(account.groupPolicy, 'open')
+  assert.equal(account.requireMention, true)
+  assert.deepEqual(account.groupAllowFrom, ['spaces/AAA'])
+  assert.equal(account.dangerouslyAllowNameMatching, true)
+  assert.equal(account.mediaMaxMb, 20)
+  assert.equal(account.responsePrefix, '[AI]')
+  assert.equal(cfg.plugins.entries.googlechat.enabled, true)
+})
+
+test('Google Chat 读取会把嵌套 DM 策略回显为表单字段', () => {
+  const values = buildMessagingPlatformFormValues('googlechat', {
+    serviceAccountFile: '/run/secrets/googlechat.json',
+    audienceType: 'project-number',
+    audience: '1234567890',
+    dm: { policy: 'allowlist', allowFrom: ['users/123', 'name@example.com'] },
+    groupPolicy: 'allowlist',
+    groupAllowFrom: ['spaces/AAA'],
+    requireMention: true,
+    dangerouslyAllowNameMatching: true,
+    mediaMaxMb: 20,
+  })
+
+  assert.equal(values.serviceAccountFile, '/run/secrets/googlechat.json')
+  assert.equal(values.audienceType, 'project-number')
+  assert.equal(values.audience, '1234567890')
+  assert.equal(values.dmPolicy, 'allowlist')
+  assert.equal(values.allowFrom, 'users/123, name@example.com')
+  assert.equal(values.groupPolicy, 'allowlist')
+  assert.equal(values.groupAllowFrom, 'spaces/AAA')
+  assert.equal(values.requireMention, 'true')
+  assert.equal(values.dangerouslyAllowNameMatching, 'true')
+  assert.equal(values.mediaMaxMb, '20')
+})
+
+test('Google Chat 诊断要求 service account 文件或内联 JSON 其中一项', () => {
+  const missingCredential = buildOpenClawChannelDiagnosis({
+    platform: 'googlechat',
+    configExists: true,
+    channelEnabled: true,
+    form: { audienceType: 'app-url', audience: 'https://panel.example.com/googlechat' },
+  })
+  const ready = buildOpenClawChannelDiagnosis({
+    platform: 'googlechat',
+    configExists: true,
+    channelEnabled: true,
+    form: { serviceAccountFile: '/run/secrets/googlechat.json' },
+  })
+
+  assert.equal(missingCredential.checks.find(item => item.id === 'credentials')?.ok, false)
+  assert.match(missingCredential.checks.find(item => item.id === 'credentials')?.detail || '', /Service Account/)
+  assert.equal(ready.checks.find(item => item.id === 'credentials')?.ok, true)
+})
+
 test('Discord 渠道保存会保留运行时需要的 applicationId', () => {
   const cfg = { channels: {} }
 

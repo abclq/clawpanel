@@ -28,6 +28,13 @@ const DM_POLICY_OPTIONS = [
   { value: 'disabled', label: t('channels.dmDisabled') },
 ]
 
+const SYNOLOGY_DM_POLICY_OPTIONS = [
+  { value: '', label: t('channels.policyDefault') },
+  { value: 'open', label: t('channels.dmOpen') },
+  { value: 'allowlist', label: t('channels.dmAllowlist') },
+  { value: 'disabled', label: t('channels.dmDisabled') },
+]
+
 const GROUP_POLICY_OPTIONS = (allLabel, { mention = false } = {}) => [
   { value: '', label: t('channels.policyDefault') },
   { value: 'open', label: allLabel },
@@ -266,6 +273,72 @@ const PLATFORM_REGISTRY = {
     pairingChannel: 'mattermost',
     pluginRequired: '@openclaw/mattermost@latest',
     pluginId: 'mattermost',
+  },
+  'synology-chat': {
+    label: 'Synology Chat',
+    iconName: 'message-square',
+    desc: t('channels.synologyChatDesc'),
+    guide: [
+      t('channels.synologyChatGuide1'),
+      t('channels.synologyChatGuide2'),
+      t('channels.synologyChatGuide3'),
+      t('channels.synologyChatGuide4'),
+    ],
+    guideFooter: t('channels.synologyChatGuideFooter'),
+    fields: [
+      { key: 'token', label: 'Token', placeholder: t('channels.synologyChatTokenPh'), secret: true, required: true },
+      { key: 'incomingUrl', label: 'Incoming URL', placeholder: 'https://nas.example.com/webapi/entry.cgi', required: true, hint: t('channels.synologyChatIncomingUrlHint') },
+      { key: 'nasHost', label: 'NAS Host', placeholder: 'https://nas.example.com', required: false },
+      { key: 'webhookPath', label: 'Webhook Path', placeholder: '/webhook/synology', required: false },
+      { key: 'dmPolicy', label: t('channels.dmPolicy'), type: 'select', options: SYNOLOGY_DM_POLICY_OPTIONS, required: false },
+      { key: 'allowedUserIds', label: 'Allowed User IDs', placeholder: 'alice, bob', required: false, hint: t('channels.synologyChatAllowedUserIdsHint') },
+      { key: 'rateLimitPerMinute', label: 'Rate Limit / Minute', placeholder: '30', required: false },
+      { key: 'botName', label: 'Bot Name', placeholder: 'OpenClaw', required: false },
+      { key: 'dangerouslyAllowNameMatching', label: t('channels.synologyChatNameMatching'), type: 'select', options: BOOLEAN_OPTIONS, required: false, hint: t('channels.synologyChatNameMatchingHint') },
+      { key: 'dangerouslyAllowInheritedWebhookPath', label: t('channels.synologyChatInheritedWebhookPath'), type: 'select', options: BOOLEAN_OPTIONS, required: false, hint: t('channels.synologyChatInheritedWebhookPathHint') },
+      { key: 'allowInsecureSsl', label: t('channels.synologyChatAllowInsecureSsl'), type: 'select', options: BOOLEAN_OPTIONS, required: false, hint: t('channels.synologyChatAllowInsecureSslHint') },
+    ],
+    configKey: 'synology-chat',
+    pluginRequired: '@openclaw/synology-chat@latest',
+    pluginId: 'synology-chat',
+  },
+  googlechat: {
+    label: 'Google Chat',
+    iconName: 'message-square',
+    desc: t('channels.googleChatDesc'),
+    guide: [
+      t('channels.googleChatGuide1'),
+      t('channels.googleChatGuide2'),
+      t('channels.googleChatGuide3'),
+      t('channels.googleChatGuide4'),
+    ],
+    guideFooter: t('channels.googleChatGuideFooter'),
+    fields: [
+      { key: 'serviceAccountFile', label: 'Service Account File', placeholder: '/path/to/service-account.json', required: false, hint: t('channels.googleChatServiceAccountFileHint') },
+      { key: 'serviceAccount', label: 'Service Account JSON', placeholder: '{"type":"service_account", ...}', secret: true, multiline: true, required: false, hint: t('channels.googleChatServiceAccountHint') },
+      { key: 'serviceAccountRef', label: 'Service Account SecretRef', placeholder: 'SecretRef(env:default:GOOGLE_CHAT_SERVICE_ACCOUNT)', required: false, hint: t('channels.googleChatServiceAccountRefHint') },
+      { key: 'audienceType', label: 'Audience Type', type: 'select', options: [
+        { value: '', label: t('channels.policyDefault') },
+        { value: 'app-url', label: 'App URL' },
+        { value: 'project-number', label: 'Project Number' },
+      ], required: false },
+      { key: 'audience', label: 'Audience', placeholder: 'https://panel.example.com/googlechat', required: false, hint: t('channels.googleChatAudienceHint') },
+      { key: 'webhookPath', label: 'Webhook Path', placeholder: '/googlechat', required: false },
+      { key: 'webhookUrl', label: 'Webhook URL', placeholder: 'https://panel.example.com/googlechat', required: false },
+      { key: 'dmPolicy', label: t('channels.dmPolicy'), type: 'select', options: DM_POLICY_OPTIONS, required: false },
+      { key: 'groupPolicy', label: t('channels.groupPolicy'), type: 'select', options: GROUP_POLICY_OPTIONS(t('channels.groupAllSpaces'), { mention: true }), required: false },
+      { key: 'allowFrom', label: 'Allow From', placeholder: 'users/123456789, name@example.com', required: false, hint: t('channels.googleChatAllowFromHint') },
+      { key: 'groupAllowFrom', label: 'Group Allow From', placeholder: 'spaces/AAA, spaces/BBB', required: false, hint: t('channels.googleChatGroupAllowFromHint') },
+      { key: 'dangerouslyAllowNameMatching', label: t('channels.googleChatNameMatching'), type: 'select', options: BOOLEAN_OPTIONS, required: false, hint: t('channels.googleChatNameMatchingHint') },
+      { key: 'requireMention', label: t('channels.googleChatRequireMention'), type: 'select', options: BOOLEAN_OPTIONS, required: false },
+      { key: 'mediaMaxMb', label: 'Media Max MB', placeholder: '20', required: false },
+      { key: 'responsePrefix', label: 'Response Prefix', placeholder: t('channels.optionalEg', { example: '[AI]' }), required: false },
+    ],
+    requiredAny: [{ keys: ['serviceAccountFile', 'serviceAccount', 'serviceAccountRef'], label: t('channels.googleChatServiceAccountRequired') }],
+    configKey: 'googlechat',
+    pairingChannel: 'googlechat',
+    pluginRequired: '@openclaw/googlechat@latest',
+    pluginId: 'googlechat',
   },
   discord: {
     label: 'Discord',
@@ -577,7 +650,7 @@ function applyRouteIntent(page, state) {
 // ── 已配置平台渲染 ──
 
 // ── 多账号支持的平台：与 OpenClaw 的 accounts/defaultAccount 配置模型保持一致 ──
-const MULTI_INSTANCE_PLATFORMS = ['telegram', 'discord', 'slack', 'feishu', 'dingtalk', 'dingtalk-connector', 'qqbot', 'zalo', 'zalouser', 'line', 'mattermost']
+const MULTI_INSTANCE_PLATFORMS = ['telegram', 'discord', 'slack', 'feishu', 'dingtalk', 'dingtalk-connector', 'qqbot', 'zalo', 'zalouser', 'line', 'mattermost', 'synology-chat', 'googlechat']
 
 function supportsMessagingMultiAccount(pid) {
   return MULTI_INSTANCE_PLATFORMS.includes(pid)
@@ -2156,12 +2229,21 @@ async function openConfigDialog(pid, page, state, accountId) {
         </div>
       `
     }
+    if (f.multiline) {
+      return `
+        <div class="form-group">
+          <label class="form-label">${labelWithHelp(f.label)}${f.required ? ' *' : ''}</label>
+          <textarea class="form-input" name="${f.key}" rows="5" placeholder="${escapeAttr(f.placeholder || '')}" ${i === 0 ? 'autofocus' : ''} style="width:100%;min-height:112px;resize:vertical;font-family:var(--font-mono);line-height:1.5">${escapeAttr(val)}</textarea>
+          ${fieldHint ? `<div class="form-hint">${fieldHint}</div>` : ''}
+        </div>
+      `
+    }
     return `
       <div class="form-group">
         <label class="form-label">${labelWithHelp(f.label)}${f.required ? ' *' : ''}</label>
         <div style="display:flex;gap:8px">
           <input class="form-input" name="${f.key}" type="${f.secret ? 'password' : 'text'}"
-                 value="${escapeAttr(val)}" placeholder="${f.placeholder || ''}"
+                 value="${escapeAttr(val)}" placeholder="${escapeAttr(f.placeholder || '')}"
                  ${i === 0 ? 'autofocus' : ''} style="flex:1">
           ${f.secret ? `<button type="button" class="btn btn-sm btn-secondary toggle-vis" data-field="${f.key}">${t('channels.show')}</button>` : ''}
         </div>
@@ -2284,7 +2366,7 @@ async function openConfigDialog(pid, page, state, accountId) {
   const collectForm = () => {
     const obj = {}
     reg.fields.forEach(f => {
-      const el = modal.querySelector(`input[name="${f.key}"]`) || modal.querySelector(`select[name="${f.key}"]`)
+      const el = modal.querySelector(`input[name="${f.key}"]`) || modal.querySelector(`select[name="${f.key}"]`) || modal.querySelector(`textarea[name="${f.key}"]`)
       if (el) obj[f.key] = el.value.trim()
     })
     return obj

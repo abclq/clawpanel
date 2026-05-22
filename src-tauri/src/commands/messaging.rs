@@ -148,6 +148,9 @@ fn preserve_messaging_credential_refs(
         "gatewayToken",
         "password",
         "secretFile",
+        "serviceAccount",
+        "serviceAccountFile",
+        "serviceAccountRef",
         "signingSecret",
         "token",
         "tokenFile",
@@ -192,6 +195,9 @@ fn channel_root_has_messaging_credential(root: &Map<String, Value>) -> bool {
         "gatewayToken",
         "password",
         "secretFile",
+        "serviceAccount",
+        "serviceAccountFile",
+        "serviceAccountRef",
         "signingSecret",
         "token",
         "tokenFile",
@@ -219,6 +225,7 @@ fn required_channel_credential_fields(
         "dingtalk-connector" => vec![("clientId", "Client ID"), ("clientSecret", "Client Secret")],
         "msteams" => vec![("appId", "App ID"), ("appPassword", "App Password")],
         "mattermost" => vec![("botToken", "Bot Token"), ("baseUrl", "Base URL")],
+        "synology-chat" => vec![("token", "Token"), ("incomingUrl", "Incoming URL")],
         "signal" => vec![("account", "Signal 账号")],
         "slack" => {
             let mode = form_string(form, "mode");
@@ -249,6 +256,11 @@ fn required_channel_credential_fields(
 fn channel_any_credential_fields(platform: &str) -> Vec<(&'static str, &'static str)> {
     match platform_storage_key(platform) {
         "zalo" => vec![("botToken", "Bot Token"), ("tokenFile", "Token File")],
+        "googlechat" => vec![
+            ("serviceAccountFile", "Service Account File"),
+            ("serviceAccount", "Service Account JSON"),
+            ("serviceAccountRef", "Service Account SecretRef"),
+        ],
         _ => vec![],
     }
 }
@@ -701,7 +713,7 @@ fn normalize_group_policy_value(raw: Option<&Value>, fallback: &str) -> String {
 fn platform_supports_top_level_require_mention(platform: &str) -> bool {
     matches!(
         platform_storage_key(platform),
-        "feishu" | "slack" | "msteams" | "mattermost"
+        "feishu" | "slack" | "msteams" | "mattermost" | "googlechat"
     )
 }
 
@@ -731,6 +743,7 @@ fn normalize_messaging_platform_form(
             | "zalouser"
             | "line"
             | "mattermost"
+            | "googlechat"
     );
     let has_dm_field = normalized.contains_key("dmPolicy") || needs_access_defaults;
     let has_group_field = normalized.contains_key("groupPolicy") || needs_access_defaults;
@@ -786,12 +799,24 @@ fn normalize_messaging_platform_form(
         normalized.insert("groupAllowFrom".into(), Value::Array(items));
     }
 
+    if normalized.contains_key("allowedUserIds") {
+        let items = json_array_from_csv_value(normalized.get("allowedUserIds"));
+        normalized.insert("allowedUserIds".into(), Value::Array(items));
+    }
+
     normalize_numeric_form_value(&mut normalized, "mediaMaxMb");
     normalize_numeric_form_value(&mut normalized, "historyLimit");
+    normalize_numeric_form_value(&mut normalized, "dmHistoryLimit");
+    normalize_numeric_form_value(&mut normalized, "textChunkLimit");
+    normalize_numeric_form_value(&mut normalized, "rateLimitPerMinute");
 
     for key in [
         "dangerouslyAllowNameMatching",
         "dangerouslyAllowPrivateNetwork",
+        "dangerouslyAllowInheritedWebhookPath",
+        "allowInsecureSsl",
+        "allowBots",
+        "blockStreaming",
     ] {
         if normalized.contains_key(key) {
             let value = match normalized.get(key) {
@@ -1450,6 +1475,60 @@ pub async fn read_platform_config(
             if let Some(commands) = saved.get("commands") {
                 insert_string_if_present(&mut form, commands, "callbackPath");
                 insert_string_if_present(&mut form, commands, "callbackUrl");
+            }
+        }
+        "synology-chat" => {
+            for key in ["token", "incomingUrl", "nasHost", "webhookPath", "botName"] {
+                insert_secret_aware_form_value(&mut form, &saved, key);
+            }
+            insert_string_if_present(&mut form, &saved, "dmPolicy");
+            insert_array_as_csv(&mut form, &saved, "allowedUserIds");
+            if let Some(v) = saved.get("rateLimitPerMinute").and_then(|v| v.as_i64()) {
+                form.insert("rateLimitPerMinute".into(), Value::String(v.to_string()));
+            }
+            insert_bool_as_string(&mut form, &saved, "dangerouslyAllowNameMatching");
+            insert_bool_as_string(&mut form, &saved, "dangerouslyAllowInheritedWebhookPath");
+            insert_bool_as_string(&mut form, &saved, "allowInsecureSsl");
+        }
+        "googlechat" => {
+            for key in [
+                "serviceAccount",
+                "serviceAccountFile",
+                "serviceAccountRef",
+                "audienceType",
+                "audience",
+                "appPrincipal",
+                "webhookPath",
+                "webhookUrl",
+                "botUser",
+                "chunkMode",
+                "replyToMode",
+                "typingIndicator",
+                "responsePrefix",
+            ] {
+                insert_secret_aware_form_value(&mut form, &saved, key);
+            }
+            if let Some(dm) = saved.get("dm") {
+                if let Some(policy) = dm.get("policy").and_then(|v| v.as_str()) {
+                    form.insert("dmPolicy".into(), Value::String(policy.into()));
+                }
+                insert_array_as_csv(&mut form, dm, "allowFrom");
+            }
+            insert_string_if_present(&mut form, &saved, "groupPolicy");
+            insert_array_as_csv(&mut form, &saved, "groupAllowFrom");
+            insert_bool_as_string(&mut form, &saved, "requireMention");
+            insert_bool_as_string(&mut form, &saved, "dangerouslyAllowNameMatching");
+            insert_bool_as_string(&mut form, &saved, "allowBots");
+            insert_bool_as_string(&mut form, &saved, "blockStreaming");
+            for key in [
+                "historyLimit",
+                "dmHistoryLimit",
+                "textChunkLimit",
+                "mediaMaxMb",
+            ] {
+                if let Some(v) = saved.get(key).and_then(|v| v.as_f64()) {
+                    form.insert(key.into(), Value::String(v.to_string()));
+                }
             }
         }
         _ => {
@@ -2225,6 +2304,148 @@ pub async fn save_messaging_platform(
                 entry,
             )?;
             ensure_plugin_allowed(&mut cfg, "mattermost")?;
+        }
+        "synology-chat" => {
+            let token = form_string(form_obj, "token");
+            let incoming_url = form_string(form_obj, "incomingUrl");
+            if token.is_empty() {
+                return Err("Synology Chat Token 不能为空".into());
+            }
+            if incoming_url.is_empty() {
+                return Err("Synology Chat Incoming URL 不能为空".into());
+            }
+
+            let mut entry = Map::new();
+            entry.insert("enabled".into(), Value::Bool(true));
+            put_string(&mut entry, "token", token);
+            put_string(&mut entry, "incomingUrl", incoming_url);
+            put_string(&mut entry, "nasHost", form_string(form_obj, "nasHost"));
+            put_string(
+                &mut entry,
+                "webhookPath",
+                form_string(form_obj, "webhookPath"),
+            );
+            put_string(&mut entry, "botName", form_string(form_obj, "botName"));
+            put_string(&mut entry, "dmPolicy", form_string(form_obj, "dmPolicy"));
+            put_array_from_form_value(&mut entry, "allowedUserIds", form_obj.get("allowedUserIds"));
+            if let Some(value) = form_obj.get("rateLimitPerMinute").and_then(|v| v.as_f64()) {
+                if let Some(number) = serde_json::Number::from_f64(value) {
+                    entry.insert("rateLimitPerMinute".into(), Value::Number(number));
+                }
+            } else {
+                put_number_from_form(
+                    &mut entry,
+                    "rateLimitPerMinute",
+                    &form_string(form_obj, "rateLimitPerMinute"),
+                );
+            }
+            put_bool_value_if_present(
+                &mut entry,
+                "dangerouslyAllowNameMatching",
+                form_obj.get("dangerouslyAllowNameMatching"),
+            );
+            put_bool_value_if_present(
+                &mut entry,
+                "dangerouslyAllowInheritedWebhookPath",
+                form_obj.get("dangerouslyAllowInheritedWebhookPath"),
+            );
+            put_bool_value_if_present(
+                &mut entry,
+                "allowInsecureSsl",
+                form_obj.get("allowInsecureSsl"),
+            );
+            preserve_messaging_credential_refs(&mut entry, form_obj, &current_saved);
+            merge_channel_entry_for_account(
+                channels_map,
+                &storage_key,
+                account_id.as_deref(),
+                entry,
+            )?;
+            ensure_plugin_allowed(&mut cfg, "synology-chat")?;
+        }
+        "googlechat" => {
+            let has_service_account =
+                has_configured_messaging_value(form_obj.get("serviceAccount"))
+                    || has_configured_messaging_value(form_obj.get("serviceAccountFile"))
+                    || has_configured_messaging_value(form_obj.get("serviceAccountRef"));
+            if !has_service_account {
+                return Err(
+                    "Google Chat 需要填写 Service Account JSON、Service Account File 或 SecretRef"
+                        .into(),
+                );
+            }
+
+            let mut entry = Map::new();
+            entry.insert("enabled".into(), Value::Bool(true));
+            for key in [
+                "serviceAccount",
+                "serviceAccountFile",
+                "serviceAccountRef",
+                "audienceType",
+                "audience",
+                "appPrincipal",
+                "webhookPath",
+                "webhookUrl",
+                "botUser",
+                "chunkMode",
+                "replyToMode",
+                "typingIndicator",
+                "responsePrefix",
+            ] {
+                put_string(&mut entry, key, form_string(form_obj, key));
+            }
+
+            let mut dm = current_saved
+                .get("dm")
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default();
+            put_string(&mut dm, "policy", form_string(form_obj, "dmPolicy"));
+            let allow_from = json_array_from_csv_value(form_obj.get("allowFrom"));
+            if !allow_from.is_empty() {
+                dm.insert("allowFrom".into(), Value::Array(allow_from));
+            }
+            if !dm.is_empty() {
+                entry.insert("dm".into(), Value::Object(dm));
+            }
+
+            put_string(
+                &mut entry,
+                "groupPolicy",
+                form_string(form_obj, "groupPolicy"),
+            );
+            put_array_from_form_value(&mut entry, "groupAllowFrom", form_obj.get("groupAllowFrom"));
+            for key in [
+                "dangerouslyAllowNameMatching",
+                "requireMention",
+                "allowBots",
+                "blockStreaming",
+            ] {
+                put_bool_value_if_present(&mut entry, key, form_obj.get(key));
+            }
+            for key in [
+                "historyLimit",
+                "dmHistoryLimit",
+                "textChunkLimit",
+                "mediaMaxMb",
+            ] {
+                if let Some(value) = form_obj.get(key).and_then(|v| v.as_f64()) {
+                    if let Some(number) = serde_json::Number::from_f64(value) {
+                        entry.insert(key.into(), Value::Number(number));
+                    }
+                } else {
+                    put_number_from_form(&mut entry, key, &form_string(form_obj, key));
+                }
+            }
+
+            preserve_messaging_credential_refs(&mut entry, form_obj, &current_saved);
+            merge_channel_entry_for_account(
+                channels_map,
+                &storage_key,
+                account_id.as_deref(),
+                entry,
+            )?;
+            ensure_plugin_allowed(&mut cfg, "googlechat")?;
         }
         _ => {
             // 通用平台：直接保存表单字段
