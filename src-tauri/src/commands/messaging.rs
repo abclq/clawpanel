@@ -147,6 +147,7 @@ fn preserve_messaging_credential_refs(
         "password",
         "signingSecret",
         "token",
+        "tokenFile",
     ] {
         if !form_obj.contains_key(key) {
             continue;
@@ -160,6 +161,36 @@ fn preserve_messaging_credential_refs(
             }
         }
     }
+}
+
+fn has_configured_messaging_value(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::String(raw)) => !raw.trim().is_empty(),
+        Some(value) if secret_ref_parts(value).is_some() => true,
+        Some(Value::Null) | None => false,
+        Some(_) => true,
+    }
+}
+
+fn channel_root_has_messaging_credential(root: &Map<String, Value>) -> bool {
+    [
+        "accessToken",
+        "appId",
+        "appPassword",
+        "appSecret",
+        "appToken",
+        "botToken",
+        "clientId",
+        "clientSecret",
+        "gatewayPassword",
+        "gatewayToken",
+        "password",
+        "signingSecret",
+        "token",
+        "tokenFile",
+    ]
+    .iter()
+    .any(|key| has_configured_messaging_value(root.get(*key)))
 }
 
 fn insert_bool_as_string(form: &mut Map<String, Value>, source: &Value, key: &str) {
@@ -454,6 +485,19 @@ fn merge_account_channel_entry(
     let channel_obj = channel
         .as_object_mut()
         .ok_or(format!("{} 节点格式错误", key))?;
+    let accounts_before = channel_obj
+        .get("accounts")
+        .and_then(|value| value.as_object())
+        .map(|accounts| accounts.keys().filter(|id| !id.is_empty()).count())
+        .unwrap_or(0);
+    let should_set_default_account = channel_obj
+        .get("defaultAccount")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+        && !channel_root_has_messaging_credential(channel_obj)
+        && accounts_before == 0;
     channel_obj.insert("enabled".into(), Value::Bool(true));
     let accounts = channel_obj.entry("accounts").or_insert_with(|| json!({}));
     let accounts_obj = accounts.as_object_mut().ok_or("accounts 格式错误")?;
@@ -467,6 +511,12 @@ fn merge_account_channel_entry(
         new_entry
     };
     accounts_obj.insert(account_id.to_string(), Value::Object(merged));
+    if should_set_default_account {
+        channel_obj.insert(
+            "defaultAccount".into(),
+            Value::String(account_id.to_string()),
+        );
+    }
     Ok(())
 }
 

@@ -2564,7 +2564,19 @@ const MESSAGING_CREDENTIAL_FIELDS = [
   'password',
   'signingSecret',
   'token',
+  'tokenFile',
 ]
+
+function hasConfiguredMessagingValue(value) {
+  if (typeof value === 'string') return value.trim().length > 0
+  if (normalizeSecretRef(value)) return true
+  return value !== undefined && value !== null
+}
+
+function channelRootHasMessagingCredential(root) {
+  if (!root || typeof root !== 'object' || Array.isArray(root)) return false
+  return MESSAGING_CREDENTIAL_FIELDS.some(key => hasConfiguredMessagingValue(root[key]))
+}
 
 function preserveMessagingCredentialRefs(entry, form, current) {
   delete entry.__secretRefs
@@ -3083,12 +3095,19 @@ function mergeMessagingAccountEntry(cfg, storageKey, accountId, entry) {
   const root = existingRoot && typeof existingRoot === 'object' && !Array.isArray(existingRoot)
     ? existingRoot
     : { enabled: true }
+  const accountsBefore = root.accounts && typeof root.accounts === 'object' && !Array.isArray(root.accounts)
+    ? Object.keys(root.accounts).filter(Boolean)
+    : []
+  const shouldSetDefaultAccount = !String(root.defaultAccount || '').trim()
+    && !channelRootHasMessagingCredential(root)
+    && accountsBefore.length === 0
   root.enabled = true
   if (!root.accounts || typeof root.accounts !== 'object' || Array.isArray(root.accounts)) root.accounts = {}
   const existingAccount = root.accounts[accountId]
   root.accounts[accountId] = existingAccount && typeof existingAccount === 'object' && !Array.isArray(existingAccount)
     ? { ...existingAccount, ...entry }
     : entry
+  if (shouldSetDefaultAccount) root.defaultAccount = accountId
   cfg.channels[storageKey] = root
 }
 

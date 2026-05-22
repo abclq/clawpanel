@@ -275,3 +275,58 @@ test('OpenClaw 渠道保存带账号标识时会写入 accounts 而不是覆盖�
   assert.equal(cfg.channels.slack.accounts['team-a'].botToken, 'team-slack')
   assert.equal(cfg.channels.slack.accounts['team-a'].appToken, 'team-app')
 })
+
+test('OpenClaw 渠道保存第一个命名账号时会固定 defaultAccount', () => {
+  const cfg = { channels: {} }
+
+  mergeOpenClawMessagingPlatformConfig(cfg, {
+    platform: 'telegram',
+    accountId: 'alerts',
+    form: { botToken: 'alerts-token' },
+  })
+  mergeOpenClawMessagingPlatformConfig(cfg, {
+    platform: 'telegram',
+    accountId: 'ops',
+    form: { botToken: 'ops-token' },
+  })
+
+  assert.equal(cfg.channels.telegram.defaultAccount, 'alerts')
+  assert.equal(cfg.channels.telegram.accounts.alerts.botToken, 'alerts-token')
+  assert.equal(cfg.channels.telegram.accounts.ops.botToken, 'ops-token')
+})
+
+test('OpenClaw 渠道保存命名账号时不会覆盖已有默认账号或根凭证默认账号', () => {
+  const explicitDefault = {
+    channels: {
+      discord: {
+        defaultAccount: 'ops',
+        accounts: { ops: { token: 'ops-token' } },
+      },
+    },
+  }
+  mergeOpenClawMessagingPlatformConfig(explicitDefault, {
+    platform: 'discord',
+    accountId: 'alerts',
+    form: { token: 'alerts-token' },
+  })
+
+  const rootDefault = {
+    channels: {
+      slack: {
+        mode: 'socket',
+        botToken: 'root-bot',
+        appToken: 'root-app',
+      },
+    },
+  }
+  mergeOpenClawMessagingPlatformConfig(rootDefault, {
+    platform: 'slack',
+    accountId: 'team-a',
+    form: { mode: 'socket', botToken: 'team-bot', appToken: 'team-app' },
+  })
+
+  assert.equal(explicitDefault.channels.discord.defaultAccount, 'ops')
+  assert.equal(explicitDefault.channels.discord.accounts.alerts.token, 'alerts-token')
+  assert.equal(rootDefault.channels.slack.defaultAccount, undefined)
+  assert.equal(rootDefault.channels.slack.accounts['team-a'].botToken, 'team-bot')
+})
