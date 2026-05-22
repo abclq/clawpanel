@@ -1476,6 +1476,39 @@ function showQqDiagnoseModal(result, options = {}) {
   })
 }
 
+function showChannelDiagnoseModal(result, options = {}) {
+  const platformName = options.platformName || result?.platform || t('channels.channel')
+  const checks = Array.isArray(result?.checks) ? result.checks : []
+  const summaryOk = !!result?.overallReady
+  const summary = summaryOk
+    ? `<div style="background:var(--success-muted);color:var(--success);padding:10px 14px;border-radius:var(--radius-md);margin-bottom:12px;font-size:var(--font-size-sm);line-height:1.5">${icon('check', 14)} ${t('channels.channelDiagAllPassed')}</div>`
+    : `<div style="background:var(--warning-muted);color:var(--warning);padding:10px 14px;border-radius:var(--radius-md);margin-bottom:12px;font-size:var(--font-size-sm);line-height:1.5">${icon('alert-triangle', 14)} ${t('channels.channelDiagHasFailed')}</div>`
+  const list = checks.map(c => {
+    const ok = !!c.ok
+    const tone = ok ? 'var(--success)' : 'var(--error)'
+    const bg = ok ? 'var(--success-muted)' : 'var(--error-muted, rgba(220,38,38,0.1))'
+    const label = ok ? t('channels.channelDiagPassed') : t('channels.channelDiagNeedsAction')
+    return `<div style="border:1px solid ${bg};border-left:3px solid ${tone};padding:10px 12px;margin-bottom:8px;background:var(--bg-tertiary);border-radius:var(--radius-md)">
+      <div style="display:flex;align-items:center;gap:8px;font-weight:600;color:var(--text-primary)">
+        <span style="color:${tone};min-width:18px">${ok ? icon('check', 14) : icon('x', 14)}</span>
+        <span>${escapeAttr(c.title || '')}</span>
+        <span style="margin-left:auto;font-size:var(--font-size-xs);font-weight:600;color:${tone};background:${bg};padding:2px 8px;border-radius:999px;white-space:nowrap">${label}</span>
+      </div>
+      <div style="font-size:var(--font-size-sm);color:var(--text-secondary);margin-top:6px;line-height:1.55;white-space:pre-wrap">${escapeAttr(c.detail || '')}</div>
+    </div>`
+  }).join('')
+  const hints = (result?.userHints || []).map(h =>
+    `<li style="margin-bottom:8px;line-height:1.5">${escapeAttr(h)}</li>`
+  ).join('')
+  const empty = `<div class="form-hint" style="padding:12px 0">${t('channels.channelDiagNoChecks')}</div>`
+
+  showContentModal({
+    title: t('channels.channelDiagTitle', { platform: platformName }),
+    content: `${summary}<div style="max-height:min(52vh,420px);overflow-y:auto;margin-bottom:12px;margin-top:12px">${list || empty}</div><div style="font-weight:600;margin-bottom:8px;font-size:var(--font-size-sm)">${t('channels.notes')}</div><ul style="padding-left:18px;font-size:var(--font-size-sm);color:var(--text-secondary);margin:0">${hints}</ul>`,
+    width: 540,
+  })
+}
+
 async function runChannelTestForBinding(binding, btnEl) {
   const match = binding?.match || {}
   const channel = match.channel
@@ -1489,30 +1522,18 @@ async function runChannelTestForBinding(binding, btnEl) {
   const prevHtml = btnEl?.innerHTML
   if (btnEl) {
     btnEl.disabled = true
-    btnEl.textContent = channel === 'qqbot' ? t('channels.diagnosing') : t('channels.testing')
+    btnEl.textContent = t('channels.diagnosing')
   }
   try {
+    const result = await api.diagnoseChannel(platformId, accountId)
     if (channel === 'qqbot') {
-      const result = await api.diagnoseChannel('qqbot', accountId)
       showQqDiagnoseModal(result, { accountId })
       return
     }
-    const res = await api.readPlatformConfig(platformId, accountId)
-    if (!res?.exists) {
-      toast(t('channels.noCredentialsFound'), 'warning')
-      return
-    }
-    const form = res.values || {}
-    const out = await api.verifyBotToken(platformId, form)
-    if (out.valid) {
-      const details = (out.details || []).join(' · ')
-      toast(`${t('channels.testPassed')}${details ? ': ' + details : ''}`, 'success')
-    } else {
-      const errs = (out.errors || [t('channels.verifyFailed')]).join('; ')
-      toast(t('channels.testFailed') + ': ' + errs, 'error')
-    }
+    const platformName = PLATFORM_REGISTRY[platformId]?.label || CHANNEL_LABELS[platformId] || platformId
+    showChannelDiagnoseModal(result, { platformName, accountId })
   } catch (e) {
-    toast(humanizeError(e, channel === 'qqbot' ? t('channels.diagFailed') : t('channels.testFailed')), 'error')
+    toast(humanizeError(e, t('channels.diagFailed')), 'error')
   } finally {
     if (btnEl) {
       btnEl.disabled = false

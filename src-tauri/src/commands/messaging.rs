@@ -200,6 +200,220 @@ fn value_has_messaging_credential(value: &Value) -> bool {
         .unwrap_or(false)
 }
 
+fn required_channel_credential_fields(
+    platform: &str,
+    form: &Map<String, Value>,
+) -> Vec<(&'static str, &'static str)> {
+    match platform_storage_key(platform) {
+        "telegram" => vec![("botToken", "Bot Token")],
+        "discord" => vec![("token", "Bot Token")],
+        "feishu" => vec![("appId", "App ID"), ("appSecret", "App Secret")],
+        "dingtalk-connector" => vec![("clientId", "Client ID"), ("clientSecret", "Client Secret")],
+        "msteams" => vec![("appId", "App ID"), ("appPassword", "App Password")],
+        "signal" => vec![("account", "Signal 账号")],
+        "slack" => {
+            let mode = form_string(form, "mode");
+            vec![
+                ("botToken", "Bot Token"),
+                if mode == "http" {
+                    ("signingSecret", "Signing Secret")
+                } else {
+                    ("appToken", "App Token")
+                },
+            ]
+        }
+        "matrix" => {
+            if has_configured_messaging_value(form.get("accessToken")) {
+                vec![("accessToken", "Access Token")]
+            } else {
+                vec![
+                    ("homeserver", "Homeserver"),
+                    ("userId", "User ID"),
+                    ("password", "Password"),
+                ]
+            }
+        }
+        _ => vec![],
+    }
+}
+
+fn channel_diagnosis_credentials_ready(platform: &str, form: &Map<String, Value>) -> bool {
+    let required_fields = required_channel_credential_fields(platform, form);
+    if required_fields.is_empty() {
+        return channel_root_has_messaging_credential(form);
+    }
+    required_fields
+        .iter()
+        .all(|(key, _)| has_configured_messaging_value(form.get(*key)))
+}
+
+fn json_string_list(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| item.as_str())
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn compact_diagnostic_details(values: &[String]) -> String {
+    values
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join("；")
+}
+
+fn build_openclaw_channel_diagnosis(
+    platform: &str,
+    account_id: Option<&str>,
+    config_exists: bool,
+    channel_enabled: bool,
+    form: &Map<String, Value>,
+    verify_result: Option<Value>,
+    verify_error: Option<String>,
+) -> Value {
+    let storage_key = platform_storage_key(platform);
+    let display_platform = platform_list_id(storage_key);
+    let account_id = account_id.map(str::trim).filter(|id| !id.is_empty());
+    let mut checks = Vec::new();
+
+    checks.push(json!({
+        "id": "config_exists",
+        "ok": config_exists,
+        "title": "渠道配置已保存",
+        "detail": if config_exists {
+            format!(
+                "已读取 channels.{}{} 的配置。",
+                storage_key,
+                account_id.map(|id| format!(".accounts.{}", id)).unwrap_or_default()
+            )
+        } else {
+            format!(
+                "未在 openclaw.json 中找到 {} 渠道配置，请先在「渠道列表」接入并保存。",
+                display_platform
+            )
+        }
+    }));
+
+    checks.push(json!({
+        "id": "channel_enabled",
+        "ok": channel_enabled,
+        "title": "渠道已启用",
+        "detail": if channel_enabled {
+            "渠道未被显式禁用，Gateway 重启/重载后会尝试加载。".to_string()
+        } else {
+            format!("channels.{}.enabled 为 false，请先在渠道列表中启用该渠道。", storage_key)
+        }
+    }));
+
+    let required_fields = required_channel_credential_fields(storage_key, form);
+    let missing: Vec<&str> = required_fields
+        .iter()
+        .filter(|(key, _)| !has_configured_messaging_value(form.get(*key)))
+        .map(|(_, label)| *label)
+        .collect();
+    let credential_ok = if required_fields.is_empty() {
+        channel_root_has_messaging_credential(form)
+    } else {
+        missing.is_empty()
+    };
+    let required_labels = required_fields
+        .iter()
+        .map(|(_, label)| *label)
+        .collect::<Vec<_>>()
+        .join(" / ");
+    checks.push(json!({
+        "id": "credentials",
+        "ok": credential_ok,
+        "title": "必要凭证字段",
+        "detail": if credential_ok {
+            if required_fields.is_empty() {
+                "已检测到可用凭证字段。".to_string()
+            } else {
+                format!("已填写 {}。", required_labels)
+            }
+        } else if missing.is_empty() {
+            "未检测到可用凭证字段，请检查渠道配置。".to_string()
+        } else {
+            format!("缺少 {}，请补齐后保存。", missing.join(" / "))
+        }
+    }));
+
+    if let Some(error) = verify_error.filter(|error| !error.trim().is_empty()) {
+        checks.push(json!({
+            "id": "online_verify",
+            "ok": false,
+            "title": "平台在线校验",
+            "detail": error
+        }));
+    } else if let Some(result) = verify_result {
+        let valid = result.get("valid").and_then(|v| v.as_bool()) == Some(true);
+        let errors = json_string_list(result.get("errors"));
+        let warnings = json_string_list(result.get("warnings"));
+        let details = json_string_list(result.get("details"));
+        let verify_ok = valid || (!warnings.is_empty() && errors.is_empty());
+        checks.push(json!({
+            "id": "online_verify",
+            "ok": verify_ok,
+            "title": "平台在线校验",
+            "detail": if valid {
+                let detail = compact_diagnostic_details(&details);
+                if detail.is_empty() {
+                    "平台 API 已接受当前凭证。".to_string()
+                } else {
+                    detail
+                }
+            } else {
+                let detail = compact_diagnostic_details(&errors);
+                if detail.is_empty() {
+                    let warning_detail = compact_diagnostic_details(&warnings);
+                    if warning_detail.is_empty() {
+                        "该平台暂不支持在线校验。".to_string()
+                    } else {
+                        warning_detail
+                    }
+                } else {
+                    detail
+                }
+            }
+        }));
+    } else {
+        checks.push(json!({
+            "id": "online_verify",
+            "ok": true,
+            "title": "平台在线校验",
+            "detail": "未执行在线校验，仅完成本地配置检查。"
+        }));
+    }
+
+    let failed_count = checks
+        .iter()
+        .filter(|check| check.get("ok").and_then(|v| v.as_bool()) != Some(true))
+        .count();
+    json!({
+        "ok": failed_count == 0,
+        "overallReady": failed_count == 0,
+        "platform": display_platform,
+        "accountId": account_id,
+        "checks": checks,
+        "userHints": if failed_count == 0 {
+            vec!["配置侧检查已通过。若仍收不到消息，请确认 Gateway 已重启、机器人已加入目标会话，并检查 Gateway 日志。"]
+        } else {
+            vec![
+                "先修复未通过的检查项，保存渠道后重启或重载 Gateway。",
+                "在线校验只能证明平台凭证可用；群聊白名单、机器人邀请和平台回调仍需在对应平台控制台确认。",
+            ]
+        }
+    })
+}
+
 fn insert_bool_as_string(form: &mut Map<String, Value>, source: &Value, key: &str) {
     if let Some(v) = source.get(key).and_then(|v| v.as_bool()) {
         form.insert(
@@ -2308,13 +2522,55 @@ pub async fn diagnose_channel(
     platform: String,
     account_id: Option<String>,
 ) -> Result<Value, String> {
-    match platform.as_str() {
-        "qqbot" => diagnose_qqbot_channel(account_id).await,
-        _ => Err(format!(
-            "暂不支持平台「{}」的深度诊断（当前仅实现 qqbot）",
-            platform
-        )),
+    let platform = platform.trim().to_string();
+    if platform.is_empty() {
+        return Err("platform 不能为空".into());
     }
+    if platform == "qqbot" {
+        return diagnose_qqbot_channel(account_id).await;
+    }
+
+    let cfg = super::config::load_openclaw_json().unwrap_or_else(|_| json!({}));
+    let storage_key = platform_storage_key(&platform);
+    let normalized_account_id = account_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty());
+    let channel_root = cfg.get("channels").and_then(|c| c.get(storage_key));
+    let channel_enabled = channel_root
+        .and_then(|node| node.get("enabled"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let saved =
+        read_platform_config(platform.clone(), normalized_account_id.map(str::to_string)).await?;
+    let config_exists = saved
+        .get("exists")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let form = saved
+        .get("values")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let credentials_ready = channel_diagnosis_credentials_ready(&platform, &form);
+    let (verify_result, verify_error) = if config_exists && credentials_ready {
+        match verify_bot_token(platform.clone(), Value::Object(form.clone())).await {
+            Ok(result) => (Some(result), None),
+            Err(error) => (None, Some(error)),
+        }
+    } else {
+        (None, None)
+    };
+
+    Ok(build_openclaw_channel_diagnosis(
+        &platform,
+        normalized_account_id,
+        config_exists,
+        channel_enabled,
+        &form,
+        verify_result,
+        verify_error,
+    ))
 }
 
 /// 一键修复 QQ 插件：未安装则安装官方包并重启 Gateway；已安装则补齐 plugins.allow / entries 并重载 Gateway。

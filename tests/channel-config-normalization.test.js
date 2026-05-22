@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  buildOpenClawChannelDiagnosis,
   buildMessagingPlatformFormValues,
   listPlatformAccounts,
   mergeOpenClawMessagingPlatformConfig,
@@ -284,6 +285,84 @@ test('OpenClaw 渠道保存带账号标识时会写入 accounts 而不是覆盖�
   assert.equal(cfg.channels.slack.botToken, 'root-slack')
   assert.equal(cfg.channels.slack.accounts['team-a'].botToken, 'team-slack')
   assert.equal(cfg.channels.slack.accounts['team-a'].appToken, 'team-app')
+})
+
+test('通用渠道诊断会指出 Telegram 缺少 Bot Token', () => {
+  const result = buildOpenClawChannelDiagnosis({
+    platform: 'telegram',
+    configExists: true,
+    channelEnabled: true,
+    form: {
+      dmPolicy: 'pairing',
+      groupPolicy: 'allowlist',
+    },
+  })
+
+  assert.equal(result.ok, false)
+  assert.equal(result.overallReady, false)
+  assert.equal(result.checks.find(item => item.id === 'credentials')?.ok, false)
+  assert.match(result.checks.find(item => item.id === 'credentials')?.detail || '', /Bot Token/)
+})
+
+test('通用渠道诊断在缺少渠道配置时不会误报渠道已禁用', () => {
+  const result = buildOpenClawChannelDiagnosis({
+    platform: 'telegram',
+    configExists: false,
+    channelEnabled: true,
+    form: {},
+  })
+
+  assert.equal(result.ok, false)
+  assert.equal(result.checks.find(item => item.id === 'config_exists')?.ok, false)
+  assert.equal(result.checks.find(item => item.id === 'channel_enabled')?.ok, true)
+  assert.match(result.checks.find(item => item.id === 'channel_enabled')?.detail || '', /未被显式禁用/)
+})
+
+test('通用渠道诊断会按 Slack 模式检查动态必填凭证', () => {
+  const socketResult = buildOpenClawChannelDiagnosis({
+    platform: 'slack',
+    configExists: true,
+    channelEnabled: true,
+    form: {
+      mode: 'socket',
+      botToken: 'xoxb-token',
+    },
+  })
+  const httpResult = buildOpenClawChannelDiagnosis({
+    platform: 'slack',
+    configExists: true,
+    channelEnabled: true,
+    form: {
+      mode: 'http',
+      botToken: 'xoxb-token',
+      signingSecret: 'secret',
+    },
+  })
+
+  assert.equal(socketResult.ok, false)
+  assert.match(socketResult.checks.find(item => item.id === 'credentials')?.detail || '', /App Token/)
+  assert.equal(httpResult.checks.find(item => item.id === 'credentials')?.ok, true)
+})
+
+test('通用渠道诊断会识别钉钉 Client ID 和 Client Secret', () => {
+  const result = buildOpenClawChannelDiagnosis({
+    platform: 'dingtalk',
+    configExists: true,
+    channelEnabled: true,
+    form: {
+      clientId: 'ding-app-key',
+      clientSecret: 'ding-secret',
+    },
+    verifyResult: {
+      valid: true,
+      details: ['已通过 accessToken 接口校验'],
+    },
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.overallReady, true)
+  assert.equal(result.checks.find(item => item.id === 'credentials')?.ok, true)
+  assert.equal(result.checks.find(item => item.id === 'online_verify')?.ok, true)
 })
 
 test('Discord 渠道保存会保留运行时需要的 applicationId', () => {

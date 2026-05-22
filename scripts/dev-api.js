@@ -2578,6 +2578,141 @@ function channelRootHasMessagingCredential(root) {
   return MESSAGING_CREDENTIAL_FIELDS.some(key => hasConfiguredMessagingValue(root[key]))
 }
 
+const CHANNEL_DIAG_REQUIRED_FIELDS = {
+  telegram: [['botToken', 'Bot Token']],
+  discord: [['token', 'Bot Token']],
+  feishu: [['appId', 'App ID'], ['appSecret', 'App Secret']],
+  dingtalk: [['clientId', 'Client ID'], ['clientSecret', 'Client Secret']],
+  'dingtalk-connector': [['clientId', 'Client ID'], ['clientSecret', 'Client Secret']],
+  msteams: [['appId', 'App ID'], ['appPassword', 'App Password']],
+  signal: [['account', 'Signal 账号']],
+}
+
+function requiredChannelCredentialFields(platform, form = {}) {
+  const storageKey = platformStorageKey(platform)
+  if (storageKey === 'slack') {
+    const mode = String(form.mode || 'socket').trim() || 'socket'
+    return [
+      ['botToken', 'Bot Token'],
+      mode === 'http' ? ['signingSecret', 'Signing Secret'] : ['appToken', 'App Token'],
+    ]
+  }
+  if (storageKey === 'matrix') {
+    if (form.accessToken) return [['accessToken', 'Access Token']]
+    return [['homeserver', 'Homeserver'], ['userId', 'User ID'], ['password', 'Password']]
+  }
+  return CHANNEL_DIAG_REQUIRED_FIELDS[storageKey] || []
+}
+
+function channelDiagnosisCredentialsReady(platform, form = {}) {
+  const requiredFields = requiredChannelCredentialFields(platform, form)
+  if (requiredFields.length) {
+    return requiredFields.every(([key]) => hasConfiguredMessagingValue(form?.[key]))
+  }
+  return channelRootHasMessagingCredential(form)
+}
+
+function compactDiagnosticDetails(values = []) {
+  return values.map(value => String(value || '').trim()).filter(Boolean).join('；')
+}
+
+export function buildOpenClawChannelDiagnosis({
+  platform,
+  accountId = '',
+  configExists = false,
+  channelEnabled = true,
+  form = {},
+  verifyResult = null,
+  verifyError = '',
+} = {}) {
+  const storageKey = platformStorageKey(platform)
+  const displayPlatform = platformListId(storageKey)
+  const checks = []
+
+  checks.push({
+    id: 'config_exists',
+    ok: !!configExists,
+    title: '渠道配置已保存',
+    detail: configExists
+      ? `已读取 channels.${storageKey}${accountId ? `.accounts.${accountId}` : ''} 的配置。`
+      : `未在 openclaw.json 中找到 ${displayPlatform} 渠道配置，请先在「渠道列表」接入并保存。`,
+  })
+
+  checks.push({
+    id: 'channel_enabled',
+    ok: !!channelEnabled,
+    title: '渠道已启用',
+    detail: channelEnabled
+      ? '渠道未被显式禁用，Gateway 重启/重载后会尝试加载。'
+      : `channels.${storageKey}.enabled 为 false，请先在渠道列表中启用该渠道。`,
+  })
+
+  const requiredFields = requiredChannelCredentialFields(storageKey, form)
+  const missing = requiredFields
+    .filter(([key]) => !hasConfiguredMessagingValue(form?.[key]))
+    .map(([, label]) => label)
+  const hasAnyCredential = channelRootHasMessagingCredential(form)
+  const credentialOk = requiredFields.length ? missing.length === 0 : hasAnyCredential
+  checks.push({
+    id: 'credentials',
+    ok: credentialOk,
+    title: '必要凭证字段',
+    detail: credentialOk
+      ? (requiredFields.length
+          ? `已填写 ${requiredFields.map(([, label]) => label).join(' / ')}。`
+          : '已检测到可用凭证字段。')
+      : (missing.length
+          ? `缺少 ${missing.join(' / ')}，请补齐后保存。`
+          : '未检测到可用凭证字段，请检查渠道配置。'),
+  })
+
+  if (verifyError) {
+    checks.push({
+      id: 'online_verify',
+      ok: false,
+      title: '平台在线校验',
+      detail: verifyError,
+    })
+  } else if (verifyResult) {
+    const valid = verifyResult.valid === true
+    const errors = Array.isArray(verifyResult.errors) ? verifyResult.errors : []
+    const warnings = Array.isArray(verifyResult.warnings) ? verifyResult.warnings : []
+    const details = Array.isArray(verifyResult.details) ? verifyResult.details : []
+    checks.push({
+      id: 'online_verify',
+      ok: valid || (!valid && warnings.length > 0 && errors.length === 0),
+      title: '平台在线校验',
+      detail: valid
+        ? (compactDiagnosticDetails(details) || '平台 API 已接受当前凭证。')
+        : (compactDiagnosticDetails(errors) || compactDiagnosticDetails(warnings) || '该平台暂不支持在线校验。'),
+    })
+  } else {
+    checks.push({
+      id: 'online_verify',
+      ok: true,
+      title: '平台在线校验',
+      detail: '未执行在线校验，仅完成本地配置检查。',
+    })
+  }
+
+  const failed = checks.filter(check => !check.ok)
+  return {
+    ok: failed.length === 0,
+    overallReady: failed.length === 0,
+    platform: displayPlatform,
+    accountId: accountId || null,
+    checks,
+    userHints: failed.length
+      ? [
+          '先修复未通过的检查项，保存渠道后重启或重载 Gateway。',
+          '在线校验只能证明平台凭证可用；群聊白名单、机器人邀请和平台回调仍需在对应平台控制台确认。',
+        ]
+      : [
+          '配置侧检查已通过。若仍收不到消息，请确认 Gateway 已重启、机器人已加入目标会话，并检查 Gateway 日志。',
+        ],
+  }
+}
+
 function preserveMessagingCredentialRefs(entry, form, current) {
   delete entry.__secretRefs
   for (const key of MESSAGING_CREDENTIAL_FIELDS) {
@@ -9666,8 +9801,46 @@ const handlers = {
     // 静默返回未安装即可，UI 会显示"未安装"
     return { installed: false, version: null, plugin: null }
   },
-  diagnose_channel() {
-    return { ok: false, error: 'Web 模式暂未实现渠道诊断，请使用桌面客户端' }
+  async diagnose_channel({ platform, accountId } = {}) {
+    if (!platform || !String(platform).trim()) throw new Error('platform 不能为空')
+    const platformId = String(platform).trim()
+    const normalizedAccountId = typeof accountId === 'string' ? accountId.trim() : ''
+    const storageKey = platformStorageKey(platformId)
+    const cfg = readOpenclawConfigOptional()
+    const channelRoot = cfg.channels?.[storageKey]
+    const saved = handlers.read_platform_config({ platform: platformId, accountId: normalizedAccountId || null })
+    const form = saved?.values || {}
+    const configExists = !!saved?.exists
+    const channelEnabled = !channelRoot || channelRoot.enabled !== false
+    const credentialsReady = channelDiagnosisCredentialsReady(platformId, form)
+    let verifyResult = null
+    let verifyError = ''
+
+    if (configExists && credentialsReady) {
+      try {
+        verifyResult = await handlers.verify_bot_token({ platform: platformId, form })
+      } catch (e) {
+        verifyError = e?.message || String(e)
+      }
+    }
+
+    const result = buildOpenClawChannelDiagnosis({
+      platform: platformId,
+      accountId: normalizedAccountId,
+      configExists,
+      channelEnabled,
+      form,
+      verifyResult,
+      verifyError,
+    })
+    if (storageKey === 'qqbot') {
+      result.userHints = [
+        'Web 模式已完成配置级检查；QQ 插件、Gateway TCP 和 chatCompletions 深度诊断需要在桌面客户端执行。',
+        ...(result.userHints || []),
+      ]
+      result.faqUrl = 'https://q.qq.com/qqbot/openclaw/faq.html'
+    }
+    return result
   },
   run_channel_action() {
     throw new Error('Web 模式暂未实现渠道操作，请使用桌面客户端')
