@@ -632,6 +632,96 @@ function scanAllOpenclawInstallations(activePath = resolveOpenclawCliPath()) {
   })
 }
 
+function sourceLabelForCliConflict(source) {
+  switch (source) {
+    case 'cherrystudio': return 'Cherry Studio 内嵌'
+    case 'cursor': return 'Cursor 内嵌'
+    case 'npm-zh': return 'npm 汉化版安装'
+    case 'npm-official':
+    case 'npm-global': return 'npm 官方/全局安装'
+    case 'standalone': return 'ClawPanel standalone'
+    default: return '未识别来源'
+  }
+}
+
+function canonicalLowerPathForConflict(rawPath) {
+  const normalized = normalizeCliPath(rawPath)
+  if (!normalized) return ''
+  let resolved = normalized
+  try { resolved = fs.realpathSync.native(normalized) } catch {}
+  let text = resolved.replace(/\\/g, '/').toLowerCase()
+  if (text.startsWith('//?/')) text = text.slice(4)
+  while (text.endsWith('/')) text = text.slice(0, -1)
+  return text
+}
+
+function standaloneConflictDirs() {
+  const dirs = []
+  try { dirs.push(standaloneInstallDir()) } catch {}
+  dirs.push(path.join(homedir(), '.openclaw-bin'))
+  return dirs.map(canonicalLowerPathForConflict).filter(Boolean)
+}
+
+function isStandaloneConflictPath(cliPath, source = '') {
+  if (source === 'standalone') return true
+  const canon = canonicalLowerPathForConflict(cliPath)
+  if (!canon) return false
+  return standaloneConflictDirs().some(dir => canon === dir || canon.startsWith(`${dir}/`))
+}
+
+export function buildOpenclawPathConflictRecords(installations = scanAllOpenclawInstallations()) {
+  const seen = new Set()
+  const records = []
+  for (const item of Array.isArray(installations) ? installations : []) {
+    const cliPath = item?.path
+    if (!cliPath || isStandaloneConflictPath(cliPath, item.source)) continue
+    const key = canonicalLowerPathForConflict(cliPath) || String(cliPath)
+    if (seen.has(key)) continue
+    seen.add(key)
+    const stat = (() => {
+      try { return fs.statSync(cliPath) } catch { return null }
+    })()
+    records.push({
+      path: cliPath,
+      source: item.source || classifyCliSource(cliPath) || 'unknown',
+      sourceLabel: sourceLabelForCliConflict(item.source || classifyCliSource(cliPath) || 'unknown'),
+      version: item.version || readVersionFromInstallation(cliPath) || null,
+      sizeBytes: stat?.isFile() ? stat.size : null,
+    })
+  }
+  return records
+}
+
+function formatConflictTimestamp(now = new Date()) {
+  const pad = n => String(n).padStart(2, '0')
+  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+}
+
+export function quarantineOpenclawPathForWeb(rawPath, options = {}) {
+  const original = normalizeCliPath(rawPath)
+  if (!original || !fs.existsSync(original)) throw new Error(`文件不存在: ${rawPath}`)
+  const stat = fs.statSync(original)
+  if (!stat.isFile()) throw new Error(`不是文件: ${rawPath}`)
+  if (isStandaloneConflictPath(original, classifyCliSource(original))) {
+    throw new Error('拒绝隔离 standalone 安装目录下的 OpenClaw（这是当前运行版本）')
+  }
+  const fileName = path.basename(original)
+  if (!fileName.toLowerCase().startsWith('openclaw')) {
+    throw new Error(`拒绝隔离非 openclaw 文件: ${fileName}`)
+  }
+  const ts = formatConflictTimestamp(options.now || new Date())
+  const quarantinedPath = path.join(path.dirname(original), `${fileName}.disabled-by-clawpanel-${ts}.bak`)
+  if (fs.existsSync(quarantinedPath)) {
+    throw new Error(`目标文件已存在，请稍后再试: ${quarantinedPath}`)
+  }
+  fs.renameSync(original, quarantinedPath)
+  return {
+    originalPath: original,
+    quarantinedPath,
+    quarantinedAt: new Date().toISOString(),
+  }
+}
+
 function resolveOpenclawCliInput(rawPath) {
   const normalized = normalizeCliPath(rawPath)
   if (!normalized) return null
@@ -6955,6 +7045,27 @@ const handlers = {
 
   scan_openclaw_paths() {
     return scanAllOpenclawInstallations()
+  },
+
+  scan_openclaw_path_conflicts() {
+    return buildOpenclawPathConflictRecords()
+  },
+
+  quarantine_openclaw_path({ path: targetPath } = {}) {
+    return quarantineOpenclawPathForWeb(targetPath)
+  },
+
+  quarantine_openclaw_paths_bulk({ paths = [] } = {}) {
+    const records = []
+    const failed = []
+    for (const targetPath of Array.isArray(paths) ? paths : []) {
+      try {
+        records.push(quarantineOpenclawPathForWeb(targetPath))
+      } catch (e) {
+        failed.push({ path: targetPath, error: e?.message || String(e) })
+      }
+    }
+    return { records, failed }
   },
 
   check_openclaw_at_path({ cliPath }) {
