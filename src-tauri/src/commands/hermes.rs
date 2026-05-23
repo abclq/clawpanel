@@ -7610,22 +7610,38 @@ pub fn hermes_config_raw_read() -> Result<Value, String> {
     Ok(serde_json::json!({ "yaml": yaml }))
 }
 
+fn validate_hermes_config_raw_yaml(yaml_text: &str) -> Result<(), String> {
+    if yaml_text.trim().is_empty() {
+        return Ok(());
+    }
+    let parsed: serde_yaml::Value =
+        serde_yaml::from_str(yaml_text).map_err(|e| format!("config.yaml YAML 格式错误: {e}"))?;
+    if parsed.as_mapping().is_none() {
+        return Err("config.yaml 顶层必须是对象".into());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn hermes_config_raw_write(yaml_text: String) -> Result<Value, String> {
+    validate_hermes_config_raw_yaml(&yaml_text)?;
     let path = hermes_home().join("config.yaml");
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create config dir: {e}"))?;
     }
+    let mut backup_path: Option<String> = None;
     if path.exists() {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
         let backup = path.with_extension(format!("yaml.bak-{ts}"));
-        let _ = std::fs::copy(&path, backup);
+        if std::fs::copy(&path, &backup).is_ok() {
+            backup_path = Some(backup.to_string_lossy().to_string());
+        }
     }
     std::fs::write(&path, yaml_text).map_err(|e| format!("Failed to write config.yaml: {e}"))?;
-    Ok(serde_json::json!({ "ok": true }))
+    Ok(serde_json::json!({ "ok": true, "backup": backup_path.unwrap_or_default() }))
 }
 
 #[tauri::command]
@@ -8509,6 +8525,31 @@ platforms:
             !patched.contains("enabled: false"),
             "disabled marker should have been removed"
         );
+    }
+}
+
+#[cfg(test)]
+mod hermes_config_raw_tests {
+    use super::validate_hermes_config_raw_yaml;
+
+    #[test]
+    fn rejects_invalid_raw_config_yaml_before_write() {
+        let err =
+            validate_hermes_config_raw_yaml("model:\n  default: gpt-4o\n    provider: openai\n")
+                .unwrap_err();
+        assert!(err.contains("config.yaml YAML 格式错误"));
+    }
+
+    #[test]
+    fn rejects_non_object_raw_config_yaml_before_write() {
+        let err = validate_hermes_config_raw_yaml("- model\n- display\n").unwrap_err();
+        assert!(err.contains("config.yaml 顶层必须是对象"));
+    }
+
+    #[test]
+    fn accepts_empty_and_mapping_raw_config_yaml() {
+        validate_hermes_config_raw_yaml("").unwrap();
+        validate_hermes_config_raw_yaml("model:\n  default: gpt-4o\n").unwrap();
     }
 }
 

@@ -66,6 +66,23 @@ function hermesHome() {
   return process.env.HERMES_HOME || HERMES_HOME
 }
 
+export function validateHermesConfigYamlText(yamlText = '') {
+  const raw = String(yamlText || '')
+  if (!raw.trim()) return {}
+
+  let parsed
+  try {
+    parsed = YAML.parse(raw)
+  } catch (err) {
+    throw new Error(`config.yaml YAML 格式错误: ${err?.message || String(err)}`)
+  }
+
+  if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('config.yaml 顶层必须是对象')
+  }
+  return parsed
+}
+
 /** Resolve memory kind (memory|user|soul) → markdown file name. */
 function memoryFileName(kind) {
   switch (kind) {
@@ -9915,10 +9932,16 @@ const handlers = {
 
   hermes_config_raw_write({ yamlText } = {}) {
     const configPath = path.join(hermesHome(), 'config.yaml')
+    const content = String(yamlText || '')
+    validateHermesConfigYamlText(content)
     fs.mkdirSync(path.dirname(configPath), { recursive: true })
-    if (fs.existsSync(configPath)) fs.copyFileSync(configPath, `${configPath}.bak-${Math.floor(Date.now() / 1000)}`)
-    fs.writeFileSync(configPath, yamlText || '')
-    return { ok: true }
+    let backup = ''
+    if (fs.existsSync(configPath)) {
+      backup = `${configPath}.bak-${Math.floor(Date.now() / 1000)}`
+      fs.copyFileSync(configPath, backup)
+    }
+    fs.writeFileSync(configPath, content)
+    return { ok: true, backup }
   },
 
   hermes_dashboard_themes() {

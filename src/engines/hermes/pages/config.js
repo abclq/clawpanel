@@ -13,7 +13,7 @@ export function render() {
   let yaml = ''
   let loading = true
   let saving = false
-  let error = ''
+  let error = null
 
   function esc(value) {
     return String(value || '')
@@ -45,7 +45,11 @@ export function render() {
           </div>
         </div>
         <div class="hm-panel-body" style="padding:0">
-          ${error ? `<div style="margin:16px 18px;padding:10px 14px;border-radius:var(--hm-radius-sm);background:var(--hm-error-soft);color:var(--hm-error);font-family:var(--hm-font-mono);font-size:12px">${esc(error)}</div>` : ''}
+          ${error ? `<div style="margin:16px 18px;padding:10px 14px;border-radius:var(--hm-radius-sm);background:var(--hm-error-soft);color:var(--hm-error);font-family:var(--hm-font-mono);font-size:12px;line-height:1.6">
+            <div>${esc(error.message || error)}</div>
+            ${error.hint ? `<div style="margin-top:4px;color:var(--hm-text-tertiary)">${esc(error.hint)}</div>` : ''}
+            ${error.raw ? `<details style="margin-top:6px"><summary>${esc(t('common.errorRawLabel'))}</summary><pre style="white-space:pre-wrap;word-break:break-word;margin:6px 0 0">${esc(error.raw)}</pre></details>` : ''}
+          </div>` : ''}
           <textarea id="hm-config-yaml" class="hm-input" spellcheck="false" ${loading || saving ? 'disabled' : ''} style="width:100%;min-height:560px;border:0;border-radius:0;background:var(--hm-surface-0);font-family:var(--hm-font-mono);font-size:12px;line-height:1.7;padding:18px 20px;resize:vertical">${esc(yaml)}</textarea>
         </div>
       </div>
@@ -56,7 +60,7 @@ export function render() {
 
   async function load() {
     loading = true
-    error = ''
+    error = null
     draw()
     try {
       const data = await api.hermesConfigRawRead()
@@ -73,11 +77,15 @@ export function render() {
     const textarea = el.querySelector('#hm-config-yaml')
     yaml = textarea?.value || ''
     saving = true
-    error = ''
+    error = null
     draw()
     try {
-      await api.hermesConfigRawWrite(yaml)
-      toast(t('engine.hermesConfigSaveSuccess'), 'success')
+      const result = await api.hermesConfigRawWrite(yaml)
+      const backup = result?.backup || ''
+      toast({
+        message: t('engine.hermesConfigSaveSuccess'),
+        hint: backup ? t('engine.hermesConfigBackupHint', { path: backup }) : '',
+      }, 'success')
     } catch (err) {
       error = humanizeError(err, t('engine.hermesConfigSaveFailed') || 'Save failed')
       toast(error, 'error')

@@ -476,6 +476,7 @@ export default {
   hermesConfigReload: _('重新加载', 'Reload', '重新載入'),
   hermesConfigSave: _('保存配置', 'Save', '儲存設定'),
   hermesConfigSaveSuccess: _('配置已保存，建议重启 Hermes Gateway 生效', 'Saved. Restart Hermes Gateway to take effect.', '已儲存設定，建議重啟 Hermes Gateway 生效'),
+  hermesConfigBackupHint: _('已先创建备份：{path}', 'Backup created first: {path}', '已先建立備份：{path}'),
   hermesConfigStatusSaving: _('保存中…', 'Saving…', '儲存中…'),
   hermesConfigStatusLoading: _('加载中…', 'Loading…', '載入中…'),
   hermesConfigStatusReady: _('raw yaml 编辑器', 'raw yaml editor', 'raw yaml 編輯器'),
