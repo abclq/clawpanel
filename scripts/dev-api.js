@@ -3320,6 +3320,78 @@ function normalizeHermesPlatform(platform) {
   return HERMES_CHANNEL_PLATFORMS.includes(p) ? p : ''
 }
 
+const HERMES_SESSION_RESET_MODES = new Set(['both', 'idle', 'daily', 'none'])
+
+function parseHermesInteger(value, key, fallback, min, max, strict = false) {
+  const raw = String(value ?? '').trim()
+  if (!raw) {
+    if (strict) throw new Error(`${key} 不能为空`)
+    return fallback
+  }
+  const parsed = Number.parseInt(raw, 10)
+  if (!Number.isFinite(parsed) || String(parsed) !== raw.replace(/^\+/, '')) {
+    if (strict) throw new Error(`${key} 必须是整数`)
+    return fallback
+  }
+  if (parsed < min || parsed > max) {
+    if (strict) throw new Error(`${key} 必须在 ${min}-${max} 范围内`)
+    return fallback
+  }
+  return parsed
+}
+
+function readHermesBool(value, fallback) {
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    if (['true', '1', 'yes', 'on'].includes(normalized)) return true
+    if (['false', '0', 'no', 'off'].includes(normalized)) return false
+  }
+  return fallback
+}
+
+function formHermesBool(form, key, fallback) {
+  return readHermesBool(form?.[key], fallback)
+}
+
+export function buildHermesSessionRuntimeConfigValues(config = {}) {
+  const root = config && typeof config === 'object' && !Array.isArray(config) ? config : {}
+  const sessionReset = root.session_reset && typeof root.session_reset === 'object' && !Array.isArray(root.session_reset)
+    ? root.session_reset
+    : {}
+  const mode = HERMES_SESSION_RESET_MODES.has(String(sessionReset.mode || '').trim())
+    ? String(sessionReset.mode).trim()
+    : 'both'
+  return {
+    sessionResetMode: mode,
+    idleMinutes: parseHermesInteger(sessionReset.idle_minutes, 'idle_minutes', 1440, 1, 525600, false),
+    atHour: parseHermesInteger(sessionReset.at_hour, 'at_hour', 4, 0, 23, false),
+    groupSessionsPerUser: readHermesBool(root.group_sessions_per_user, true),
+    threadSessionsPerUser: readHermesBool(root.thread_sessions_per_user, false),
+  }
+}
+
+export function mergeHermesSessionRuntimeConfig(config = {}, form = {}) {
+  const next = mergeConfigsPreservingFields({}, config && typeof config === 'object' && !Array.isArray(config) ? config : {})
+  const currentValues = buildHermesSessionRuntimeConfigValues(next)
+  const mode = String(Object.hasOwn(form, 'sessionResetMode') ? form.sessionResetMode : currentValues.sessionResetMode).trim()
+  if (!HERMES_SESSION_RESET_MODES.has(mode)) {
+    throw new Error('session_reset.mode 必须是 both、idle、daily 或 none')
+  }
+  const idleMinutes = parseHermesInteger(Object.hasOwn(form, 'idleMinutes') ? form.idleMinutes : currentValues.idleMinutes, 'idle_minutes', 1440, 1, 525600, true)
+  const atHour = parseHermesInteger(Object.hasOwn(form, 'atHour') ? form.atHour : currentValues.atHour, 'at_hour', 4, 0, 23, true)
+  const sessionReset = next.session_reset && typeof next.session_reset === 'object' && !Array.isArray(next.session_reset)
+    ? mergeConfigsPreservingFields(next.session_reset, {})
+    : {}
+  sessionReset.mode = mode
+  sessionReset.idle_minutes = idleMinutes
+  sessionReset.at_hour = atHour
+  next.session_reset = sessionReset
+  next.group_sessions_per_user = formHermesBool(form, 'groupSessionsPerUser', currentValues.groupSessionsPerUser)
+  next.thread_sessions_per_user = formHermesBool(form, 'threadSessionsPerUser', currentValues.threadSessionsPerUser)
+  return next
+}
+
 function toCamelCaseKey(key) {
   return String(key || '').replace(/_([a-z0-9])/g, (_, c) => c.toUpperCase())
 }
@@ -3753,10 +3825,13 @@ function readHermesConfigYamlObject() {
 
 function writeHermesConfigYamlObject(configPath, config) {
   fs.mkdirSync(path.dirname(configPath), { recursive: true })
+  let backup = ''
   if (fs.existsSync(configPath)) {
-    fs.copyFileSync(configPath, `${configPath}.bak-${Math.floor(Date.now() / 1000)}`)
+    backup = `${configPath}.bak-${Math.floor(Date.now() / 1000)}`
+    fs.copyFileSync(configPath, backup)
   }
   fs.writeFileSync(configPath, YAML.stringify(config || {}, { lineWidth: 0 }), 'utf8')
+  return backup
 }
 
 function writeHermesEnvValues(updates = {}) {
@@ -9477,6 +9552,27 @@ const handlers = {
       ok: true,
       configPath,
       values: buildHermesChannelConfigValues(next, envValues)[normalizedPlatform],
+    }
+  },
+
+  hermes_session_runtime_config_read() {
+    const { configPath, exists, config } = readHermesConfigYamlObject()
+    return {
+      exists,
+      configPath,
+      values: buildHermesSessionRuntimeConfigValues(config),
+    }
+  },
+
+  hermes_session_runtime_config_save({ form } = {}) {
+    const { configPath, config } = readHermesConfigYamlObject()
+    const next = mergeHermesSessionRuntimeConfig(config, form || {})
+    const backup = writeHermesConfigYamlObject(configPath, next)
+    return {
+      ok: true,
+      configPath,
+      backup,
+      values: buildHermesSessionRuntimeConfigValues(next),
     }
   },
 

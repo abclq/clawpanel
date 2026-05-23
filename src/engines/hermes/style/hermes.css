@@ -6744,6 +6744,48 @@ body[data-active-engine="hermes"][data-theme="dark"] {
 [data-engine="hermes"] .hm-channel-form-panel .hm-panel-header {
   align-items: flex-start;
 }
+[data-engine="hermes"] .hm-config-runtime-panel .hm-panel-header {
+  align-items: flex-start;
+}
+[data-engine="hermes"] .hm-config-runtime-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.2fr) repeat(2, minmax(140px, 0.8fr));
+  gap: 16px;
+  align-items: end;
+}
+[data-engine="hermes"] .hm-config-check-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+  margin-top: 18px;
+}
+[data-engine="hermes"] .hm-config-alert {
+  margin: 0 0 18px;
+  padding: 12px 14px;
+  border-radius: var(--hm-radius-sm);
+  border: 1px solid color-mix(in srgb, var(--hm-error) 24%, transparent);
+  background: var(--hm-error-soft);
+  color: var(--hm-error);
+  font-family: var(--hm-font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+[data-engine="hermes"] .hm-panel-body > .hm-config-alert {
+  margin: 16px 18px;
+}
+[data-engine="hermes"] .hm-config-alert-hint {
+  margin-top: 4px;
+  color: var(--hm-text-tertiary);
+}
+[data-engine="hermes"] .hm-config-alert details {
+  margin-top: 6px;
+}
+[data-engine="hermes"] .hm-config-alert pre {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 [data-engine="hermes"] .hm-channel-panel-desc {
   margin-top: 6px;
   color: var(--hm-text-tertiary);
@@ -6833,6 +6875,10 @@ body[data-active-engine="hermes"][data-theme="dark"] {
   [data-engine="hermes"] .hm-channel-list {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+  [data-engine="hermes"] .hm-config-runtime-grid,
+  [data-engine="hermes"] .hm-config-check-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 720px) {
@@ -6887,6 +6933,16 @@ body[data-active-engine="hermes"][data-theme="dark"] {
   }
   [data-engine="hermes"] .hm-channel-form-panel .hm-panel-header {
     flex-direction: column;
+  }
+  [data-engine="hermes"] .hm-config-runtime-panel .hm-panel-header {
+    flex-direction: column;
+  }
+  [data-engine="hermes"] .hm-config-runtime-panel .hm-panel-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  [data-engine="hermes"] .hm-config-runtime-panel .hm-panel-actions .hm-btn {
+    width: 100%;
   }
   [data-engine="hermes"] .hm-channel-switch {
     width: 100%;

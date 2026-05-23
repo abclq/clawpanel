@@ -2968,6 +2968,140 @@ fn normalize_hermes_group_policy(value: Option<String>) -> String {
     }
 }
 
+fn yaml_i64_field(map: &serde_yaml::Mapping, key: &str) -> Option<i64> {
+    let value = yaml_get(map, key)?;
+    if let Some(value) = value.as_i64() {
+        Some(value)
+    } else if let Some(value) = value.as_u64() {
+        i64::try_from(value).ok()
+    } else if let Some(value) = value.as_f64() {
+        if value.is_finite() {
+            Some(value as i64)
+        } else {
+            None
+        }
+    } else {
+        value
+            .as_str()
+            .and_then(|value| value.trim().parse::<i64>().ok())
+    }
+}
+
+fn bounded_hermes_i64(value: Option<i64>, fallback: i64, min: i64, max: i64) -> i64 {
+    value
+        .filter(|value| *value >= min && *value <= max)
+        .unwrap_or(fallback)
+}
+
+fn validate_hermes_i64(
+    value: Option<i64>,
+    key: &str,
+    fallback: i64,
+    min: i64,
+    max: i64,
+) -> Result<i64, String> {
+    let value = value.unwrap_or(fallback);
+    if value < min || value > max {
+        return Err(format!("{key} 必须在 {min}-{max} 范围内"));
+    }
+    Ok(value)
+}
+
+fn build_hermes_session_runtime_config_values(config: &serde_yaml::Value) -> Value {
+    let root = config.as_mapping();
+    let session_reset = root.and_then(|map| yaml_get_mapping(map, "session_reset"));
+    let mode = session_reset
+        .and_then(|map| yaml_string_field(map, "mode"))
+        .map(|value| value.trim().to_string())
+        .filter(|value| matches!(value.as_str(), "both" | "idle" | "daily" | "none"))
+        .unwrap_or_else(|| "both".to_string());
+    let idle_minutes = session_reset
+        .map(|map| bounded_hermes_i64(yaml_i64_field(map, "idle_minutes"), 1440, 1, 525600))
+        .unwrap_or(1440);
+    let at_hour = session_reset
+        .map(|map| bounded_hermes_i64(yaml_i64_field(map, "at_hour"), 4, 0, 23))
+        .unwrap_or(4);
+    let group_sessions_per_user = root
+        .and_then(|map| yaml_bool_field(map, "group_sessions_per_user"))
+        .unwrap_or(true);
+    let thread_sessions_per_user = root
+        .and_then(|map| yaml_bool_field(map, "thread_sessions_per_user"))
+        .unwrap_or(false);
+
+    serde_json::json!({
+        "sessionResetMode": mode,
+        "idleMinutes": idle_minutes,
+        "atHour": at_hour,
+        "groupSessionsPerUser": group_sessions_per_user,
+        "threadSessionsPerUser": thread_sessions_per_user,
+    })
+}
+
+fn merge_hermes_session_runtime_config(
+    config: &mut serde_yaml::Value,
+    form: &Value,
+) -> Result<(), String> {
+    let current = build_hermes_session_runtime_config_values(config);
+    let current_mode = current["sessionResetMode"].as_str().unwrap_or("both");
+    let mode = if form.get("sessionResetMode").is_some() {
+        form_string(form, "sessionResetMode")
+            .map(|value| value.trim().to_string())
+            .filter(|value| matches!(value.as_str(), "both" | "idle" | "daily" | "none"))
+            .ok_or_else(|| "session_reset.mode 必须是 both、idle、daily 或 none".to_string())?
+    } else {
+        current_mode.to_string()
+    };
+    let current_idle_minutes = current["idleMinutes"].as_i64().unwrap_or(1440);
+    let idle_minutes = validate_hermes_i64(
+        if form.get("idleMinutes").is_some() {
+            form_i64(form, "idleMinutes")
+        } else {
+            Some(current_idle_minutes)
+        },
+        "idle_minutes",
+        1440,
+        1,
+        525600,
+    )?;
+    let current_at_hour = current["atHour"].as_i64().unwrap_or(4);
+    let at_hour = validate_hermes_i64(
+        if form.get("atHour").is_some() {
+            form_i64(form, "atHour")
+        } else {
+            Some(current_at_hour)
+        },
+        "at_hour",
+        4,
+        0,
+        23,
+    )?;
+    let group_sessions_per_user = form_bool(form, "groupSessionsPerUser")
+        .unwrap_or_else(|| current["groupSessionsPerUser"].as_bool().unwrap_or(true));
+    let thread_sessions_per_user = form_bool(form, "threadSessionsPerUser")
+        .unwrap_or_else(|| current["threadSessionsPerUser"].as_bool().unwrap_or(false));
+
+    let root = ensure_yaml_object(config)?;
+    let session_reset = yaml_child_object(root, "session_reset")?;
+    session_reset.insert(yaml_key("mode"), serde_yaml::Value::String(mode));
+    session_reset.insert(
+        yaml_key("idle_minutes"),
+        serde_yaml::Value::Number(idle_minutes.into()),
+    );
+    session_reset.insert(
+        yaml_key("at_hour"),
+        serde_yaml::Value::Number(at_hour.into()),
+    );
+    root.insert(
+        yaml_key("group_sessions_per_user"),
+        serde_yaml::Value::Bool(group_sessions_per_user),
+    );
+    root.insert(
+        yaml_key("thread_sessions_per_user"),
+        serde_yaml::Value::Bool(thread_sessions_per_user),
+    );
+    Ok(())
+}
+
 fn merge_hermes_channel_config(
     config: &mut serde_yaml::Value,
     platform: &str,
@@ -3181,21 +3315,25 @@ fn read_hermes_channel_yaml_config() -> Result<(PathBuf, bool, serde_yaml::Value
     Ok((config_path, true, config))
 }
 
-fn write_hermes_yaml_config(path: &PathBuf, config: &serde_yaml::Value) -> Result<(), String> {
+fn write_hermes_yaml_config(path: &PathBuf, config: &serde_yaml::Value) -> Result<String, String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("创建 Hermes 配置目录失败: {e}"))?;
     }
+    let mut backup_path = String::new();
     if path.exists() {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
         let backup = path.with_extension(format!("yaml.bak-{ts}"));
-        let _ = std::fs::copy(path, backup);
+        if std::fs::copy(path, &backup).is_ok() {
+            backup_path = backup.to_string_lossy().to_string();
+        }
     }
     let yaml =
         serde_yaml::to_string(config).map_err(|e| format!("序列化 config.yaml 失败: {e}"))?;
-    std::fs::write(path, yaml).map_err(|e| format!("写入 config.yaml 失败: {e}"))
+    std::fs::write(path, yaml).map_err(|e| format!("写入 config.yaml 失败: {e}"))?;
+    Ok(backup_path)
 }
 
 fn csv_env_value(form: &Value, key: &str) -> String {
@@ -3652,6 +3790,30 @@ pub fn hermes_channel_config_save(platform: String, form: Value) -> Result<Value
         "ok": true,
         "configPath": config_path.to_string_lossy(),
         "values": values.get(platform).cloned().unwrap_or(Value::Null),
+    }))
+}
+
+#[tauri::command]
+pub fn hermes_session_runtime_config_read() -> Result<Value, String> {
+    let (config_path, exists, config) = read_hermes_channel_yaml_config()?;
+    ensure_yaml_object(&mut config.clone())?;
+    Ok(serde_json::json!({
+        "exists": exists,
+        "configPath": config_path.to_string_lossy(),
+        "values": build_hermes_session_runtime_config_values(&config),
+    }))
+}
+
+#[tauri::command]
+pub fn hermes_session_runtime_config_save(form: Value) -> Result<Value, String> {
+    let (config_path, _exists, mut config) = read_hermes_channel_yaml_config()?;
+    merge_hermes_session_runtime_config(&mut config, &form)?;
+    let backup = write_hermes_yaml_config(&config_path, &config)?;
+    Ok(serde_json::json!({
+        "ok": true,
+        "configPath": config_path.to_string_lossy(),
+        "backup": backup,
+        "values": build_hermes_session_runtime_config_values(&config),
     }))
 }
 
@@ -8550,6 +8712,85 @@ mod hermes_config_raw_tests {
     fn accepts_empty_and_mapping_raw_config_yaml() {
         validate_hermes_config_raw_yaml("").unwrap();
         validate_hermes_config_raw_yaml("model:\n  default: gpt-4o\n").unwrap();
+    }
+}
+
+#[cfg(test)]
+mod hermes_session_runtime_config_tests {
+    use super::{build_hermes_session_runtime_config_values, merge_hermes_session_runtime_config};
+    use serde_json::json;
+
+    #[test]
+    fn session_runtime_values_have_safe_defaults() {
+        let config = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let values = build_hermes_session_runtime_config_values(&config);
+
+        assert_eq!(values["sessionResetMode"], "both");
+        assert_eq!(values["idleMinutes"], 1440);
+        assert_eq!(values["atHour"], 4);
+        assert_eq!(values["groupSessionsPerUser"], true);
+        assert_eq!(values["threadSessionsPerUser"], false);
+    }
+
+    #[test]
+    fn merge_session_runtime_config_preserves_unrelated_yaml() {
+        let mut config: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+model:
+  provider: anthropic
+  default: claude-sonnet-4-6
+session_reset:
+  mode: idle
+  idle_minutes: 60
+  custom_flag: keep-me
+streaming:
+  enabled: true
+"#,
+        )
+        .unwrap();
+
+        merge_hermes_session_runtime_config(
+            &mut config,
+            &json!({
+                "sessionResetMode": "both",
+                "idleMinutes": "90",
+                "atHour": "6",
+                "groupSessionsPerUser": false,
+                "threadSessionsPerUser": true,
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(config["model"]["provider"].as_str(), Some("anthropic"));
+        assert_eq!(config["streaming"]["enabled"].as_bool(), Some(true));
+        assert_eq!(config["session_reset"]["mode"].as_str(), Some("both"));
+        assert_eq!(config["session_reset"]["idle_minutes"].as_i64(), Some(90));
+        assert_eq!(config["session_reset"]["at_hour"].as_i64(), Some(6));
+        assert_eq!(
+            config["session_reset"]["custom_flag"].as_str(),
+            Some("keep-me")
+        );
+        assert_eq!(config["group_sessions_per_user"].as_bool(), Some(false));
+        assert_eq!(config["thread_sessions_per_user"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn merge_session_runtime_config_rejects_invalid_values() {
+        let mut config = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let err = merge_hermes_session_runtime_config(
+            &mut config,
+            &json!({ "sessionResetMode": "weekly" }),
+        )
+        .unwrap_err();
+        assert!(err.contains("session_reset.mode"));
+
+        let err = merge_hermes_session_runtime_config(&mut config, &json!({ "idleMinutes": 0 }))
+            .unwrap_err();
+        assert!(err.contains("idle_minutes"));
+
+        let err =
+            merge_hermes_session_runtime_config(&mut config, &json!({ "atHour": 24 })).unwrap_err();
+        assert!(err.contains("at_hour"));
     }
 }
 
