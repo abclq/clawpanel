@@ -90,3 +90,29 @@ test('ClickClack 渠道 UI 会暴露自托管工作区配置字段', () => {
   }
   assert.match(clickclackBlock, /pluginId:\s*'clickclack'/)
 })
+
+test('Nextcloud Talk 渠道 UI 会暴露自托管 Talk 配置字段', () => {
+  const talkBlock = getRegistryBlock("'nextcloud-talk'")
+
+  for (const field of [
+    'baseUrl',
+    'botSecret',
+    'botSecretFile',
+    'apiUser',
+    'apiPassword',
+    'apiPasswordFile',
+    'webhookPort',
+    'webhookHost',
+    'webhookPath',
+    'webhookPublicUrl',
+    'dmPolicy',
+    'groupPolicy',
+    'allowFrom',
+    'groupAllowFrom',
+    'dangerouslyAllowPrivateNetwork',
+    'responsePrefix',
+  ]) {
+    assert.match(talkBlock, new RegExp(`key:\\s*'${field}'`))
+  }
+  assert.match(talkBlock, /pluginId:\s*'nextcloud-talk'/)
+})

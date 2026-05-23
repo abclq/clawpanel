@@ -139,6 +139,10 @@ fn preserve_messaging_credential_refs(
         "appPassword",
         "appSecret",
         "appToken",
+        "apiPassword",
+        "apiPasswordFile",
+        "botSecret",
+        "botSecretFile",
         "botToken",
         "channelAccessToken",
         "channelSecret",
@@ -221,6 +225,10 @@ fn channel_root_has_messaging_credential(root: &Map<String, Value>) -> bool {
         "appPassword",
         "appSecret",
         "appToken",
+        "apiPassword",
+        "apiPasswordFile",
+        "botSecret",
+        "botSecretFile",
         "botToken",
         "channelAccessToken",
         "channelSecret",
@@ -265,6 +273,7 @@ fn required_channel_credential_fields(
             ("token", "Token"),
             ("workspace", "Workspace"),
         ],
+        "nextcloud-talk" => vec![("baseUrl", "Base URL")],
         "signal" => vec![("account", "Signal 账号")],
         "slack" => {
             let mode = form_string(form, "mode");
@@ -334,6 +343,13 @@ fn channel_any_credential_groups(
                 ],
             ),
         ],
+        "nextcloud-talk" => vec![(
+            "Bot Secret 或 Secret File",
+            vec![
+                ("botSecret", "Bot Secret"),
+                ("botSecretFile", "Secret File"),
+            ],
+        )],
         _ => vec![],
     }
 }
@@ -349,12 +365,17 @@ fn channel_diagnosis_credentials_ready(platform: &str, form: &Map<String, Value>
         return msteams_credential_missing_labels(form).is_empty();
     }
     let required_fields = required_channel_credential_fields(platform, form);
+    let any_groups = channel_any_credential_groups(platform);
     if !required_fields.is_empty() {
         return required_fields
             .iter()
-            .all(|(key, _)| has_configured_messaging_value(form.get(*key)));
+            .all(|(key, _)| has_configured_messaging_value(form.get(*key)))
+            && any_groups.iter().all(|(_, fields)| {
+                fields
+                    .iter()
+                    .any(|(key, _)| has_configured_messaging_value(form.get(*key)))
+            });
     }
-    let any_groups = channel_any_credential_groups(platform);
     if !any_groups.is_empty() {
         return any_groups.iter().all(|(_, fields)| {
             fields
@@ -476,7 +497,7 @@ fn build_openclaw_channel_diagnosis(
     let credential_ok = if matches!(storage_key, "zalouser" | "imessage" | "whatsapp") {
         config_exists
     } else if !required_fields.is_empty() {
-        missing.is_empty()
+        missing.is_empty() && missing_groups.is_empty()
     } else if !any_groups.is_empty() {
         missing_groups.is_empty()
     } else if !any_fields.is_empty() {
@@ -514,7 +535,19 @@ fn build_openclaw_channel_diagnosis(
             }
         } else if credential_ok {
             if !required_fields.is_empty() {
-                format!("已填写 {}。", required_labels)
+                if !any_groups.is_empty() {
+                    format!(
+                        "已填写 {}；{}。",
+                        required_labels,
+                        any_groups
+                            .iter()
+                            .map(|(label, _)| *label)
+                            .collect::<Vec<_>>()
+                            .join("；")
+                    )
+                } else {
+                    format!("已填写 {}。", required_labels)
+                }
             } else if !any_groups.is_empty() {
                 format!(
                     "已填写 {}。",
@@ -808,7 +841,7 @@ fn normalize_group_policy_value(raw: Option<&Value>, fallback: &str) -> String {
 fn platform_supports_top_level_require_mention(platform: &str) -> bool {
     matches!(
         platform_storage_key(platform),
-        "feishu" | "slack" | "msteams" | "mattermost" | "googlechat"
+        "feishu" | "slack" | "msteams" | "mattermost" | "googlechat" | "nextcloud-talk"
     )
 }
 
@@ -839,6 +872,7 @@ fn normalize_messaging_platform_form(
             | "line"
             | "mattermost"
             | "googlechat"
+            | "nextcloud-talk"
             | "imessage"
     );
     let has_dm_field = normalized.contains_key("dmPolicy") || needs_access_defaults;
@@ -1786,6 +1820,40 @@ pub async fn read_platform_config(
             insert_array_as_csv(&mut form, &saved, "allowFrom");
             insert_number_as_string(&mut form, &saved, "timeoutSeconds");
             insert_number_as_string(&mut form, &saved, "reconnectMs");
+        }
+        "nextcloud-talk" => {
+            for key in [
+                "name",
+                "baseUrl",
+                "botSecret",
+                "botSecretFile",
+                "apiUser",
+                "apiPassword",
+                "apiPasswordFile",
+                "webhookHost",
+                "webhookPath",
+                "webhookPublicUrl",
+                "chunkMode",
+                "responsePrefix",
+            ] {
+                insert_secret_aware_form_value(&mut form, &saved, key);
+            }
+            insert_bool_as_string(&mut form, &saved, "enabled");
+            insert_access_policy_form_values(&mut form, &saved, false, true);
+            insert_array_as_csv(&mut form, &saved, "groupAllowFrom");
+            insert_bool_as_string(&mut form, &saved, "blockStreaming");
+            if let Some(network) = saved.get("network") {
+                insert_bool_as_string(&mut form, network, "dangerouslyAllowPrivateNetwork");
+            }
+            for key in [
+                "webhookPort",
+                "historyLimit",
+                "dmHistoryLimit",
+                "mediaMaxMb",
+                "textChunkLimit",
+            ] {
+                insert_number_as_string(&mut form, &saved, key);
+            }
         }
         "synology-chat" => {
             for key in ["token", "incomingUrl", "nasHost", "webhookPath", "botName"] {
@@ -2855,6 +2923,83 @@ pub async fn save_messaging_platform(
             )?;
             ensure_plugin_allowed(&mut cfg, "clickclack")?;
         }
+        "nextcloud-talk" => {
+            let base_url = form_string(form_obj, "baseUrl");
+            let bot_secret = form_string(form_obj, "botSecret");
+            let bot_secret_file = form_string(form_obj, "botSecretFile");
+            if base_url.is_empty() {
+                return Err("Nextcloud Talk Base URL 不能为空".into());
+            }
+            if bot_secret.is_empty()
+                && bot_secret_file.is_empty()
+                && !has_configured_messaging_value(form_obj.get("botSecret"))
+                && !has_configured_messaging_value(form_obj.get("botSecretFile"))
+            {
+                return Err("Nextcloud Talk Bot Secret 或 Secret File 至少填写一项".into());
+            }
+
+            let mut entry = Map::new();
+            entry.insert("enabled".into(), Value::Bool(true));
+            put_bool_value_if_present(&mut entry, "enabled", form_obj.get("enabled"));
+            for key in [
+                "name",
+                "baseUrl",
+                "botSecret",
+                "botSecretFile",
+                "apiUser",
+                "apiPassword",
+                "apiPasswordFile",
+                "webhookHost",
+                "webhookPath",
+                "webhookPublicUrl",
+                "chunkMode",
+                "responsePrefix",
+            ] {
+                put_string(&mut entry, key, form_string(form_obj, key));
+            }
+            put_string(&mut entry, "dmPolicy", form_string(form_obj, "dmPolicy"));
+            put_string(
+                &mut entry,
+                "groupPolicy",
+                form_string(form_obj, "groupPolicy"),
+            );
+            put_bool_value_if_present(&mut entry, "requireMention", form_obj.get("requireMention"));
+            put_array_from_form_value(&mut entry, "allowFrom", form_obj.get("allowFrom"));
+            put_array_from_form_value(&mut entry, "groupAllowFrom", form_obj.get("groupAllowFrom"));
+            put_bool_value_if_present(&mut entry, "blockStreaming", form_obj.get("blockStreaming"));
+            for key in [
+                "webhookPort",
+                "historyLimit",
+                "dmHistoryLimit",
+                "mediaMaxMb",
+                "textChunkLimit",
+            ] {
+                put_number_value_if_present(&mut entry, key, form_obj.get(key));
+            }
+            if form_obj.contains_key("dangerouslyAllowPrivateNetwork") {
+                let mut network = current_saved
+                    .get("network")
+                    .and_then(|v| v.as_object())
+                    .cloned()
+                    .unwrap_or_default();
+                put_bool_value_if_present(
+                    &mut network,
+                    "dangerouslyAllowPrivateNetwork",
+                    form_obj.get("dangerouslyAllowPrivateNetwork"),
+                );
+                if !network.is_empty() {
+                    entry.insert("network".into(), Value::Object(network));
+                }
+            }
+            preserve_messaging_credential_refs(&mut entry, form_obj, &current_saved);
+            merge_channel_entry_for_account(
+                channels_map,
+                &storage_key,
+                account_id.as_deref(),
+                entry,
+            )?;
+            ensure_plugin_allowed(&mut cfg, "nextcloud-talk")?;
+        }
         "synology-chat" => {
             let token = form_string(form_obj, "token");
             let incoming_url = form_string(form_obj, "incomingUrl");
@@ -3155,6 +3300,10 @@ pub async fn verify_bot_token(platform: String, form: Value) -> Result<Value, St
         "clickclack" => Ok(json!({
             "valid": true,
             "warnings": ["ClickClack 面板已完成基础字段校验；实际连通性请通过 Gateway 启动日志或 openclaw channels status --probe 验证"]
+        })),
+        "nextcloud-talk" => Ok(json!({
+            "valid": true,
+            "warnings": ["Nextcloud Talk 面板已完成基础字段校验；实际连通性请通过 Gateway 启动日志或 openclaw channels status --probe 验证"]
         })),
         _ => Ok(json!({
             "valid": true,
@@ -6302,6 +6451,114 @@ mod tests {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .contains("Workspace"));
+    }
+
+    #[test]
+    fn normalize_nextcloud_talk_form_preserves_self_hosted_runtime_fields() {
+        let form = json!({
+            "enabled": "true",
+            "baseUrl": "https://cloud.example.com",
+            "botSecret": "bot-secret",
+            "apiUser": "openclaw-bot",
+            "apiPassword": "app-password",
+            "webhookPort": "8788",
+            "webhookHost": "0.0.0.0",
+            "webhookPath": "/nextcloud-talk-webhook",
+            "webhookPublicUrl": "https://panel.example.com/nextcloud-talk-webhook",
+            "dmPolicy": "allowlist",
+            "allowFrom": "alice, bob",
+            "groupPolicy": "mentioned",
+            "groupAllowFrom": "room-token-1, room-token-2",
+            "historyLimit": "80",
+            "dmHistoryLimit": "20",
+            "mediaMaxMb": "50",
+            "textChunkLimit": "4000",
+            "chunkMode": "newline",
+            "blockStreaming": "true",
+            "dangerouslyAllowPrivateNetwork": "true"
+        });
+        let normalized =
+            normalize_messaging_platform_form("nextcloud-talk", form.as_object().expect("object"));
+
+        assert_eq!(
+            normalized.get("enabled").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            normalized.get("webhookPort").and_then(|v| v.as_f64()),
+            Some(8788.0)
+        );
+        assert_eq!(
+            normalized.get("historyLimit").and_then(|v| v.as_f64()),
+            Some(80.0)
+        );
+        assert_eq!(
+            normalized.get("blockStreaming").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            normalized
+                .get("dangerouslyAllowPrivateNetwork")
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            normalized.get("groupPolicy").and_then(|v| v.as_str()),
+            Some("open")
+        );
+        assert_eq!(
+            normalized.get("requireMention").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            normalized
+                .get("allowFrom")
+                .and_then(|v| v.as_array())
+                .map(|items| items.len()),
+            Some(2)
+        );
+        assert_eq!(
+            normalized
+                .get("groupAllowFrom")
+                .and_then(|v| v.as_array())
+                .map(|items| items.len()),
+            Some(2)
+        );
+        assert!(channel_diagnosis_credentials_ready(
+            "nextcloud-talk",
+            &normalized
+        ));
+
+        let missing_secret = json!({
+            "baseUrl": "https://cloud.example.com"
+        });
+        let missing = normalize_messaging_platform_form(
+            "nextcloud-talk",
+            missing_secret.as_object().expect("object"),
+        );
+        assert!(!channel_diagnosis_credentials_ready(
+            "nextcloud-talk",
+            &missing
+        ));
+        let diagnosis = build_openclaw_channel_diagnosis(
+            "nextcloud-talk",
+            None,
+            true,
+            true,
+            &missing,
+            None,
+            None,
+        );
+        assert!(diagnosis
+            .get("checks")
+            .and_then(|v| v.as_array())
+            .and_then(|items| items
+                .iter()
+                .find(|item| { item.get("id").and_then(|v| v.as_str()) == Some("credentials") }))
+            .and_then(|item| item.get("detail"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .contains("Bot Secret 或 Secret File"));
     }
 
     #[test]

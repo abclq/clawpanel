@@ -2429,7 +2429,7 @@ function putWildcardAllowFromWhenOpen(entry, previousAllowFrom) {
 }
 
 function platformSupportsTopLevelRequireMention(platform) {
-  return ['feishu', 'slack', 'msteams', 'mattermost', 'googlechat'].includes(platformStorageKey(platform))
+  return ['feishu', 'slack', 'msteams', 'mattermost', 'googlechat', 'nextcloud-talk'].includes(platformStorageKey(platform))
 }
 
 export function normalizeMessagingPlatformForm(platform, form = {}) {
@@ -2438,7 +2438,7 @@ export function normalizeMessagingPlatformForm(platform, form = {}) {
   if (!Object.hasOwn(normalized, 'allowFrom') && Object.hasOwn(normalized, 'allowedUsers')) {
     normalized.allowFrom = normalized.allowedUsers
   }
-  const needsAccessDefaults = ['telegram', 'discord', 'feishu', 'slack', 'signal', 'msteams', 'whatsapp', 'zalo', 'zalouser', 'line', 'mattermost', 'googlechat', 'imessage'].includes(storageKey)
+  const needsAccessDefaults = ['telegram', 'discord', 'feishu', 'slack', 'signal', 'msteams', 'whatsapp', 'zalo', 'zalouser', 'line', 'mattermost', 'googlechat', 'nextcloud-talk', 'imessage'].includes(storageKey)
   const hasDmField = Object.hasOwn(normalized, 'dmPolicy') || needsAccessDefaults
   const hasGroupField = Object.hasOwn(normalized, 'groupPolicy') || needsAccessDefaults
 
@@ -2592,6 +2592,10 @@ const MESSAGING_CREDENTIAL_FIELDS = [
   'appPassword',
   'appSecret',
   'appToken',
+  'apiPassword',
+  'apiPasswordFile',
+  'botSecret',
+  'botSecretFile',
   'botToken',
   'channelAccessToken',
   'channelSecret',
@@ -2671,6 +2675,11 @@ function channelAnyCredentialGroups(platform) {
       { label: 'Channel Secret 或 Secret File', fields: [['channelSecret', 'Channel Secret'], ['secretFile', 'Secret File']] },
     ]
   }
+  if (storageKey === 'nextcloud-talk') {
+    return [
+      { label: 'Bot Secret 或 Secret File', fields: [['botSecret', 'Bot Secret'], ['botSecretFile', 'Secret File']] },
+    ]
+  }
   return []
 }
 
@@ -2683,6 +2692,7 @@ const CHANNEL_DIAG_REQUIRED_FIELDS = {
   mattermost: [['botToken', 'Bot Token'], ['baseUrl', 'Base URL']],
   'synology-chat': [['token', 'Token'], ['incomingUrl', 'Incoming URL']],
   clickclack: [['baseUrl', 'Base URL'], ['token', 'Token'], ['workspace', 'Workspace']],
+  'nextcloud-talk': [['baseUrl', 'Base URL']],
   signal: [['account', 'Signal 账号']],
 }
 
@@ -2709,10 +2719,11 @@ function channelDiagnosisCredentialsReady(platform, form = {}) {
   if (['zalouser', 'whatsapp'].includes(platformStorageKey(platform))) return true
   if (platformStorageKey(platform) === 'msteams') return msteamsCredentialMissingLabels(form).length === 0
   const requiredFields = requiredChannelCredentialFields(platform, form)
+  const anyGroups = channelAnyCredentialGroups(platform)
   if (requiredFields.length) {
     return requiredFields.every(([key]) => hasConfiguredMessagingValue(form?.[key]))
+      && anyGroups.every(group => group.fields.some(([key]) => hasConfiguredMessagingValue(form?.[key])))
   }
-  const anyGroups = channelAnyCredentialGroups(platform)
   if (anyGroups.length) {
     return anyGroups.every(group => group.fields.some(([key]) => hasConfiguredMessagingValue(form?.[key])))
   }
@@ -2774,7 +2785,7 @@ export function buildOpenClawChannelDiagnosis({
   const credentialOk = ['zalouser', 'imessage', 'whatsapp'].includes(storageKey)
     ? !!configExists
     : (requiredFields.length
-        ? missing.length === 0
+        ? missing.length === 0 && missingGroups.length === 0
         : (anyGroups.length
             ? missingGroups.length === 0
             : (anyFields.length ? anyCredentialOk : hasAnyCredential)))
@@ -2799,7 +2810,7 @@ export function buildOpenClawChannelDiagnosis({
             : '尚未保存 WhatsApp 渠道配置，请先填写并保存。')
       : (credentialOk
           ? (requiredFields.length
-              ? `已填写 ${requiredFields.map(([, label]) => label).join(' / ')}。`
+              ? `已填写 ${requiredFields.map(([, label]) => label).join(' / ')}${anyGroups.length ? `；${anyGroups.map(group => group.label).join('；')}` : ''}。`
               : (anyGroups.length
                   ? `已填写 ${anyGroups.map(group => group.label).join('；')}。`
                   : (anyFields.length ? `已填写 ${anyLabels} 其中一项。` : '已检测到可用凭证字段。')))
@@ -3057,6 +3068,21 @@ export function buildMessagingPlatformFormValues(platform, saved = {}, options =
     putCsvFormValue(form, saved, 'toolsAllow')
     putCsvFormValue(form, saved, 'allowFrom')
     for (const key of ['timeoutSeconds', 'reconnectMs']) {
+      if (typeof saved[key] === 'number') form[key] = String(saved[key])
+    }
+    return form
+  }
+
+  if (storageKey === 'nextcloud-talk') {
+    for (const key of ['name', 'baseUrl', 'botSecret', 'botSecretFile', 'apiUser', 'apiPassword', 'apiPasswordFile', 'webhookHost', 'webhookPath', 'webhookPublicUrl', 'chunkMode', 'responsePrefix']) {
+      putSecretAwareFormValue(form, saved, key)
+    }
+    putBoolFormValue(form, saved, 'enabled')
+    putAccessPolicyFormValues(form, saved, { mentionCompat: true })
+    putCsvFormValue(form, saved, 'groupAllowFrom')
+    putBoolFormValue(form, saved, 'blockStreaming')
+    putBoolFormValue(form, saved?.network, 'dangerouslyAllowPrivateNetwork')
+    for (const key of ['webhookPort', 'historyLimit', 'dmHistoryLimit', 'mediaMaxMb', 'textChunkLimit']) {
       if (typeof saved[key] === 'number') form[key] = String(saved[key])
     }
     return form
@@ -3826,6 +3852,23 @@ function buildOpenClawMessagingPlatformEntry(platform, form, currentSaved = {}) 
     for (const key of ['timeoutSeconds', 'reconnectMs']) {
       if (typeof form[key] === 'number') entry[key] = form[key]
     }
+  } else if (storageKey === 'nextcloud-talk') {
+    entry.enabled = typeof form.enabled === 'boolean' ? form.enabled : true
+    for (const key of ['name', 'baseUrl', 'botSecret', 'botSecretFile', 'apiUser', 'apiPassword', 'apiPasswordFile', 'webhookHost', 'webhookPath', 'webhookPublicUrl', 'chunkMode', 'responsePrefix']) {
+      if (form[key]) entry[key] = form[key]
+    }
+    entry.dmPolicy = form.dmPolicy
+    entry.groupPolicy = form.groupPolicy
+    if (Object.hasOwn(form, 'requireMention')) entry.requireMention = !!form.requireMention
+    if (Array.isArray(form.allowFrom) && form.allowFrom.length) entry.allowFrom = form.allowFrom
+    if (Array.isArray(form.groupAllowFrom) && form.groupAllowFrom.length) entry.groupAllowFrom = form.groupAllowFrom
+    if (typeof form.blockStreaming === 'boolean') entry.blockStreaming = form.blockStreaming
+    if (typeof form.dangerouslyAllowPrivateNetwork === 'boolean') {
+      entry.network = { ...(currentSaved?.network || {}), dangerouslyAllowPrivateNetwork: form.dangerouslyAllowPrivateNetwork }
+    }
+    for (const key of ['webhookPort', 'historyLimit', 'dmHistoryLimit', 'mediaMaxMb', 'textChunkLimit']) {
+      if (typeof form[key] === 'number') entry[key] = form[key]
+    }
   } else if (storageKey === 'synology-chat') {
     for (const key of ['token', 'incomingUrl', 'nasHost', 'webhookPath', 'botName']) {
       if (form[key]) entry[key] = form[key]
@@ -3867,7 +3910,7 @@ export function mergeOpenClawMessagingPlatformConfig(cfg, { platform, form, acco
   const currentSaved = resolvePlatformConfigEntry(cfg.channels?.[storageKey], platform, normalizedAccountId) || {}
   const entry = buildOpenClawMessagingPlatformEntry(platform, normalizedForm, currentSaved)
   applyMessagingPlatformEntry(cfg, storageKey, normalizedAccountId, entry)
-  if (['zalo', 'zalouser', 'line', 'mattermost', 'clickclack', 'synology-chat', 'googlechat', 'msteams', 'imessage', 'whatsapp'].includes(storageKey)) {
+  if (['zalo', 'zalouser', 'line', 'mattermost', 'clickclack', 'nextcloud-talk', 'synology-chat', 'googlechat', 'msteams', 'imessage', 'whatsapp'].includes(storageKey)) {
     ensureMessagingPluginAllowed(cfg, storageKey)
   }
   return { entry, accountId: normalizedAccountId, storageKey }
@@ -5337,7 +5380,7 @@ const handlers = {
       } else {
         setRootChannelEntry(entry)
       }
-    } else if (['line', 'mattermost', 'clickclack', 'synology-chat', 'googlechat', 'msteams', 'whatsapp'].includes(storageKey)) {
+    } else if (['line', 'mattermost', 'clickclack', 'nextcloud-talk', 'synology-chat', 'googlechat', 'msteams', 'whatsapp'].includes(storageKey)) {
       const built = buildOpenClawMessagingPlatformEntry(platform, form, currentSaved)
       applyMessagingPlatformEntry(cfg, storageKey, normalizedAccountId, built)
       ensureMessagingPluginAllowed(cfg, storageKey)
@@ -5346,7 +5389,7 @@ const handlers = {
       preserveMessagingCredentialRefs(entry, form, currentSaved)
     }
 
-    if (platform !== 'qqbot' && platform !== 'feishu' && platform !== 'dingtalk' && platform !== 'dingtalk-connector' && !['line', 'mattermost', 'clickclack', 'synology-chat', 'googlechat', 'msteams', 'whatsapp'].includes(storageKey)) {
+    if (platform !== 'qqbot' && platform !== 'feishu' && platform !== 'dingtalk' && platform !== 'dingtalk-connector' && !['line', 'mattermost', 'clickclack', 'nextcloud-talk', 'synology-chat', 'googlechat', 'msteams', 'whatsapp'].includes(storageKey)) {
       preserveMessagingCredentialRefs(entry, form, currentSaved)
       // 合并模式：保留用户通过 CLI 或手动编辑的自定义字段
       applyMessagingPlatformEntry(cfg, storageKey, normalizedAccountId, entry)
@@ -5473,6 +5516,9 @@ const handlers = {
     }
     if (platform === 'clickclack') {
       return { valid: true, warnings: ['ClickClack 面板已完成基础字段校验；实际连通性请通过 Gateway 启动日志或 openclaw channels status --probe 验证。'] }
+    }
+    if (platform === 'nextcloud-talk') {
+      return { valid: true, warnings: ['Nextcloud Talk 面板已完成基础字段校验；实际连通性请通过 Gateway 启动日志或 openclaw channels status --probe 验证。'] }
     }
     if (platform === 'discord') {
       try {

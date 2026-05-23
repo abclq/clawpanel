@@ -249,6 +249,109 @@ test('ClickClack 读取会回显运行字段且诊断要求 Base URL、Token 和
   assert.equal(ready.checks.find(item => item.id === 'credentials')?.ok, true)
 })
 
+test('Nextcloud Talk 渠道保存会写入自托管 Talk 字段并启用插件', () => {
+  const cfg = { channels: {} }
+
+  mergeOpenClawMessagingPlatformConfig(cfg, {
+    platform: 'nextcloud-talk',
+    accountId: 'work',
+    form: {
+      enabled: 'true',
+      name: 'Work Cloud',
+      baseUrl: 'https://cloud.example.com',
+      botSecret: 'bot-secret',
+      apiUser: 'openclaw-bot',
+      apiPassword: 'app-password',
+      webhookPort: '8788',
+      webhookHost: '0.0.0.0',
+      webhookPath: '/nextcloud-talk-webhook',
+      webhookPublicUrl: 'https://panel.example.com/nextcloud-talk-webhook',
+      dmPolicy: 'allowlist',
+      allowFrom: 'alice, bob',
+      groupPolicy: 'mentioned',
+      groupAllowFrom: 'room-token-1, room-token-2',
+      historyLimit: '80',
+      dmHistoryLimit: '20',
+      mediaMaxMb: '50',
+      textChunkLimit: '4000',
+      chunkMode: 'newline',
+      blockStreaming: 'true',
+      responsePrefix: '[Talk]',
+      dangerouslyAllowPrivateNetwork: 'true',
+    },
+  })
+
+  const root = cfg.channels['nextcloud-talk']
+  const account = root.accounts.work
+  assert.equal(root.defaultAccount, 'work')
+  assert.equal(account.enabled, true)
+  assert.equal(account.name, 'Work Cloud')
+  assert.equal(account.baseUrl, 'https://cloud.example.com')
+  assert.equal(account.botSecret, 'bot-secret')
+  assert.equal(account.apiUser, 'openclaw-bot')
+  assert.equal(account.apiPassword, 'app-password')
+  assert.equal(account.webhookPort, 8788)
+  assert.equal(account.webhookHost, '0.0.0.0')
+  assert.equal(account.webhookPath, '/nextcloud-talk-webhook')
+  assert.equal(account.webhookPublicUrl, 'https://panel.example.com/nextcloud-talk-webhook')
+  assert.equal(account.dmPolicy, 'allowlist')
+  assert.deepEqual(account.allowFrom, ['alice', 'bob'])
+  assert.equal(account.groupPolicy, 'open')
+  assert.equal(account.requireMention, true)
+  assert.deepEqual(account.groupAllowFrom, ['room-token-1', 'room-token-2'])
+  assert.equal(account.historyLimit, 80)
+  assert.equal(account.dmHistoryLimit, 20)
+  assert.equal(account.mediaMaxMb, 50)
+  assert.equal(account.textChunkLimit, 4000)
+  assert.equal(account.chunkMode, 'newline')
+  assert.equal(account.blockStreaming, true)
+  assert.equal(account.responsePrefix, '[Talk]')
+  assert.deepEqual(account.network, { dangerouslyAllowPrivateNetwork: true })
+  assert.equal(cfg.plugins.entries['nextcloud-talk'].enabled, true)
+})
+
+test('Nextcloud Talk 读取和诊断支持 Bot Secret 或 Secret File 二选一', () => {
+  const values = buildMessagingPlatformFormValues('nextcloud-talk', {
+    enabled: true,
+    baseUrl: 'https://cloud.example.com',
+    botSecretFile: '/run/secrets/nextcloud-talk-secret',
+    apiUser: 'openclaw-bot',
+    allowFrom: ['alice'],
+    groupPolicy: 'open',
+    requireMention: true,
+    groupAllowFrom: ['room-token-1'],
+    webhookPort: 8788,
+    historyLimit: 80,
+    blockStreaming: true,
+    network: { dangerouslyAllowPrivateNetwork: true },
+  })
+  const missingSecret = buildOpenClawChannelDiagnosis({
+    platform: 'nextcloud-talk',
+    configExists: true,
+    channelEnabled: true,
+    form: { baseUrl: 'https://cloud.example.com' },
+  })
+  const ready = buildOpenClawChannelDiagnosis({
+    platform: 'nextcloud-talk',
+    configExists: true,
+    channelEnabled: true,
+    form: values,
+  })
+
+  assert.equal(values.enabled, 'true')
+  assert.equal(values.baseUrl, 'https://cloud.example.com')
+  assert.equal(values.botSecretFile, '/run/secrets/nextcloud-talk-secret')
+  assert.equal(values.groupPolicy, 'mentioned')
+  assert.equal(values.groupAllowFrom, 'room-token-1')
+  assert.equal(values.webhookPort, '8788')
+  assert.equal(values.historyLimit, '80')
+  assert.equal(values.blockStreaming, 'true')
+  assert.equal(values.dangerouslyAllowPrivateNetwork, 'true')
+  assert.equal(missingSecret.checks.find(item => item.id === 'credentials')?.ok, false)
+  assert.match(missingSecret.checks.find(item => item.id === 'credentials')?.detail || '', /Bot Secret.*Secret File/)
+  assert.equal(ready.checks.find(item => item.id === 'credentials')?.ok, true)
+})
+
 test('Signal 渠道保存会保留多账号和上游运行字段', () => {
   const cfg = { channels: {} }
 

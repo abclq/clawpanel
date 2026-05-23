@@ -310,6 +310,52 @@ const PLATFORM_REGISTRY = {
     pairingChannel: 'clickclack',
     pluginId: 'clickclack',
   },
+  'nextcloud-talk': {
+    label: 'Nextcloud Talk',
+    iconName: 'message-square',
+    desc: t('channels.nextcloudTalkDesc'),
+    guide: [
+      t('channels.nextcloudTalkGuide1'),
+      t('channels.nextcloudTalkGuide2'),
+      t('channels.nextcloudTalkGuide3'),
+      t('channels.nextcloudTalkGuide4'),
+    ],
+    guideFooter: t('channels.nextcloudTalkGuideFooter'),
+    fields: [
+      { key: 'baseUrl', label: 'Base URL', placeholder: 'https://cloud.example.com', required: true, hint: t('channels.nextcloudTalkBaseUrlHint') },
+      { key: 'botSecret', label: 'Bot Secret', placeholder: t('channels.nextcloudTalkBotSecretPh'), secret: true, required: false, hint: t('channels.nextcloudTalkBotSecretHint') },
+      { key: 'botSecretFile', label: 'Secret File', placeholder: '/run/secrets/nextcloud-talk-bot-secret', required: false, hint: t('channels.nextcloudTalkBotSecretFileHint') },
+      { key: 'apiUser', label: 'API User', placeholder: t('channels.optionalEg', { example: 'openclaw-bot' }), required: false },
+      { key: 'apiPassword', label: 'API Password', placeholder: t('channels.nextcloudTalkApiPasswordPh'), secret: true, required: false, hint: t('channels.nextcloudTalkApiPasswordHint') },
+      { key: 'apiPasswordFile', label: 'API Password File', placeholder: '/run/secrets/nextcloud-talk-api-password', required: false },
+      { key: 'name', label: t('channels.accountName'), placeholder: t('channels.optionalEg', { example: 'work' }), required: false },
+      { key: 'webhookPort', label: 'Webhook Port', placeholder: '8788', required: false },
+      { key: 'webhookHost', label: 'Webhook Host', placeholder: '0.0.0.0', required: false },
+      { key: 'webhookPath', label: 'Webhook Path', placeholder: '/nextcloud-talk-webhook', required: false },
+      { key: 'webhookPublicUrl', label: 'Webhook Public URL', placeholder: 'https://panel.example.com/nextcloud-talk-webhook', required: false, hint: t('channels.nextcloudTalkWebhookPublicUrlHint') },
+      { key: 'dmPolicy', label: t('channels.dmPolicy'), type: 'select', options: DM_POLICY_OPTIONS, required: false },
+      { key: 'groupPolicy', label: t('channels.groupPolicy'), type: 'select', options: GROUP_POLICY_OPTIONS(t('channels.groupAllRooms'), { mention: true }), required: false },
+      { key: 'allowFrom', label: 'Allow From', placeholder: 'alice, bob', required: false, hint: t('channels.nextcloudTalkAllowFromHint') },
+      { key: 'groupAllowFrom', label: 'Group Allow From', placeholder: 'room-token-1, room-token-2', required: false, hint: t('channels.nextcloudTalkGroupAllowFromHint') },
+      { key: 'historyLimit', label: 'History Limit', placeholder: '80', required: false },
+      { key: 'dmHistoryLimit', label: 'DM History Limit', placeholder: '20', required: false },
+      { key: 'mediaMaxMb', label: 'Media Max MB', placeholder: '50', required: false },
+      { key: 'textChunkLimit', label: 'Text Chunk Limit', placeholder: '4000', required: false },
+      { key: 'chunkMode', label: 'Chunk Mode', type: 'select', options: [
+        { value: '', label: t('channels.policyDefault') },
+        { value: 'length', label: 'Length' },
+        { value: 'newline', label: 'Newline' },
+      ], required: false },
+      { key: 'blockStreaming', label: t('channels.signalBlockStreaming'), type: 'select', options: BOOLEAN_OPTIONS, required: false },
+      { key: 'dangerouslyAllowPrivateNetwork', label: t('channels.mattermostPrivateNetwork'), type: 'select', options: BOOLEAN_OPTIONS, required: false, hint: t('channels.nextcloudTalkPrivateNetworkHint') },
+      { key: 'responsePrefix', label: 'Response Prefix', placeholder: t('channels.optionalEg', { example: '[Talk]' }), required: false },
+    ],
+    requiredAny: [{ keys: ['botSecret', 'botSecretFile'], label: t('channels.nextcloudTalkSecretOrFile') }],
+    configKey: 'nextcloud-talk',
+    pairingChannel: 'nextcloud-talk',
+    pluginRequired: '@openclaw/nextcloud-talk@latest',
+    pluginId: 'nextcloud-talk',
+  },
   'synology-chat': {
     label: 'Synology Chat',
     iconName: 'message-square',
@@ -832,7 +878,7 @@ function applyRouteIntent(page, state) {
 // ── 已配置平台渲染 ──
 
 // ── 多账号支持的平台：与 OpenClaw 的 accounts/defaultAccount 配置模型保持一致 ──
-const MULTI_INSTANCE_PLATFORMS = ['telegram', 'discord', 'slack', 'feishu', 'dingtalk', 'dingtalk-connector', 'qqbot', 'zalo', 'zalouser', 'line', 'mattermost', 'clickclack', 'synology-chat', 'googlechat', 'signal']
+const MULTI_INSTANCE_PLATFORMS = ['telegram', 'discord', 'slack', 'feishu', 'dingtalk', 'dingtalk-connector', 'qqbot', 'zalo', 'zalouser', 'line', 'mattermost', 'clickclack', 'nextcloud-talk', 'synology-chat', 'googlechat', 'signal']
 
 function supportsMessagingMultiAccount(pid) {
   return MULTI_INSTANCE_PLATFORMS.includes(pid)
