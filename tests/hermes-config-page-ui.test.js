@@ -139,6 +139,15 @@ test('Hermes 配置页会暴露全局显示与可靠性结构化配置字段', (
   }
 })
 
+test('Hermes 配置页会暴露提示缓存结构化配置字段', () => {
+  for (const id of [
+    'hm-prompt-caching-save',
+    'hm-prompt-cache-ttl',
+  ]) {
+    assert.match(source, new RegExp(`id="${id}"`), `缺少 ${id}`)
+  }
+})
+
 test('Hermes 配置页会暴露网关流式结构化配置字段', () => {
   for (const id of [
     'hm-streaming-save',
@@ -290,6 +299,7 @@ test('Hermes 配置页新增结构化配置不会暴露翻译 key', () => {
     key.includes('SecurityConfig') ||
     key.includes('HumanDelayConfig') ||
     key.includes('DisplayConfig') ||
+    key.includes('PromptCachingConfig') ||
     key.includes('StreamingConfig') ||
     key.includes('ExecutionLimits') ||
     key.includes('PrivacyConfig') ||

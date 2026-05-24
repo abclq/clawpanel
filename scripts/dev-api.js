@@ -3329,6 +3329,7 @@ const HERMES_APPROVAL_MODES = new Set(['manual', 'smart', 'off'])
 const HERMES_APPROVAL_CRON_MODES = new Set(['deny', 'approve'])
 const HERMES_LOGGING_LEVELS = new Set(['DEBUG', 'INFO', 'WARNING'])
 const HERMES_AGENT_IMAGE_INPUT_MODES = new Set(['auto', 'native', 'text'])
+const HERMES_PROMPT_CACHE_TTLS = new Set(['5m', '1h'])
 const HERMES_DISPLAY_TOOL_PROGRESS_VALUES = new Set(['off', 'new', 'all', 'verbose'])
 const HERMES_DISPLAY_STREAMING_VALUES = new Set(['inherit', 'true', 'false'])
 const HERMES_DISPLAY_RESUME_VALUES = new Set(['full', 'minimal'])
@@ -3442,6 +3443,13 @@ function normalizeHermesImageInputMode(value, strict = false) {
   if (HERMES_AGENT_IMAGE_INPUT_MODES.has(mode)) return mode
   if (strict) throw new Error('agent.image_input_mode 必须是 auto、native 或 text')
   return 'auto'
+}
+
+function normalizeHermesPromptCacheTtl(value, strict = false) {
+  const ttl = String(value ?? '').trim().toLowerCase() || '5m'
+  if (HERMES_PROMPT_CACHE_TTLS.has(ttl)) return ttl
+  if (strict) throw new Error('prompt_caching.cache_ttl 必须是 5m 或 1h')
+  return '5m'
 }
 
 function normalizeHermesDisplayToolProgress(value, strict = false, key = 'display.tool_progress') {
@@ -3642,6 +3650,27 @@ export function mergeHermesCompressionConfig(config = {}, form = {}) {
   compression.protect_first_n = parseHermesInteger(Object.hasOwn(form, 'protectFirstN') ? form.protectFirstN : currentValues.protectFirstN, 'compression.protect_first_n', 3, 0, 100, true)
   compression.abort_on_summary_failure = formHermesBool(form, 'abortOnSummaryFailure', currentValues.abortOnSummaryFailure)
   next.compression = compression
+  return next
+}
+
+export function buildHermesPromptCachingConfigValues(config = {}) {
+  const root = config && typeof config === 'object' && !Array.isArray(config) ? config : {}
+  const promptCaching = root.prompt_caching && typeof root.prompt_caching === 'object' && !Array.isArray(root.prompt_caching)
+    ? root.prompt_caching
+    : {}
+  return {
+    promptCacheTtl: normalizeHermesPromptCacheTtl(promptCaching.cache_ttl, false),
+  }
+}
+
+export function mergeHermesPromptCachingConfig(config = {}, form = {}) {
+  const next = mergeConfigsPreservingFields({}, config && typeof config === 'object' && !Array.isArray(config) ? config : {})
+  const currentValues = buildHermesPromptCachingConfigValues(next)
+  const promptCaching = next.prompt_caching && typeof next.prompt_caching === 'object' && !Array.isArray(next.prompt_caching)
+    ? mergeConfigsPreservingFields(next.prompt_caching, {})
+    : {}
+  promptCaching.cache_ttl = normalizeHermesPromptCacheTtl(Object.hasOwn(form, 'promptCacheTtl') ? form.promptCacheTtl : currentValues.promptCacheTtl, true)
+  next.prompt_caching = promptCaching
   return next
 }
 
@@ -10620,6 +10649,27 @@ const handlers = {
       configPath,
       backup,
       values: buildHermesCompressionConfigValues(next),
+    }
+  },
+
+  hermes_prompt_caching_config_read() {
+    const { configPath, exists, config } = readHermesConfigYamlObject()
+    return {
+      exists,
+      configPath,
+      values: buildHermesPromptCachingConfigValues(config),
+    }
+  },
+
+  hermes_prompt_caching_config_save({ form } = {}) {
+    const { configPath, config } = readHermesConfigYamlObject()
+    const next = mergeHermesPromptCachingConfig(config, form || {})
+    const backup = writeHermesConfigYamlObject(configPath, next)
+    return {
+      ok: true,
+      configPath,
+      backup,
+      values: buildHermesPromptCachingConfigValues(next),
     }
   },
 

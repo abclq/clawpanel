@@ -2167,6 +2167,7 @@ const HERMES_CHANNEL_PLATFORMS: [&str; 10] = [
 
 const HERMES_DISPLAY_TOOL_PROGRESS_VALUES: [&str; 4] = ["off", "new", "all", "verbose"];
 const HERMES_DISPLAY_STREAMING_VALUES: [&str; 3] = ["inherit", "true", "false"];
+const HERMES_PROMPT_CACHE_TTLS: [&str; 2] = ["5m", "1h"];
 
 fn normalize_hermes_channel_platform(platform: &str) -> Option<&'static str> {
     let platform = platform.trim().to_ascii_lowercase();
@@ -2246,6 +2247,25 @@ fn normalize_hermes_display_streaming_json(
         }
     }
     normalize_hermes_display_streaming_text(None, strict, key)
+}
+
+fn normalize_hermes_prompt_cache_ttl(
+    value: Option<String>,
+    strict: bool,
+) -> Result<String, String> {
+    let ttl = value.unwrap_or_default().trim().to_ascii_lowercase();
+    let ttl = if ttl.is_empty() {
+        "5m".to_string()
+    } else {
+        ttl
+    };
+    if HERMES_PROMPT_CACHE_TTLS.contains(&ttl.as_str()) {
+        Ok(ttl)
+    } else if strict {
+        Err("prompt_caching.cache_ttl 必须是 5m 或 1h".to_string())
+    } else {
+        Ok("5m".to_string())
+    }
 }
 
 fn yaml_key(key: &str) -> serde_yaml::Value {
@@ -3413,6 +3433,34 @@ fn merge_hermes_compression_config(
         yaml_key("abort_on_summary_failure"),
         serde_yaml::Value::Bool(abort_on_summary_failure),
     );
+    Ok(())
+}
+
+fn build_hermes_prompt_caching_config_values(config: &serde_yaml::Value) -> Value {
+    let root = config.as_mapping();
+    let prompt_caching = root.and_then(|map| yaml_get_mapping(map, "prompt_caching"));
+    serde_json::json!({
+        "promptCacheTtl": normalize_hermes_prompt_cache_ttl(
+            prompt_caching.and_then(|map| yaml_string_field(map, "cache_ttl")),
+            false,
+        ).unwrap_or_else(|_| "5m".to_string()),
+    })
+}
+
+fn merge_hermes_prompt_caching_config(
+    config: &mut serde_yaml::Value,
+    form: &Value,
+) -> Result<(), String> {
+    let current = build_hermes_prompt_caching_config_values(config);
+    let cache_ttl = normalize_hermes_prompt_cache_ttl(
+        form_string(form, "promptCacheTtl")
+            .or_else(|| current["promptCacheTtl"].as_str().map(ToString::to_string)),
+        true,
+    )?;
+
+    let root = ensure_yaml_object(config)?;
+    let prompt_caching = yaml_child_object(root, "prompt_caching")?;
+    prompt_caching.insert(yaml_key("cache_ttl"), serde_yaml::Value::String(cache_ttl));
     Ok(())
 }
 
@@ -6795,6 +6843,30 @@ pub fn hermes_compression_config_save(form: Value) -> Result<Value, String> {
         "configPath": config_path.to_string_lossy(),
         "backup": backup,
         "values": build_hermes_compression_config_values(&config),
+    }))
+}
+
+#[tauri::command]
+pub fn hermes_prompt_caching_config_read() -> Result<Value, String> {
+    let (config_path, exists, config) = read_hermes_channel_yaml_config()?;
+    ensure_yaml_object(&mut config.clone())?;
+    Ok(serde_json::json!({
+        "exists": exists,
+        "configPath": config_path.to_string_lossy(),
+        "values": build_hermes_prompt_caching_config_values(&config),
+    }))
+}
+
+#[tauri::command]
+pub fn hermes_prompt_caching_config_save(form: Value) -> Result<Value, String> {
+    let (config_path, _exists, mut config) = read_hermes_channel_yaml_config()?;
+    merge_hermes_prompt_caching_config(&mut config, &form)?;
+    let backup = write_hermes_yaml_config(&config_path, &config)?;
+    Ok(serde_json::json!({
+        "ok": true,
+        "configPath": config_path.to_string_lossy(),
+        "backup": backup,
+        "values": build_hermes_prompt_caching_config_values(&config),
     }))
 }
 
@@ -12332,6 +12404,74 @@ streaming:
         let err = merge_hermes_compression_config(&mut config, &json!({ "protectFirstN": -1 }))
             .unwrap_err();
         assert!(err.contains("compression.protect_first_n"));
+    }
+}
+
+#[cfg(test)]
+mod hermes_prompt_caching_config_tests {
+    use super::{build_hermes_prompt_caching_config_values, merge_hermes_prompt_caching_config};
+    use serde_json::json;
+
+    #[test]
+    fn prompt_caching_values_have_upstream_defaults() {
+        let config: serde_yaml::Value = serde_yaml::from_str("{}").unwrap();
+        let values = build_hermes_prompt_caching_config_values(&config);
+        assert_eq!(values["promptCacheTtl"], "5m");
+    }
+
+    #[test]
+    fn prompt_caching_values_normalize_existing_ttl() {
+        let config: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+prompt_caching:
+  cache_ttl: "1H"
+"#,
+        )
+        .unwrap();
+
+        let values = build_hermes_prompt_caching_config_values(&config);
+        assert_eq!(values["promptCacheTtl"], "1h");
+    }
+
+    #[test]
+    fn merge_prompt_caching_config_preserves_unrelated_yaml() {
+        let mut config: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+model:
+  provider: anthropic
+prompt_caching:
+  cache_ttl: 5m
+  custom_flag: keep-prompt-cache
+compression:
+  enabled: true
+"#,
+        )
+        .unwrap();
+
+        merge_hermes_prompt_caching_config(
+            &mut config,
+            &json!({
+                "promptCacheTtl": "1h",
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(config["model"]["provider"].as_str(), Some("anthropic"));
+        assert_eq!(config["compression"]["enabled"].as_bool(), Some(true));
+        assert_eq!(config["prompt_caching"]["cache_ttl"].as_str(), Some("1h"));
+        assert_eq!(
+            config["prompt_caching"]["custom_flag"].as_str(),
+            Some("keep-prompt-cache")
+        );
+    }
+
+    #[test]
+    fn merge_prompt_caching_config_rejects_invalid_ttl() {
+        let mut config: serde_yaml::Value = serde_yaml::from_str("{}").unwrap();
+        let err =
+            merge_hermes_prompt_caching_config(&mut config, &json!({ "promptCacheTtl": "30m" }))
+                .unwrap_err();
+        assert!(err.contains("prompt_caching.cache_ttl"));
     }
 }
 
