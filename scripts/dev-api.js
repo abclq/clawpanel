@@ -3323,6 +3323,7 @@ function normalizeHermesPlatform(platform) {
 const HERMES_SESSION_RESET_MODES = new Set(['both', 'idle', 'daily', 'none'])
 const HERMES_STREAMING_TRANSPORTS = new Set(['auto', 'draft', 'edit', 'off'])
 const HERMES_CODE_EXECUTION_MODES = new Set(['project', 'strict'])
+const HERMES_TERMINAL_BACKENDS = new Set(['local', 'ssh', 'docker', 'singularity', 'modal', 'daytona', 'vercel_sandbox'])
 const HERMES_DISPLAY_TOOL_PROGRESS_VALUES = new Set(['off', 'new', 'all', 'verbose'])
 const HERMES_DISPLAY_STREAMING_VALUES = new Set(['inherit', 'true', 'false'])
 
@@ -3388,6 +3389,13 @@ function normalizeHermesCodeExecutionMode(value, strict = false) {
   if (HERMES_CODE_EXECUTION_MODES.has(mode)) return mode
   if (strict) throw new Error('code_execution.mode 必须是 project 或 strict')
   return 'project'
+}
+
+function normalizeHermesTerminalBackend(value, strict = false) {
+  const backend = String(value ?? '').trim().toLowerCase() || 'local'
+  if (HERMES_TERMINAL_BACKENDS.has(backend)) return backend
+  if (strict) throw new Error('terminal.backend 必须是 local、ssh、docker、singularity、modal、daytona 或 vercel_sandbox')
+  return 'local'
 }
 
 function normalizeHermesDisplayToolProgress(value, strict = false, key = 'display.tool_progress') {
@@ -3613,6 +3621,45 @@ export function buildHermesExecutionLimitsConfigValues(config = {}) {
     delegationSubagentAutoApprove: readHermesBool(delegation.subagent_auto_approve, false),
     delegationInheritMcpToolsets: readHermesBool(delegation.inherit_mcp_toolsets, true),
   }
+}
+
+export function buildHermesTerminalConfigValues(config = {}) {
+  const root = config && typeof config === 'object' && !Array.isArray(config) ? config : {}
+  const terminal = root.terminal && typeof root.terminal === 'object' && !Array.isArray(root.terminal)
+    ? root.terminal
+    : {}
+  return {
+    terminalBackend: normalizeHermesTerminalBackend(terminal.backend, false),
+    terminalCwd: typeof terminal.cwd === 'string' && terminal.cwd.trim() ? terminal.cwd : '.',
+    terminalTimeout: parseHermesInteger(terminal.timeout, 'terminal.timeout', 180, 1, 86400, false),
+    terminalLifetimeSeconds: parseHermesInteger(terminal.lifetime_seconds, 'terminal.lifetime_seconds', 300, 0, 86400, false),
+    terminalDockerMountCwdToWorkspace: readHermesBool(terminal.docker_mount_cwd_to_workspace, false),
+    terminalDockerRunAsHostUser: readHermesBool(terminal.docker_run_as_host_user, false),
+    terminalContainerCpu: parseHermesInteger(terminal.container_cpu, 'terminal.container_cpu', 1, 1, 64, false),
+    terminalContainerMemory: parseHermesInteger(terminal.container_memory, 'terminal.container_memory', 5120, 128, 1048576, false),
+    terminalContainerDisk: parseHermesInteger(terminal.container_disk, 'terminal.container_disk', 51200, 1024, 10485760, false),
+    terminalContainerPersistent: readHermesBool(terminal.container_persistent, true),
+  }
+}
+
+export function mergeHermesTerminalConfig(config = {}, form = {}) {
+  const next = mergeConfigsPreservingFields({}, config && typeof config === 'object' && !Array.isArray(config) ? config : {})
+  const currentValues = buildHermesTerminalConfigValues(next)
+  const terminal = next.terminal && typeof next.terminal === 'object' && !Array.isArray(next.terminal)
+    ? mergeConfigsPreservingFields(next.terminal, {})
+    : {}
+  terminal.backend = normalizeHermesTerminalBackend(Object.hasOwn(form, 'terminalBackend') ? form.terminalBackend : currentValues.terminalBackend, true)
+  terminal.cwd = String(Object.hasOwn(form, 'terminalCwd') ? form.terminalCwd : currentValues.terminalCwd).trim() || '.'
+  terminal.timeout = parseHermesInteger(Object.hasOwn(form, 'terminalTimeout') ? form.terminalTimeout : currentValues.terminalTimeout, 'terminal.timeout', 180, 1, 86400, true)
+  terminal.lifetime_seconds = parseHermesInteger(Object.hasOwn(form, 'terminalLifetimeSeconds') ? form.terminalLifetimeSeconds : currentValues.terminalLifetimeSeconds, 'terminal.lifetime_seconds', 300, 0, 86400, true)
+  terminal.docker_mount_cwd_to_workspace = formHermesBool(form, 'terminalDockerMountCwdToWorkspace', currentValues.terminalDockerMountCwdToWorkspace)
+  terminal.docker_run_as_host_user = formHermesBool(form, 'terminalDockerRunAsHostUser', currentValues.terminalDockerRunAsHostUser)
+  terminal.container_cpu = parseHermesInteger(Object.hasOwn(form, 'terminalContainerCpu') ? form.terminalContainerCpu : currentValues.terminalContainerCpu, 'terminal.container_cpu', 1, 1, 64, true)
+  terminal.container_memory = parseHermesInteger(Object.hasOwn(form, 'terminalContainerMemory') ? form.terminalContainerMemory : currentValues.terminalContainerMemory, 'terminal.container_memory', 5120, 128, 1048576, true)
+  terminal.container_disk = parseHermesInteger(Object.hasOwn(form, 'terminalContainerDisk') ? form.terminalContainerDisk : currentValues.terminalContainerDisk, 'terminal.container_disk', 51200, 1024, 10485760, true)
+  terminal.container_persistent = formHermesBool(form, 'terminalContainerPersistent', currentValues.terminalContainerPersistent)
+  next.terminal = terminal
+  return next
 }
 
 export function mergeHermesExecutionLimitsConfig(config = {}, form = {}) {
@@ -10028,6 +10075,27 @@ const handlers = {
       configPath,
       backup,
       values: buildHermesExecutionLimitsConfigValues(next),
+    }
+  },
+
+  hermes_terminal_config_read() {
+    const { configPath, exists, config } = readHermesConfigYamlObject()
+    return {
+      exists,
+      configPath,
+      values: buildHermesTerminalConfigValues(config),
+    }
+  },
+
+  hermes_terminal_config_save({ form } = {}) {
+    const { configPath, config } = readHermesConfigYamlObject()
+    const next = mergeHermesTerminalConfig(config, form || {})
+    const backup = writeHermesConfigYamlObject(configPath, next)
+    return {
+      ok: true,
+      configPath,
+      backup,
+      values: buildHermesTerminalConfigValues(next),
     }
   },
 

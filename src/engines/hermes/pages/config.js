@@ -64,9 +64,23 @@ const EXECUTION_LIMITS_DEFAULTS = {
   delegationInheritMcpToolsets: true,
 }
 
+const TERMINAL_DEFAULTS = {
+  terminalBackend: 'local',
+  terminalCwd: '.',
+  terminalTimeout: 180,
+  terminalLifetimeSeconds: 300,
+  terminalDockerMountCwdToWorkspace: false,
+  terminalDockerRunAsHostUser: false,
+  terminalContainerCpu: 1,
+  terminalContainerMemory: 5120,
+  terminalContainerDisk: 51200,
+  terminalContainerPersistent: true,
+}
+
 const SESSION_RESET_MODES = ['both', 'idle', 'daily', 'none']
 const STREAMING_TRANSPORTS = ['edit', 'auto', 'draft', 'off']
 const CODE_EXECUTION_MODES = ['project', 'strict']
+const TERMINAL_BACKENDS = ['local', 'ssh', 'docker', 'singularity', 'modal', 'daytona', 'vercel_sandbox']
 
 export function render() {
   const el = document.createElement('div')
@@ -79,6 +93,7 @@ export function render() {
   let memoryValues = { ...MEMORY_DEFAULTS }
   let streamingValues = { ...STREAMING_DEFAULTS }
   let executionLimitsValues = { ...EXECUTION_LIMITS_DEFAULTS }
+  let terminalValues = { ...TERMINAL_DEFAULTS }
   let loading = true
   let runtimeLoading = true
   let compressionLoading = true
@@ -86,6 +101,7 @@ export function render() {
   let memoryLoading = true
   let streamingLoading = true
   let executionLimitsLoading = true
+  let terminalLoading = true
   let saving = false
   let runtimeSaving = false
   let compressionSaving = false
@@ -93,6 +109,7 @@ export function render() {
   let memorySaving = false
   let streamingSaving = false
   let executionLimitsSaving = false
+  let terminalSaving = false
   let error = null
   let runtimeError = null
   let compressionError = null
@@ -100,6 +117,7 @@ export function render() {
   let memoryError = null
   let streamingError = null
   let executionLimitsError = null
+  let terminalError = null
 
   function esc(value) {
     return String(value ?? '')
@@ -110,7 +128,7 @@ export function render() {
   }
 
   function isBusy() {
-    return loading || runtimeLoading || compressionLoading || toolGuardrailsLoading || memoryLoading || streamingLoading || executionLimitsLoading || saving || runtimeSaving || compressionSaving || toolGuardrailsSaving || memorySaving || streamingSaving || executionLimitsSaving
+    return loading || runtimeLoading || compressionLoading || toolGuardrailsLoading || memoryLoading || streamingLoading || executionLimitsLoading || terminalLoading || saving || runtimeSaving || compressionSaving || toolGuardrailsSaving || memorySaving || streamingSaving || executionLimitsSaving || terminalSaving
   }
 
   function option(labelKey, value, selected) {
@@ -127,7 +145,7 @@ export function render() {
   }
 
   function renderRuntimePanel() {
-    const disabled = loading || saving || runtimeLoading || runtimeSaving || compressionSaving || toolGuardrailsSaving || memorySaving || streamingSaving || executionLimitsSaving
+    const disabled = loading || saving || runtimeLoading || runtimeSaving || compressionSaving || toolGuardrailsSaving || memorySaving || streamingSaving || executionLimitsSaving || terminalSaving
     return `
       <div class="hm-panel hm-config-runtime-panel">
         <div class="hm-panel-header">
@@ -175,7 +193,7 @@ export function render() {
   }
 
   function renderCompressionPanel() {
-    const disabled = loading || saving || compressionLoading || compressionSaving || runtimeSaving || toolGuardrailsSaving || memorySaving || streamingSaving || executionLimitsSaving
+    const disabled = loading || saving || compressionLoading || compressionSaving || runtimeSaving || toolGuardrailsSaving || memorySaving || streamingSaving || executionLimitsSaving || terminalSaving
     return `
       <div class="hm-panel hm-config-runtime-panel hm-config-compression-panel">
         <div class="hm-panel-header">
@@ -225,7 +243,7 @@ export function render() {
   }
 
   function renderToolGuardrailsPanel() {
-    const disabled = loading || saving || toolGuardrailsLoading || toolGuardrailsSaving || runtimeSaving || compressionSaving || memorySaving || streamingSaving || executionLimitsSaving
+    const disabled = loading || saving || toolGuardrailsLoading || toolGuardrailsSaving || runtimeSaving || compressionSaving || memorySaving || streamingSaving || executionLimitsSaving || terminalSaving
     return `
       <div class="hm-panel hm-config-runtime-panel hm-config-guardrails-panel">
         <div class="hm-panel-header">
@@ -287,7 +305,7 @@ export function render() {
   }
 
   function renderMemoryPanel() {
-    const disabled = loading || saving || memoryLoading || memorySaving || runtimeSaving || compressionSaving || toolGuardrailsSaving || streamingSaving || executionLimitsSaving
+    const disabled = loading || saving || memoryLoading || memorySaving || runtimeSaving || compressionSaving || toolGuardrailsSaving || streamingSaving || executionLimitsSaving || terminalSaving
     return `
       <div class="hm-panel hm-config-runtime-panel hm-config-memory-panel">
         <div class="hm-panel-header">
@@ -333,7 +351,7 @@ export function render() {
   }
 
   function renderStreamingPanel() {
-    const disabled = loading || saving || streamingLoading || streamingSaving || runtimeSaving || compressionSaving || toolGuardrailsSaving || memorySaving || executionLimitsSaving
+    const disabled = loading || saving || streamingLoading || streamingSaving || runtimeSaving || compressionSaving || toolGuardrailsSaving || memorySaving || executionLimitsSaving || terminalSaving
     return `
       <div class="hm-panel hm-config-runtime-panel hm-config-streaming-panel">
         <div class="hm-panel-header">
@@ -385,7 +403,7 @@ export function render() {
   }
 
   function renderExecutionLimitsPanel() {
-    const disabled = loading || saving || executionLimitsLoading || executionLimitsSaving || runtimeSaving || compressionSaving || toolGuardrailsSaving || memorySaving || streamingSaving
+    const disabled = loading || saving || executionLimitsLoading || executionLimitsSaving || terminalSaving || runtimeSaving || compressionSaving || toolGuardrailsSaving || memorySaving || streamingSaving
     return `
       <div class="hm-panel hm-config-runtime-panel hm-config-execution-limits-panel">
         <div class="hm-panel-header">
@@ -456,6 +474,77 @@ export function render() {
     `
   }
 
+  function renderTerminalPanel() {
+    const disabled = loading || saving || terminalLoading || terminalSaving || runtimeSaving || compressionSaving || toolGuardrailsSaving || memorySaving || streamingSaving || executionLimitsSaving
+    return `
+      <div class="hm-panel hm-config-runtime-panel hm-config-terminal-panel">
+        <div class="hm-panel-header">
+          <div>
+            <div class="hm-panel-title">${t('engine.hermesTerminalConfigTitle')}</div>
+            <div class="hm-channel-panel-desc">${t('engine.hermesTerminalConfigDesc')}</div>
+          </div>
+          <div class="hm-panel-actions">
+            <span class="hm-muted">${terminalSaving ? t('engine.hermesConfigStatusSaving') : terminalLoading ? t('engine.hermesConfigStatusLoading') : t('engine.hermesTerminalConfigStatusReady')}</span>
+            <button class="hm-btn hm-btn--cta hm-btn--sm" id="hm-terminal-save" ${disabled ? 'disabled' : ''}>${t('engine.hermesTerminalConfigSave')}</button>
+          </div>
+        </div>
+        <div class="hm-panel-body">
+          ${renderError(terminalError)}
+          <div class="hm-config-runtime-grid hm-config-terminal-grid">
+            <label class="hm-field">
+              <span class="hm-field-label">${t('engine.hermesTerminalConfigBackend')}</span>
+              <select id="hm-terminal-backend" class="hm-input" ${disabled ? 'disabled' : ''}>
+                ${TERMINAL_BACKENDS.map(mode => option(`engine.hermesTerminalConfigBackend_${mode}`, mode, terminalValues.terminalBackend)).join('')}
+              </select>
+            </label>
+            <label class="hm-field">
+              <span class="hm-field-label">${t('engine.hermesTerminalConfigCwd')}</span>
+              <input id="hm-terminal-cwd" class="hm-input" value="${esc(terminalValues.terminalCwd)}" ${disabled ? 'disabled' : ''}>
+            </label>
+            <label class="hm-field">
+              <span class="hm-field-label">${t('engine.hermesTerminalConfigTimeout')}</span>
+              <input id="hm-terminal-timeout" class="hm-input" type="number" inputmode="numeric" min="1" max="86400" step="1" value="${esc(terminalValues.terminalTimeout)}" ${disabled ? 'disabled' : ''}>
+            </label>
+            <label class="hm-field">
+              <span class="hm-field-label">${t('engine.hermesTerminalConfigLifetimeSeconds')}</span>
+              <input id="hm-terminal-lifetime-seconds" class="hm-input" type="number" inputmode="numeric" min="0" max="86400" step="1" value="${esc(terminalValues.terminalLifetimeSeconds)}" ${disabled ? 'disabled' : ''}>
+            </label>
+          </div>
+          <div class="hm-config-check-grid">
+            <label class="hm-channel-check hm-channel-check--danger">
+              <input id="hm-terminal-docker-mount-cwd-to-workspace" type="checkbox" ${terminalValues.terminalDockerMountCwdToWorkspace ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
+              <span>${t('engine.hermesTerminalConfigDockerMountCwd')}</span>
+            </label>
+            <label class="hm-channel-check">
+              <input id="hm-terminal-docker-run-as-host-user" type="checkbox" ${terminalValues.terminalDockerRunAsHostUser ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
+              <span>${t('engine.hermesTerminalConfigDockerRunAsHostUser')}</span>
+            </label>
+            <label class="hm-channel-check">
+              <input id="hm-terminal-container-persistent" type="checkbox" ${terminalValues.terminalContainerPersistent ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
+              <span>${t('engine.hermesTerminalConfigContainerPersistent')}</span>
+            </label>
+          </div>
+          <div class="hm-config-subtitle">${t('engine.hermesTerminalConfigContainerTitle')}</div>
+          <div class="hm-config-runtime-grid hm-config-terminal-grid">
+            <label class="hm-field">
+              <span class="hm-field-label">${t('engine.hermesTerminalConfigContainerCpu')}</span>
+              <input id="hm-terminal-container-cpu" class="hm-input" type="number" inputmode="numeric" min="1" max="64" step="1" value="${esc(terminalValues.terminalContainerCpu)}" ${disabled ? 'disabled' : ''}>
+            </label>
+            <label class="hm-field">
+              <span class="hm-field-label">${t('engine.hermesTerminalConfigContainerMemory')}</span>
+              <input id="hm-terminal-container-memory" class="hm-input" type="number" inputmode="numeric" min="128" max="1048576" step="128" value="${esc(terminalValues.terminalContainerMemory)}" ${disabled ? 'disabled' : ''}>
+            </label>
+            <label class="hm-field">
+              <span class="hm-field-label">${t('engine.hermesTerminalConfigContainerDisk')}</span>
+              <input id="hm-terminal-container-disk" class="hm-input" type="number" inputmode="numeric" min="1024" max="10485760" step="1024" value="${esc(terminalValues.terminalContainerDisk)}" ${disabled ? 'disabled' : ''}>
+            </label>
+          </div>
+          <div class="hm-channel-footnote">${t('engine.hermesTerminalConfigFootnote')}</div>
+        </div>
+      </div>
+    `
+  }
+
   function draw() {
     el.innerHTML = `
       <div class="hm-hero">
@@ -471,6 +560,7 @@ export function render() {
       </div>
 
       ${renderRuntimePanel()}
+      ${renderTerminalPanel()}
       ${renderStreamingPanel()}
       ${renderExecutionLimitsPanel()}
       ${renderCompressionPanel()}
@@ -501,6 +591,7 @@ export function render() {
     el.querySelector('#hm-memory-save')?.addEventListener('click', saveMemory)
     el.querySelector('#hm-streaming-save')?.addEventListener('click', saveStreaming)
     el.querySelector('#hm-execution-limits-save')?.addEventListener('click', saveExecutionLimits)
+    el.querySelector('#hm-terminal-save')?.addEventListener('click', saveTerminal)
   }
 
   async function loadRaw() {
@@ -538,6 +629,11 @@ export function render() {
     executionLimitsValues = { ...EXECUTION_LIMITS_DEFAULTS, ...(data?.values || {}) }
   }
 
+  async function loadTerminal() {
+    const data = await api.hermesTerminalConfigRead()
+    terminalValues = { ...TERMINAL_DEFAULTS, ...(data?.values || {}) }
+  }
+
   async function load() {
     loading = true
     runtimeLoading = true
@@ -546,6 +642,7 @@ export function render() {
     memoryLoading = true
     streamingLoading = true
     executionLimitsLoading = true
+    terminalLoading = true
     error = null
     runtimeError = null
     compressionError = null
@@ -553,6 +650,7 @@ export function render() {
     memoryError = null
     streamingError = null
     executionLimitsError = null
+    terminalError = null
     draw()
     try {
       await loadRaw()
@@ -602,6 +700,14 @@ export function render() {
       draw()
     }
     try {
+      await loadTerminal()
+    } catch (err) {
+      terminalError = humanizeError(err, t('engine.hermesTerminalConfigLoadFailed') || 'Load terminal config failed')
+    } finally {
+      terminalLoading = false
+      draw()
+    }
+    try {
       await loadMemory()
     } catch (err) {
       memoryError = humanizeError(err, t('engine.hermesMemoryConfigLoadFailed') || 'Load memory config failed')
@@ -647,6 +753,9 @@ export function render() {
       } catch {}
       try {
         await loadExecutionLimits()
+      } catch {}
+      try {
+        await loadTerminal()
       } catch {}
     } catch (err) {
       error = humanizeError(err, t('engine.hermesConfigSaveFailed') || 'Save failed')
@@ -837,6 +946,40 @@ export function render() {
       toast(executionLimitsError, 'error')
     } finally {
       executionLimitsSaving = false
+      draw()
+    }
+  }
+
+  async function saveTerminal() {
+    const form = {
+      terminalBackend: el.querySelector('#hm-terminal-backend')?.value || 'local',
+      terminalCwd: el.querySelector('#hm-terminal-cwd')?.value || '.',
+      terminalTimeout: el.querySelector('#hm-terminal-timeout')?.value || '180',
+      terminalLifetimeSeconds: el.querySelector('#hm-terminal-lifetime-seconds')?.value || '300',
+      terminalDockerMountCwdToWorkspace: !!el.querySelector('#hm-terminal-docker-mount-cwd-to-workspace')?.checked,
+      terminalDockerRunAsHostUser: !!el.querySelector('#hm-terminal-docker-run-as-host-user')?.checked,
+      terminalContainerCpu: el.querySelector('#hm-terminal-container-cpu')?.value || '1',
+      terminalContainerMemory: el.querySelector('#hm-terminal-container-memory')?.value || '5120',
+      terminalContainerDisk: el.querySelector('#hm-terminal-container-disk')?.value || '51200',
+      terminalContainerPersistent: !!el.querySelector('#hm-terminal-container-persistent')?.checked,
+    }
+    terminalSaving = true
+    terminalError = null
+    draw()
+    try {
+      const result = await api.hermesTerminalConfigSave(form)
+      terminalValues = { ...TERMINAL_DEFAULTS, ...(result?.values || form) }
+      await refreshRawAfterStructuredSave()
+      const backup = result?.backup || ''
+      toast({
+        message: t('engine.hermesTerminalConfigSaveSuccess'),
+        hint: backup ? t('engine.hermesConfigBackupHint', { path: backup }) : '',
+      }, 'success')
+    } catch (err) {
+      terminalError = humanizeError(err, t('engine.hermesTerminalConfigSaveFailed') || 'Save terminal config failed')
+      toast(terminalError, 'error')
+    } finally {
+      terminalSaving = false
       draw()
     }
   }

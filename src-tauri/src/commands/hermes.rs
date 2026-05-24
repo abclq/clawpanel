@@ -3692,6 +3692,30 @@ fn normalize_hermes_code_execution_mode(
     }
 }
 
+fn normalize_hermes_terminal_backend(
+    value: Option<String>,
+    strict: bool,
+) -> Result<String, String> {
+    let backend = value.unwrap_or_default().trim().to_ascii_lowercase();
+    let backend = if backend.is_empty() {
+        "local".to_string()
+    } else {
+        backend
+    };
+    if matches!(
+        backend.as_str(),
+        "local" | "ssh" | "docker" | "singularity" | "modal" | "daytona" | "vercel_sandbox"
+    ) {
+        return Ok(backend);
+    }
+    if strict {
+        Err("terminal.backend 必须是 local、ssh、docker、singularity、modal、daytona 或 vercel_sandbox"
+            .to_string())
+    } else {
+        Ok("local".to_string())
+    }
+}
+
 fn hermes_streaming_config_source(config: &serde_yaml::Value) -> Option<&serde_yaml::Mapping> {
     let root = config.as_mapping()?;
     if let Some(streaming) = yaml_get_mapping(root, "streaming") {
@@ -4017,6 +4041,200 @@ fn merge_hermes_execution_limits_config(
     delegation.insert(
         yaml_key("inherit_mcp_toolsets"),
         serde_yaml::Value::Bool(delegation_inherit_mcp_toolsets),
+    );
+    Ok(())
+}
+
+fn build_hermes_terminal_config_values(config: &serde_yaml::Value) -> Value {
+    let root = config.as_mapping();
+    let terminal = root.and_then(|map| yaml_get_mapping(map, "terminal"));
+    let terminal_backend = normalize_hermes_terminal_backend(
+        terminal.and_then(|map| yaml_string_field(map, "backend")),
+        false,
+    )
+    .unwrap_or_else(|_| "local".to_string());
+    let terminal_cwd = terminal
+        .and_then(|map| yaml_string_field(map, "cwd"))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| ".".to_string());
+    let terminal_timeout = terminal
+        .map(|map| bounded_hermes_i64(yaml_i64_field(map, "timeout"), 180, 1, 86400))
+        .unwrap_or(180);
+    let terminal_lifetime_seconds = terminal
+        .map(|map| bounded_hermes_i64(yaml_i64_field(map, "lifetime_seconds"), 300, 0, 86400))
+        .unwrap_or(300);
+    let terminal_docker_mount_cwd_to_workspace = terminal
+        .and_then(|map| yaml_bool_field(map, "docker_mount_cwd_to_workspace"))
+        .unwrap_or(false);
+    let terminal_docker_run_as_host_user = terminal
+        .and_then(|map| yaml_bool_field(map, "docker_run_as_host_user"))
+        .unwrap_or(false);
+    let terminal_container_cpu = terminal
+        .map(|map| bounded_hermes_i64(yaml_i64_field(map, "container_cpu"), 1, 1, 64))
+        .unwrap_or(1);
+    let terminal_container_memory = terminal
+        .map(|map| bounded_hermes_i64(yaml_i64_field(map, "container_memory"), 5120, 128, 1048576))
+        .unwrap_or(5120);
+    let terminal_container_disk = terminal
+        .map(|map| bounded_hermes_i64(yaml_i64_field(map, "container_disk"), 51200, 1024, 10485760))
+        .unwrap_or(51200);
+    let terminal_container_persistent = terminal
+        .and_then(|map| yaml_bool_field(map, "container_persistent"))
+        .unwrap_or(true);
+
+    serde_json::json!({
+        "terminalBackend": terminal_backend,
+        "terminalCwd": terminal_cwd,
+        "terminalTimeout": terminal_timeout,
+        "terminalLifetimeSeconds": terminal_lifetime_seconds,
+        "terminalDockerMountCwdToWorkspace": terminal_docker_mount_cwd_to_workspace,
+        "terminalDockerRunAsHostUser": terminal_docker_run_as_host_user,
+        "terminalContainerCpu": terminal_container_cpu,
+        "terminalContainerMemory": terminal_container_memory,
+        "terminalContainerDisk": terminal_container_disk,
+        "terminalContainerPersistent": terminal_container_persistent,
+    })
+}
+
+fn merge_hermes_terminal_config(
+    config: &mut serde_yaml::Value,
+    form: &Value,
+) -> Result<(), String> {
+    let current = build_hermes_terminal_config_values(config);
+    let terminal_backend = normalize_hermes_terminal_backend(
+        if form.get("terminalBackend").is_some() {
+            form_string(form, "terminalBackend")
+        } else {
+            current["terminalBackend"].as_str().map(ToString::to_string)
+        },
+        true,
+    )?;
+    let terminal_cwd = if form.get("terminalCwd").is_some() {
+        form_string(form, "terminalCwd")
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    } else {
+        current["terminalCwd"].as_str().unwrap_or(".").to_string()
+    };
+    let terminal_cwd = if terminal_cwd.trim().is_empty() {
+        ".".to_string()
+    } else {
+        terminal_cwd
+    };
+    let terminal_timeout = validate_hermes_i64(
+        if form.get("terminalTimeout").is_some() {
+            form_i64(form, "terminalTimeout")
+        } else {
+            Some(current["terminalTimeout"].as_i64().unwrap_or(180))
+        },
+        "terminal.timeout",
+        180,
+        1,
+        86400,
+    )?;
+    let terminal_lifetime_seconds = validate_hermes_i64(
+        if form.get("terminalLifetimeSeconds").is_some() {
+            form_i64(form, "terminalLifetimeSeconds")
+        } else {
+            Some(current["terminalLifetimeSeconds"].as_i64().unwrap_or(300))
+        },
+        "terminal.lifetime_seconds",
+        300,
+        0,
+        86400,
+    )?;
+    let terminal_docker_mount_cwd_to_workspace =
+        form_bool(form, "terminalDockerMountCwdToWorkspace").unwrap_or_else(|| {
+            current["terminalDockerMountCwdToWorkspace"]
+                .as_bool()
+                .unwrap_or(false)
+        });
+    let terminal_docker_run_as_host_user = form_bool(form, "terminalDockerRunAsHostUser")
+        .unwrap_or_else(|| {
+            current["terminalDockerRunAsHostUser"]
+                .as_bool()
+                .unwrap_or(false)
+        });
+    let terminal_container_cpu = validate_hermes_i64(
+        if form.get("terminalContainerCpu").is_some() {
+            form_i64(form, "terminalContainerCpu")
+        } else {
+            Some(current["terminalContainerCpu"].as_i64().unwrap_or(1))
+        },
+        "terminal.container_cpu",
+        1,
+        1,
+        64,
+    )?;
+    let terminal_container_memory = validate_hermes_i64(
+        if form.get("terminalContainerMemory").is_some() {
+            form_i64(form, "terminalContainerMemory")
+        } else {
+            Some(current["terminalContainerMemory"].as_i64().unwrap_or(5120))
+        },
+        "terminal.container_memory",
+        5120,
+        128,
+        1048576,
+    )?;
+    let terminal_container_disk = validate_hermes_i64(
+        if form.get("terminalContainerDisk").is_some() {
+            form_i64(form, "terminalContainerDisk")
+        } else {
+            Some(current["terminalContainerDisk"].as_i64().unwrap_or(51200))
+        },
+        "terminal.container_disk",
+        51200,
+        1024,
+        10485760,
+    )?;
+    let terminal_container_persistent = form_bool(form, "terminalContainerPersistent")
+        .unwrap_or_else(|| {
+            current["terminalContainerPersistent"]
+                .as_bool()
+                .unwrap_or(true)
+        });
+
+    let root = ensure_yaml_object(config)?;
+    let terminal = yaml_child_object(root, "terminal")?;
+    terminal.insert(
+        yaml_key("backend"),
+        serde_yaml::Value::String(terminal_backend),
+    );
+    terminal.insert(yaml_key("cwd"), serde_yaml::Value::String(terminal_cwd));
+    terminal.insert(
+        yaml_key("timeout"),
+        serde_yaml::Value::Number(terminal_timeout.into()),
+    );
+    terminal.insert(
+        yaml_key("lifetime_seconds"),
+        serde_yaml::Value::Number(terminal_lifetime_seconds.into()),
+    );
+    terminal.insert(
+        yaml_key("docker_mount_cwd_to_workspace"),
+        serde_yaml::Value::Bool(terminal_docker_mount_cwd_to_workspace),
+    );
+    terminal.insert(
+        yaml_key("docker_run_as_host_user"),
+        serde_yaml::Value::Bool(terminal_docker_run_as_host_user),
+    );
+    terminal.insert(
+        yaml_key("container_cpu"),
+        serde_yaml::Value::Number(terminal_container_cpu.into()),
+    );
+    terminal.insert(
+        yaml_key("container_memory"),
+        serde_yaml::Value::Number(terminal_container_memory.into()),
+    );
+    terminal.insert(
+        yaml_key("container_disk"),
+        serde_yaml::Value::Number(terminal_container_disk.into()),
+    );
+    terminal.insert(
+        yaml_key("container_persistent"),
+        serde_yaml::Value::Bool(terminal_container_persistent),
     );
     Ok(())
 }
@@ -4949,6 +5167,30 @@ pub fn hermes_execution_limits_config_save(form: Value) -> Result<Value, String>
         "configPath": config_path.to_string_lossy(),
         "backup": backup,
         "values": build_hermes_execution_limits_config_values(&config),
+    }))
+}
+
+#[tauri::command]
+pub fn hermes_terminal_config_read() -> Result<Value, String> {
+    let (config_path, exists, config) = read_hermes_channel_yaml_config()?;
+    ensure_yaml_object(&mut config.clone())?;
+    Ok(serde_json::json!({
+        "exists": exists,
+        "configPath": config_path.to_string_lossy(),
+        "values": build_hermes_terminal_config_values(&config),
+    }))
+}
+
+#[tauri::command]
+pub fn hermes_terminal_config_save(form: Value) -> Result<Value, String> {
+    let (config_path, _exists, mut config) = read_hermes_channel_yaml_config()?;
+    merge_hermes_terminal_config(&mut config, &form)?;
+    let backup = write_hermes_yaml_config(&config_path, &config)?;
+    Ok(serde_json::json!({
+        "ok": true,
+        "configPath": config_path.to_string_lossy(),
+        "backup": backup,
+        "values": build_hermes_terminal_config_values(&config),
     }))
 }
 
@@ -10441,6 +10683,152 @@ streaming:
         )
         .unwrap_err();
         assert!(err.contains("delegation.child_timeout_seconds"));
+    }
+}
+
+#[cfg(test)]
+mod hermes_terminal_config_tests {
+    use super::{build_hermes_terminal_config_values, merge_hermes_terminal_config};
+    use serde_json::json;
+
+    #[test]
+    fn terminal_values_have_upstream_defaults() {
+        let config: serde_yaml::Value = serde_yaml::from_str("{}").unwrap();
+        let values = build_hermes_terminal_config_values(&config);
+        assert_eq!(values["terminalBackend"], "local");
+        assert_eq!(values["terminalCwd"], ".");
+        assert_eq!(values["terminalTimeout"], 180);
+        assert_eq!(values["terminalLifetimeSeconds"], 300);
+        assert_eq!(values["terminalDockerMountCwdToWorkspace"], false);
+        assert_eq!(values["terminalDockerRunAsHostUser"], false);
+        assert_eq!(values["terminalContainerCpu"], 1);
+        assert_eq!(values["terminalContainerMemory"], 5120);
+        assert_eq!(values["terminalContainerDisk"], 51200);
+        assert_eq!(values["terminalContainerPersistent"], true);
+    }
+
+    #[test]
+    fn terminal_values_read_yaml_fields() {
+        let config: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+terminal:
+  backend: docker
+  cwd: /workspace
+  timeout: 600
+  lifetime_seconds: 1800
+  docker_mount_cwd_to_workspace: true
+  docker_run_as_host_user: true
+  container_cpu: 4
+  container_memory: 8192
+  container_disk: 102400
+  container_persistent: false
+"#,
+        )
+        .unwrap();
+        let values = build_hermes_terminal_config_values(&config);
+        assert_eq!(values["terminalBackend"], "docker");
+        assert_eq!(values["terminalCwd"], "/workspace");
+        assert_eq!(values["terminalTimeout"], 600);
+        assert_eq!(values["terminalLifetimeSeconds"], 1800);
+        assert_eq!(values["terminalDockerMountCwdToWorkspace"], true);
+        assert_eq!(values["terminalDockerRunAsHostUser"], true);
+        assert_eq!(values["terminalContainerCpu"], 4);
+        assert_eq!(values["terminalContainerMemory"], 8192);
+        assert_eq!(values["terminalContainerDisk"], 102400);
+        assert_eq!(values["terminalContainerPersistent"], false);
+    }
+
+    #[test]
+    fn merge_terminal_config_preserves_unknown_fields() {
+        let mut config: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+model:
+  provider: anthropic
+terminal:
+  backend: local
+  docker_image: custom/python-node
+  docker_forward_env:
+    - GITHUB_TOKEN
+  custom_flag: keep-terminal
+streaming:
+  enabled: true
+"#,
+        )
+        .unwrap();
+
+        merge_hermes_terminal_config(
+            &mut config,
+            &json!({
+                "terminalBackend": "docker",
+                "terminalCwd": "/workspace",
+                "terminalTimeout": "900",
+                "terminalLifetimeSeconds": "1200",
+                "terminalDockerMountCwdToWorkspace": true,
+                "terminalDockerRunAsHostUser": true,
+                "terminalContainerCpu": "2",
+                "terminalContainerMemory": "6144",
+                "terminalContainerDisk": "20480",
+                "terminalContainerPersistent": false,
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(config["model"]["provider"].as_str(), Some("anthropic"));
+        assert_eq!(config["streaming"]["enabled"].as_bool(), Some(true));
+        assert_eq!(config["terminal"]["backend"].as_str(), Some("docker"));
+        assert_eq!(config["terminal"]["cwd"].as_str(), Some("/workspace"));
+        assert_eq!(config["terminal"]["timeout"].as_i64(), Some(900));
+        assert_eq!(config["terminal"]["lifetime_seconds"].as_i64(), Some(1200));
+        assert_eq!(
+            config["terminal"]["docker_mount_cwd_to_workspace"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            config["terminal"]["docker_run_as_host_user"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(config["terminal"]["container_cpu"].as_i64(), Some(2));
+        assert_eq!(config["terminal"]["container_memory"].as_i64(), Some(6144));
+        assert_eq!(config["terminal"]["container_disk"].as_i64(), Some(20480));
+        assert_eq!(
+            config["terminal"]["container_persistent"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            config["terminal"]["docker_image"].as_str(),
+            Some("custom/python-node")
+        );
+        assert_eq!(
+            config["terminal"]["docker_forward_env"][0].as_str(),
+            Some("GITHUB_TOKEN")
+        );
+        assert_eq!(
+            config["terminal"]["custom_flag"].as_str(),
+            Some("keep-terminal")
+        );
+    }
+
+    #[test]
+    fn merge_terminal_config_rejects_invalid_values() {
+        let mut config = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let err =
+            merge_hermes_terminal_config(&mut config, &json!({ "terminalBackend": "unsafe" }))
+                .unwrap_err();
+        assert!(err.contains("terminal.backend"));
+        let err = merge_hermes_terminal_config(&mut config, &json!({ "terminalTimeout": 0 }))
+            .unwrap_err();
+        assert!(err.contains("terminal.timeout"));
+        let err =
+            merge_hermes_terminal_config(&mut config, &json!({ "terminalLifetimeSeconds": -1 }))
+                .unwrap_err();
+        assert!(err.contains("terminal.lifetime_seconds"));
+        let err = merge_hermes_terminal_config(&mut config, &json!({ "terminalContainerCpu": 0 }))
+            .unwrap_err();
+        assert!(err.contains("terminal.container_cpu"));
+        let err =
+            merge_hermes_terminal_config(&mut config, &json!({ "terminalContainerMemory": 127 }))
+                .unwrap_err();
+        assert!(err.contains("terminal.container_memory"));
     }
 }
 

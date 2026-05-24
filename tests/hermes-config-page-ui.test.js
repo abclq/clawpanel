@@ -70,6 +70,24 @@ test('Hermes 配置页会暴露执行与委派限制结构化配置字段', () =
   }
 })
 
+test('Hermes 配置页会暴露终端执行结构化配置字段', () => {
+  for (const id of [
+    'hm-terminal-save',
+    'hm-terminal-backend',
+    'hm-terminal-cwd',
+    'hm-terminal-timeout',
+    'hm-terminal-lifetime-seconds',
+    'hm-terminal-docker-mount-cwd-to-workspace',
+    'hm-terminal-docker-run-as-host-user',
+    'hm-terminal-container-cpu',
+    'hm-terminal-container-memory',
+    'hm-terminal-container-disk',
+    'hm-terminal-container-persistent',
+  ]) {
+    assert.match(source, new RegExp(`id="${id}"`), `缺少 ${id}`)
+  }
+})
+
 test('Hermes 配置页数值输入会保留 0 值显示', () => {
   assert.doesNotMatch(source, /String\(value \|\| ''\)/, 'esc(value) 不能把合法 0 渲染为空字符串')
 })
@@ -79,7 +97,8 @@ test('Hermes 配置页新增结构化配置不会暴露翻译 key', () => {
     key.includes('ToolGuardrails') ||
     key.includes('MemoryConfig') ||
     key.includes('StreamingConfig') ||
-    key.includes('ExecutionLimits')
+    key.includes('ExecutionLimits') ||
+    key.includes('TerminalConfig')
   )))
 
   assert.ok(keys.size > 0, '应能提取新增结构化配置用到的 engine 翻译 key')
