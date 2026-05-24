@@ -3675,6 +3675,30 @@ export function mergeHermesQuickCommandsConfig(config = {}, form = {}) {
   return next
 }
 
+function normalizeHermesUnauthorizedDmBehavior(value, strict = false) {
+  const normalized = String(value ?? '').trim().toLowerCase()
+  if (['pair', 'ignore'].includes(normalized)) return normalized
+  if (strict) throw new Error('unauthorized_dm_behavior 必须是 pair 或 ignore')
+  return 'pair'
+}
+
+export function buildHermesUnauthorizedDmConfigValues(config = {}) {
+  const root = config && typeof config === 'object' && !Array.isArray(config) ? config : {}
+  return {
+    unauthorizedDmBehavior: normalizeHermesUnauthorizedDmBehavior(root.unauthorized_dm_behavior, false),
+  }
+}
+
+export function mergeHermesUnauthorizedDmConfig(config = {}, form = {}) {
+  const next = mergeConfigsPreservingFields({}, config && typeof config === 'object' && !Array.isArray(config) ? config : {})
+  const currentValues = buildHermesUnauthorizedDmConfigValues(next)
+  next.unauthorized_dm_behavior = normalizeHermesUnauthorizedDmBehavior(
+    Object.hasOwn(form, 'unauthorizedDmBehavior') ? form.unauthorizedDmBehavior : currentValues.unauthorizedDmBehavior,
+    true,
+  )
+  return next
+}
+
 export function buildHermesStreamingConfigValues(config = {}) {
   const root = config && typeof config === 'object' && !Array.isArray(config) ? config : {}
   const streaming = hermesStreamingConfigSource(root)
@@ -10178,6 +10202,27 @@ const handlers = {
       configPath,
       backup,
       values: buildHermesQuickCommandsConfigValues(next),
+    }
+  },
+
+  hermes_unauthorized_dm_config_read() {
+    const { configPath, exists, config } = readHermesConfigYamlObject()
+    return {
+      exists,
+      configPath,
+      values: buildHermesUnauthorizedDmConfigValues(config),
+    }
+  },
+
+  hermes_unauthorized_dm_config_save({ form } = {}) {
+    const { configPath, config } = readHermesConfigYamlObject()
+    const next = mergeHermesUnauthorizedDmConfig(config, form || {})
+    const backup = writeHermesConfigYamlObject(configPath, next)
+    return {
+      ok: true,
+      configPath,
+      backup,
+      values: buildHermesUnauthorizedDmConfigValues(next),
     }
   },
 

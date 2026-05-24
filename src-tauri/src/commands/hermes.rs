@@ -3856,6 +3856,55 @@ fn merge_hermes_quick_commands_config(
     Ok(())
 }
 
+fn normalize_hermes_unauthorized_dm_behavior(
+    value: Option<String>,
+    strict: bool,
+) -> Result<String, String> {
+    let behavior = value.unwrap_or_default().trim().to_ascii_lowercase();
+    if matches!(behavior.as_str(), "pair" | "ignore") {
+        return Ok(behavior);
+    }
+    if strict {
+        Err("unauthorized_dm_behavior 必须是 pair 或 ignore".to_string())
+    } else {
+        Ok("pair".to_string())
+    }
+}
+
+fn build_hermes_unauthorized_dm_config_values(config: &serde_yaml::Value) -> Value {
+    let root = config.as_mapping();
+    let behavior = root
+        .and_then(|map| yaml_string_field(map, "unauthorized_dm_behavior"))
+        .and_then(|value| normalize_hermes_unauthorized_dm_behavior(Some(value), false).ok())
+        .unwrap_or_else(|| "pair".to_string());
+
+    serde_json::json!({
+        "unauthorizedDmBehavior": behavior,
+    })
+}
+
+fn merge_hermes_unauthorized_dm_config(
+    config: &mut serde_yaml::Value,
+    form: &Value,
+) -> Result<(), String> {
+    let current = build_hermes_unauthorized_dm_config_values(config);
+    let behavior = normalize_hermes_unauthorized_dm_behavior(
+        form_string(form, "unauthorizedDmBehavior").or_else(|| {
+            current["unauthorizedDmBehavior"]
+                .as_str()
+                .map(ToString::to_string)
+        }),
+        true,
+    )?;
+
+    let root = ensure_yaml_object(config)?;
+    root.insert(
+        yaml_key("unauthorized_dm_behavior"),
+        serde_yaml::Value::String(behavior),
+    );
+    Ok(())
+}
+
 fn normalize_hermes_streaming_transport(
     value: Option<String>,
     strict: bool,
@@ -5371,6 +5420,30 @@ pub fn hermes_quick_commands_config_save(form: Value) -> Result<Value, String> {
         "configPath": config_path.to_string_lossy(),
         "backup": backup,
         "values": build_hermes_quick_commands_config_values(&config),
+    }))
+}
+
+#[tauri::command]
+pub fn hermes_unauthorized_dm_config_read() -> Result<Value, String> {
+    let (config_path, exists, config) = read_hermes_channel_yaml_config()?;
+    ensure_yaml_object(&mut config.clone())?;
+    Ok(serde_json::json!({
+        "exists": exists,
+        "configPath": config_path.to_string_lossy(),
+        "values": build_hermes_unauthorized_dm_config_values(&config),
+    }))
+}
+
+#[tauri::command]
+pub fn hermes_unauthorized_dm_config_save(form: Value) -> Result<Value, String> {
+    let (config_path, _exists, mut config) = read_hermes_channel_yaml_config()?;
+    merge_hermes_unauthorized_dm_config(&mut config, &form)?;
+    let backup = write_hermes_yaml_config(&config_path, &config)?;
+    Ok(serde_json::json!({
+        "ok": true,
+        "configPath": config_path.to_string_lossy(),
+        "backup": backup,
+        "values": build_hermes_unauthorized_dm_config_values(&config),
     }))
 }
 
@@ -11395,6 +11468,75 @@ streaming:
         )
         .unwrap_err();
         assert!(err.contains("quick_commands.restart.target"));
+    }
+}
+
+#[cfg(test)]
+mod hermes_unauthorized_dm_config_tests {
+    use super::{build_hermes_unauthorized_dm_config_values, merge_hermes_unauthorized_dm_config};
+    use serde_json::json;
+
+    #[test]
+    fn unauthorized_dm_values_have_pair_default() {
+        let config: serde_yaml::Value = serde_yaml::from_str("{}").unwrap();
+        let values = build_hermes_unauthorized_dm_config_values(&config);
+        assert_eq!(values["unauthorizedDmBehavior"], "pair");
+    }
+
+    #[test]
+    fn unauthorized_dm_values_normalize_existing_behavior() {
+        let config: serde_yaml::Value =
+            serde_yaml::from_str("unauthorized_dm_behavior: IGNORE").unwrap();
+        let values = build_hermes_unauthorized_dm_config_values(&config);
+        assert_eq!(values["unauthorizedDmBehavior"], "ignore");
+
+        let config: serde_yaml::Value =
+            serde_yaml::from_str("unauthorized_dm_behavior: silent").unwrap();
+        let values = build_hermes_unauthorized_dm_config_values(&config);
+        assert_eq!(values["unauthorizedDmBehavior"], "pair");
+    }
+
+    #[test]
+    fn merge_unauthorized_dm_config_preserves_unrelated_yaml() {
+        let mut config: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+model:
+  provider: anthropic
+unauthorized_dm_behavior: pair
+platforms:
+  telegram:
+    enabled: true
+    custom_flag: keep-platform
+memory:
+  memory_enabled: true
+"#,
+        )
+        .unwrap();
+
+        merge_hermes_unauthorized_dm_config(
+            &mut config,
+            &json!({ "unauthorizedDmBehavior": "ignore" }),
+        )
+        .unwrap();
+
+        assert_eq!(config["model"]["provider"].as_str(), Some("anthropic"));
+        assert_eq!(config["memory"]["memory_enabled"].as_bool(), Some(true));
+        assert_eq!(
+            config["platforms"]["telegram"]["custom_flag"].as_str(),
+            Some("keep-platform")
+        );
+        assert_eq!(config["unauthorized_dm_behavior"].as_str(), Some("ignore"));
+    }
+
+    #[test]
+    fn merge_unauthorized_dm_config_rejects_invalid_values() {
+        let mut config = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let err = merge_hermes_unauthorized_dm_config(
+            &mut config,
+            &json!({ "unauthorizedDmBehavior": "silent" }),
+        )
+        .unwrap_err();
+        assert!(err.contains("unauthorized_dm_behavior"));
     }
 }
 

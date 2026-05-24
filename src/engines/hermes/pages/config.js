@@ -52,6 +52,10 @@ const QUICK_COMMANDS_DEFAULTS = {
   quickCommandsJson: '{}',
 }
 
+const UNAUTHORIZED_DM_DEFAULTS = {
+  unauthorizedDmBehavior: 'pair',
+}
+
 const STREAMING_DEFAULTS = {
   enabled: false,
   transport: 'edit',
@@ -91,6 +95,7 @@ const SESSION_RESET_MODES = ['both', 'idle', 'daily', 'none']
 const STREAMING_TRANSPORTS = ['edit', 'auto', 'draft', 'off']
 const CODE_EXECUTION_MODES = ['project', 'strict']
 const TERMINAL_BACKENDS = ['local', 'ssh', 'docker', 'singularity', 'modal', 'daytona', 'vercel_sandbox']
+const UNAUTHORIZED_DM_BEHAVIORS = ['pair', 'ignore']
 
 export function render() {
   const el = document.createElement('div')
@@ -103,6 +108,7 @@ export function render() {
   let memoryValues = { ...MEMORY_DEFAULTS }
   let skillsValues = { ...SKILLS_DEFAULTS }
   let quickCommandsValues = { ...QUICK_COMMANDS_DEFAULTS }
+  let unauthorizedDmValues = { ...UNAUTHORIZED_DM_DEFAULTS }
   let streamingValues = { ...STREAMING_DEFAULTS }
   let executionLimitsValues = { ...EXECUTION_LIMITS_DEFAULTS }
   let terminalValues = { ...TERMINAL_DEFAULTS }
@@ -113,6 +119,7 @@ export function render() {
   let memoryLoading = true
   let skillsLoading = true
   let quickCommandsLoading = true
+  let unauthorizedDmLoading = true
   let streamingLoading = true
   let executionLimitsLoading = true
   let terminalLoading = true
@@ -123,6 +130,7 @@ export function render() {
   let memorySaving = false
   let skillsSaving = false
   let quickCommandsSaving = false
+  let unauthorizedDmSaving = false
   let streamingSaving = false
   let executionLimitsSaving = false
   let terminalSaving = false
@@ -133,6 +141,7 @@ export function render() {
   let memoryError = null
   let skillsError = null
   let quickCommandsError = null
+  let unauthorizedDmError = null
   let streamingError = null
   let executionLimitsError = null
   let terminalError = null
@@ -146,7 +155,7 @@ export function render() {
   }
 
   function isBusy() {
-    return loading || runtimeLoading || compressionLoading || toolGuardrailsLoading || memoryLoading || skillsLoading || quickCommandsLoading || streamingLoading || executionLimitsLoading || terminalLoading || saving || runtimeSaving || compressionSaving || toolGuardrailsSaving || memorySaving || skillsSaving || quickCommandsSaving || streamingSaving || executionLimitsSaving || terminalSaving
+    return loading || runtimeLoading || compressionLoading || toolGuardrailsLoading || memoryLoading || skillsLoading || quickCommandsLoading || unauthorizedDmLoading || streamingLoading || executionLimitsLoading || terminalLoading || saving || runtimeSaving || compressionSaving || toolGuardrailsSaving || memorySaving || skillsSaving || quickCommandsSaving || unauthorizedDmSaving || streamingSaving || executionLimitsSaving || terminalSaving
   }
 
   function option(labelKey, value, selected) {
@@ -163,7 +172,7 @@ export function render() {
   }
 
   function renderRuntimePanel() {
-    const disabled = loading || saving || runtimeLoading || runtimeSaving || compressionSaving || toolGuardrailsSaving || memorySaving || skillsSaving || quickCommandsSaving || streamingSaving || executionLimitsSaving || terminalSaving
+    const disabled = loading || saving || runtimeLoading || runtimeSaving || compressionSaving || toolGuardrailsSaving || memorySaving || skillsSaving || quickCommandsSaving || unauthorizedDmSaving || streamingSaving || executionLimitsSaving || terminalSaving
     return `
       <div class="hm-panel hm-config-runtime-panel">
         <div class="hm-panel-header">
@@ -211,7 +220,7 @@ export function render() {
   }
 
   function renderCompressionPanel() {
-    const disabled = loading || saving || compressionLoading || compressionSaving || runtimeSaving || toolGuardrailsSaving || memorySaving || skillsSaving || quickCommandsSaving || streamingSaving || executionLimitsSaving || terminalSaving
+    const disabled = loading || saving || compressionLoading || compressionSaving || runtimeSaving || toolGuardrailsSaving || memorySaving || skillsSaving || quickCommandsSaving || unauthorizedDmSaving || streamingSaving || executionLimitsSaving || terminalSaving
     return `
       <div class="hm-panel hm-config-runtime-panel hm-config-compression-panel">
         <div class="hm-panel-header">
@@ -261,7 +270,7 @@ export function render() {
   }
 
   function renderToolGuardrailsPanel() {
-    const disabled = loading || saving || toolGuardrailsLoading || toolGuardrailsSaving || runtimeSaving || compressionSaving || memorySaving || skillsSaving || quickCommandsSaving || streamingSaving || executionLimitsSaving || terminalSaving
+    const disabled = loading || saving || toolGuardrailsLoading || toolGuardrailsSaving || runtimeSaving || compressionSaving || memorySaving || skillsSaving || quickCommandsSaving || unauthorizedDmSaving || streamingSaving || executionLimitsSaving || terminalSaving
     return `
       <div class="hm-panel hm-config-runtime-panel hm-config-guardrails-panel">
         <div class="hm-panel-header">
@@ -430,6 +439,36 @@ export function render() {
     `
   }
 
+  function renderUnauthorizedDmConfigPanel() {
+    const disabled = loading || saving || unauthorizedDmLoading || unauthorizedDmSaving || runtimeSaving || compressionSaving || toolGuardrailsSaving || memorySaving || skillsSaving || quickCommandsSaving || streamingSaving || executionLimitsSaving || terminalSaving
+    return `
+      <div class="hm-panel hm-config-runtime-panel hm-config-unauthorized-dm-panel">
+        <div class="hm-panel-header">
+          <div>
+            <div class="hm-panel-title">${t('engine.hermesUnauthorizedDmConfigTitle')}</div>
+            <div class="hm-channel-panel-desc">${t('engine.hermesUnauthorizedDmConfigDesc')}</div>
+          </div>
+          <div class="hm-panel-actions">
+            <span class="hm-muted">${unauthorizedDmSaving ? t('engine.hermesConfigStatusSaving') : unauthorizedDmLoading ? t('engine.hermesConfigStatusLoading') : t('engine.hermesUnauthorizedDmConfigStatusReady')}</span>
+            <button class="hm-btn hm-btn--cta hm-btn--sm" id="hm-unauthorized-dm-save" ${disabled ? 'disabled' : ''}>${t('engine.hermesUnauthorizedDmConfigSave')}</button>
+          </div>
+        </div>
+        <div class="hm-panel-body">
+          ${renderError(unauthorizedDmError)}
+          <div class="hm-config-runtime-grid hm-config-unauthorized-dm-grid">
+            <label class="hm-field">
+              <span class="hm-field-label">${t('engine.hermesUnauthorizedDmConfigBehavior')}</span>
+              <select id="hm-unauthorized-dm-behavior" class="hm-input" ${disabled ? 'disabled' : ''}>
+                ${UNAUTHORIZED_DM_BEHAVIORS.map(mode => option(`engine.hermesUnauthorizedDmConfigBehavior_${mode}`, mode, unauthorizedDmValues.unauthorizedDmBehavior)).join('')}
+              </select>
+            </label>
+          </div>
+          <div class="hm-channel-footnote">${t('engine.hermesUnauthorizedDmConfigFootnote')}</div>
+        </div>
+      </div>
+    `
+  }
+
   function renderStreamingPanel() {
     const disabled = loading || saving || streamingLoading || streamingSaving || runtimeSaving || compressionSaving || toolGuardrailsSaving || memorySaving || skillsSaving || quickCommandsSaving || executionLimitsSaving || terminalSaving
     return `
@@ -483,7 +522,7 @@ export function render() {
   }
 
   function renderExecutionLimitsPanel() {
-    const disabled = loading || saving || executionLimitsLoading || executionLimitsSaving || terminalSaving || runtimeSaving || compressionSaving || toolGuardrailsSaving || memorySaving || skillsSaving || quickCommandsSaving || streamingSaving
+    const disabled = loading || saving || executionLimitsLoading || executionLimitsSaving || terminalSaving || runtimeSaving || compressionSaving || toolGuardrailsSaving || memorySaving || skillsSaving || quickCommandsSaving || unauthorizedDmSaving || streamingSaving
     return `
       <div class="hm-panel hm-config-runtime-panel hm-config-execution-limits-panel">
         <div class="hm-panel-header">
@@ -555,7 +594,7 @@ export function render() {
   }
 
   function renderTerminalPanel() {
-    const disabled = loading || saving || terminalLoading || terminalSaving || runtimeSaving || compressionSaving || toolGuardrailsSaving || memorySaving || skillsSaving || quickCommandsSaving || streamingSaving || executionLimitsSaving
+    const disabled = loading || saving || terminalLoading || terminalSaving || runtimeSaving || compressionSaving || toolGuardrailsSaving || memorySaving || skillsSaving || quickCommandsSaving || unauthorizedDmSaving || streamingSaving || executionLimitsSaving
     return `
       <div class="hm-panel hm-config-runtime-panel hm-config-terminal-panel">
         <div class="hm-panel-header">
@@ -648,6 +687,7 @@ export function render() {
       ${renderMemoryPanel()}
       ${renderSkillsConfigPanel()}
       ${renderQuickCommandsConfigPanel()}
+      ${renderUnauthorizedDmConfigPanel()}
 
       <div class="hm-panel">
         <div class="hm-panel-header">
@@ -673,6 +713,7 @@ export function render() {
     el.querySelector('#hm-memory-save')?.addEventListener('click', saveMemory)
     el.querySelector('#hm-skills-config-save')?.addEventListener('click', saveSkillsConfig)
     el.querySelector('#hm-quick-commands-save')?.addEventListener('click', saveQuickCommandsConfig)
+    el.querySelector('#hm-unauthorized-dm-save')?.addEventListener('click', saveUnauthorizedDmConfig)
     el.querySelector('#hm-streaming-save')?.addEventListener('click', saveStreaming)
     el.querySelector('#hm-execution-limits-save')?.addEventListener('click', saveExecutionLimits)
     el.querySelector('#hm-terminal-save')?.addEventListener('click', saveTerminal)
@@ -713,6 +754,11 @@ export function render() {
     quickCommandsValues = { ...QUICK_COMMANDS_DEFAULTS, ...(data?.values || {}) }
   }
 
+  async function loadUnauthorizedDmConfig() {
+    const data = await api.hermesUnauthorizedDmConfigRead()
+    unauthorizedDmValues = { ...UNAUTHORIZED_DM_DEFAULTS, ...(data?.values || {}) }
+  }
+
   async function loadStreaming() {
     const data = await api.hermesStreamingConfigRead()
     streamingValues = { ...STREAMING_DEFAULTS, ...(data?.values || {}) }
@@ -736,6 +782,7 @@ export function render() {
     memoryLoading = true
     skillsLoading = true
     quickCommandsLoading = true
+    unauthorizedDmLoading = true
     streamingLoading = true
     executionLimitsLoading = true
     terminalLoading = true
@@ -746,6 +793,7 @@ export function render() {
     memoryError = null
     skillsError = null
     quickCommandsError = null
+    unauthorizedDmError = null
     streamingError = null
     executionLimitsError = null
     terminalError = null
@@ -829,6 +877,14 @@ export function render() {
       quickCommandsLoading = false
       draw()
     }
+    try {
+      await loadUnauthorizedDmConfig()
+    } catch (err) {
+      unauthorizedDmError = humanizeError(err, t('engine.hermesUnauthorizedDmConfigLoadFailed') || 'Load unauthorized DM config failed')
+    } finally {
+      unauthorizedDmLoading = false
+      draw()
+    }
   }
 
   async function refreshRawAfterStructuredSave() {
@@ -867,6 +923,9 @@ export function render() {
       } catch {}
       try {
         await loadQuickCommandsConfig()
+      } catch {}
+      try {
+        await loadUnauthorizedDmConfig()
       } catch {}
       try {
         await loadStreaming()
@@ -1054,6 +1113,31 @@ export function render() {
       toast(quickCommandsError, 'error')
     } finally {
       quickCommandsSaving = false
+      draw()
+    }
+  }
+
+  async function saveUnauthorizedDmConfig() {
+    const form = {
+      unauthorizedDmBehavior: el.querySelector('#hm-unauthorized-dm-behavior')?.value || 'pair',
+    }
+    unauthorizedDmSaving = true
+    unauthorizedDmError = null
+    draw()
+    try {
+      const result = await api.hermesUnauthorizedDmConfigSave(form)
+      unauthorizedDmValues = { ...UNAUTHORIZED_DM_DEFAULTS, ...(result?.values || form) }
+      await refreshRawAfterStructuredSave()
+      const backup = result?.backup || ''
+      toast({
+        message: t('engine.hermesUnauthorizedDmConfigSaveSuccess'),
+        hint: backup ? t('engine.hermesConfigBackupHint', { path: backup }) : '',
+      }, 'success')
+    } catch (err) {
+      unauthorizedDmError = humanizeError(err, t('engine.hermesUnauthorizedDmConfigSaveFailed') || 'Save unauthorized DM config failed')
+      toast(unauthorizedDmError, 'error')
+    } finally {
+      unauthorizedDmSaving = false
       draw()
     }
   }
