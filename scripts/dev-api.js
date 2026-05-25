@@ -4209,6 +4209,103 @@ export function mergeHermesQuickCommandsConfig(config = {}, form = {}) {
   return next
 }
 
+function isHermesProviderOverrideName(value) {
+  return /^[a-zA-Z0-9_.-]+$/.test(String(value || '').trim())
+}
+
+function isHermesProviderModelName(value) {
+  const text = String(value || '').trim()
+  return !!text && !text.split('/').includes('..') && /^[a-zA-Z0-9_.:/@+-]+$/.test(text)
+}
+
+function normalizeHermesProviderTimeout(value, key) {
+  if (value === undefined || value === null || value === '') return undefined
+  return parseHermesInteger(value, key, 0, 1, 86400, true)
+}
+
+function normalizeHermesProviderModelOverrides(value, key) {
+  if (value === undefined) return undefined
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${key} 必须是 JSON 对象`)
+  }
+  const normalized = {}
+  for (const [rawModel, rawConfig] of Object.entries(value)) {
+    const model = String(rawModel || '').trim()
+    if (!isHermesProviderModelName(model)) {
+      throw new Error(`${key}.${model || '<empty>'} 模型名只能包含字母、数字、下划线、点、斜杠、冒号、@、加号和短横线`)
+    }
+    if (!rawConfig || typeof rawConfig !== 'object' || Array.isArray(rawConfig)) {
+      throw new Error(`${key}.${model} 必须是 JSON 对象`)
+    }
+    const entry = mergeConfigsPreservingFields(rawConfig, {})
+    for (const field of ['timeout_seconds', 'stale_timeout_seconds']) {
+      const parsed = normalizeHermesProviderTimeout(entry[field], `${key}.${model}.${field}`)
+      if (parsed === undefined) delete entry[field]
+      else entry[field] = parsed
+    }
+    normalized[model] = entry
+  }
+  return normalized
+}
+
+function validateHermesProviderOverrides(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('providers 必须是 JSON 对象')
+  }
+  const normalized = {}
+  for (const [rawProvider, rawConfig] of Object.entries(value)) {
+    const provider = String(rawProvider || '').trim().toLowerCase()
+    if (!provider || !isHermesProviderOverrideName(provider)) {
+      throw new Error(`providers.${rawProvider || '<empty>'} provider 名只能包含字母、数字、下划线、点和短横线`)
+    }
+    if (!rawConfig || typeof rawConfig !== 'object' || Array.isArray(rawConfig)) {
+      throw new Error(`providers.${provider} 必须是 JSON 对象`)
+    }
+    const entry = mergeConfigsPreservingFields(rawConfig, {})
+    for (const field of ['request_timeout_seconds', 'stale_timeout_seconds']) {
+      const parsed = normalizeHermesProviderTimeout(entry[field], `providers.${provider}.${field}`)
+      if (parsed === undefined) delete entry[field]
+      else entry[field] = parsed
+    }
+    if (Object.hasOwn(entry, 'models')) {
+      entry.models = normalizeHermesProviderModelOverrides(entry.models, `providers.${provider}.models`)
+    }
+    normalized[provider] = entry
+  }
+  return normalized
+}
+
+function parseHermesProviderOverridesJson(raw) {
+  const text = String(raw ?? '').trim()
+  if (!text) return {}
+  let value
+  try {
+    value = JSON.parse(text)
+  } catch (err) {
+    throw new Error(`providers JSON 格式错误: ${err.message}`)
+  }
+  return validateHermesProviderOverrides(value)
+}
+
+export function buildHermesProviderOverridesConfigValues(config = {}) {
+  const root = config && typeof config === 'object' && !Array.isArray(config) ? config : {}
+  const providers = root.providers && typeof root.providers === 'object' && !Array.isArray(root.providers)
+    ? validateHermesProviderOverrides(root.providers)
+    : {}
+  return {
+    providerOverridesJson: JSON.stringify(providers, null, 2),
+  }
+}
+
+export function mergeHermesProviderOverridesConfig(config = {}, form = {}) {
+  const next = mergeConfigsPreservingFields({}, config && typeof config === 'object' && !Array.isArray(config) ? config : {})
+  const currentValues = buildHermesProviderOverridesConfigValues(next)
+  const providers = parseHermesProviderOverridesJson(Object.hasOwn(form, 'providerOverridesJson') ? form.providerOverridesJson : currentValues.providerOverridesJson)
+  if (Object.keys(providers).length) next.providers = providers
+  else delete next.providers
+  return next
+}
+
 function normalizeHermesUnauthorizedDmBehavior(value, strict = false) {
   const normalized = String(value ?? '').trim().toLowerCase()
   if (['pair', 'ignore'].includes(normalized)) return normalized
@@ -11146,6 +11243,27 @@ const handlers = {
       configPath,
       backup,
       values: buildHermesQuickCommandsConfigValues(next),
+    }
+  },
+
+  hermes_provider_overrides_config_read() {
+    const { configPath, exists, config } = readHermesConfigYamlObject()
+    return {
+      exists,
+      configPath,
+      values: buildHermesProviderOverridesConfigValues(config),
+    }
+  },
+
+  hermes_provider_overrides_config_save({ form } = {}) {
+    const { configPath, config } = readHermesConfigYamlObject()
+    const next = mergeHermesProviderOverridesConfig(config, form || {})
+    const backup = writeHermesConfigYamlObject(configPath, next)
+    return {
+      ok: true,
+      configPath,
+      backup,
+      values: buildHermesProviderOverridesConfigValues(next),
     }
   },
 

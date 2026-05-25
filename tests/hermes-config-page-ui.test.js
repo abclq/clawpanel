@@ -58,6 +58,15 @@ test('Hermes 配置页会暴露快捷命令结构化配置字段', () => {
   }
 })
 
+test('Hermes 配置页会暴露 provider 超时覆盖结构化配置字段', () => {
+  for (const id of [
+    'hm-provider-overrides-save',
+    'hm-provider-overrides-json',
+  ]) {
+    assert.match(source, new RegExp(`id="${id}"`), `缺少 ${id}`)
+  }
+})
+
 test('Hermes 配置页会暴露全局禁用工具集结构化配置字段', () => {
   for (const id of [
     'hm-agent-toolsets-save',
@@ -351,6 +360,7 @@ test('Hermes 配置页新增结构化配置不会暴露翻译 key', () => {
     key.includes('MemoryConfig') ||
     key.includes('SkillsConfig') ||
     key.includes('QuickCommandsConfig') ||
+    key.includes('ProviderOverridesConfig') ||
     key.includes('AgentToolsetsConfig') ||
     key.includes('AgentRuntimeConfig') ||
     key.includes('UnauthorizedDmConfig') ||

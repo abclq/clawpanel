@@ -4407,6 +4407,176 @@ fn merge_hermes_quick_commands_config(
     Ok(())
 }
 
+fn is_hermes_provider_override_name(value: &str) -> bool {
+    let value = value.trim();
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-'))
+}
+
+fn is_hermes_provider_model_name(value: &str) -> bool {
+    let value = value.trim();
+    !value.is_empty()
+        && !value.split('/').any(|part| part == "..")
+        && value.chars().all(|ch| {
+            ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '/' | ':' | '@' | '+' | '-')
+        })
+}
+
+fn normalize_hermes_provider_timeout(
+    entry: &mut serde_json::Map<String, Value>,
+    field: &str,
+    key: &str,
+) -> Result<(), String> {
+    if !entry.contains_key(field) || entry.get(field).is_some_and(|value| value.is_null()) {
+        entry.remove(field);
+        return Ok(());
+    }
+    let value = entry.get(field).cloned().unwrap_or(Value::Null);
+    let parsed = if let Some(value) = value.as_i64() {
+        Some(value)
+    } else if let Some(value) = value.as_u64() {
+        i64::try_from(value).ok()
+    } else if let Some(value) = value.as_str() {
+        let text = value.trim();
+        if text.is_empty() {
+            None
+        } else {
+            text.parse::<i64>().ok()
+        }
+    } else {
+        None
+    };
+    let parsed = parsed.ok_or_else(|| format!("{key} 必须是整数"))?;
+    let parsed = validate_hermes_i64(Some(parsed), key, 300, 1, 86400)?;
+    entry.insert(field.to_string(), Value::Number(parsed.into()));
+    Ok(())
+}
+
+fn validate_hermes_provider_model_overrides(
+    value: &Value,
+    key: &str,
+) -> Result<serde_json::Map<String, Value>, String> {
+    let Some(map) = value.as_object() else {
+        return Err(format!("{key} 必须是 JSON 对象"));
+    };
+    let mut normalized = serde_json::Map::new();
+    for (raw_model, raw_config) in map {
+        let model = raw_model.trim();
+        if !is_hermes_provider_model_name(model) {
+            return Err(format!(
+                "{key}.{model} 模型名只能包含字母、数字、下划线、点、斜杠、冒号、@、加号和短横线"
+            ));
+        }
+        let Some(config) = raw_config.as_object() else {
+            return Err(format!("{key}.{model} 必须是 JSON 对象"));
+        };
+        let mut entry = config.clone();
+        normalize_hermes_provider_timeout(
+            &mut entry,
+            "timeout_seconds",
+            &format!("{key}.{model}.timeout_seconds"),
+        )?;
+        normalize_hermes_provider_timeout(
+            &mut entry,
+            "stale_timeout_seconds",
+            &format!("{key}.{model}.stale_timeout_seconds"),
+        )?;
+        normalized.insert(model.to_string(), Value::Object(entry));
+    }
+    Ok(normalized)
+}
+
+fn validate_hermes_provider_overrides(
+    value: &Value,
+) -> Result<serde_json::Map<String, Value>, String> {
+    let Some(map) = value.as_object() else {
+        return Err("providers 必须是 JSON 对象".to_string());
+    };
+    let mut normalized = serde_json::Map::new();
+    for (raw_provider, raw_config) in map {
+        let provider = raw_provider.trim().to_ascii_lowercase();
+        if !is_hermes_provider_override_name(&provider) {
+            return Err(format!(
+                "providers.{raw_provider} provider 名只能包含字母、数字、下划线、点和短横线"
+            ));
+        }
+        let Some(config) = raw_config.as_object() else {
+            return Err(format!("providers.{provider} 必须是 JSON 对象"));
+        };
+        let mut entry = config.clone();
+        normalize_hermes_provider_timeout(
+            &mut entry,
+            "request_timeout_seconds",
+            &format!("providers.{provider}.request_timeout_seconds"),
+        )?;
+        normalize_hermes_provider_timeout(
+            &mut entry,
+            "stale_timeout_seconds",
+            &format!("providers.{provider}.stale_timeout_seconds"),
+        )?;
+        if let Some(models) = entry.get("models") {
+            let models = validate_hermes_provider_model_overrides(
+                models,
+                &format!("providers.{provider}.models"),
+            )?;
+            entry.insert("models".to_string(), Value::Object(models));
+        }
+        normalized.insert(provider, Value::Object(entry));
+    }
+    Ok(normalized)
+}
+
+fn parse_hermes_provider_overrides_json(
+    raw: Option<String>,
+) -> Result<serde_json::Map<String, Value>, String> {
+    let text = raw.unwrap_or_default().trim().to_string();
+    if text.is_empty() {
+        return Ok(serde_json::Map::new());
+    }
+    let value: Value =
+        serde_json::from_str(&text).map_err(|err| format!("providers JSON 格式错误: {err}"))?;
+    validate_hermes_provider_overrides(&value)
+}
+
+fn build_hermes_provider_overrides_config_values(config: &serde_yaml::Value) -> Value {
+    let root = config.as_mapping();
+    let providers = root
+        .and_then(|map| map.get(yaml_key("providers")))
+        .and_then(|value| serde_json::to_value(value).ok())
+        .and_then(|value| validate_hermes_provider_overrides(&value).ok())
+        .unwrap_or_default();
+
+    serde_json::json!({
+        "providerOverridesJson": serde_json::to_string_pretty(&Value::Object(providers)).unwrap_or_else(|_| "{}".to_string()),
+    })
+}
+
+fn merge_hermes_provider_overrides_config(
+    config: &mut serde_yaml::Value,
+    form: &Value,
+) -> Result<(), String> {
+    let current = build_hermes_provider_overrides_config_values(config);
+    let providers = parse_hermes_provider_overrides_json(
+        form_string(form, "providerOverridesJson").or_else(|| {
+            current["providerOverridesJson"]
+                .as_str()
+                .map(ToString::to_string)
+        }),
+    )?;
+
+    let root = ensure_yaml_object(config)?;
+    if providers.is_empty() {
+        root.remove(yaml_key("providers"));
+    } else {
+        let yaml_value = serde_yaml::to_value(Value::Object(providers))
+            .map_err(|err| format!("providers 转换 YAML 失败: {err}"))?;
+        root.insert(yaml_key("providers"), yaml_value);
+    }
+    Ok(())
+}
+
 fn normalize_hermes_toolset_list(raw: Option<String>) -> Result<Vec<String>, String> {
     let mut normalized = Vec::new();
     for item in normalize_hermes_multiline_list(raw) {
@@ -7899,6 +8069,30 @@ pub fn hermes_quick_commands_config_save(form: Value) -> Result<Value, String> {
         "configPath": config_path.to_string_lossy(),
         "backup": backup,
         "values": build_hermes_quick_commands_config_values(&config),
+    }))
+}
+
+#[tauri::command]
+pub fn hermes_provider_overrides_config_read() -> Result<Value, String> {
+    let (config_path, exists, config) = read_hermes_channel_yaml_config()?;
+    ensure_yaml_object(&mut config.clone())?;
+    Ok(serde_json::json!({
+        "exists": exists,
+        "configPath": config_path.to_string_lossy(),
+        "values": build_hermes_provider_overrides_config_values(&config),
+    }))
+}
+
+#[tauri::command]
+pub fn hermes_provider_overrides_config_save(form: Value) -> Result<Value, String> {
+    let (config_path, _exists, mut config) = read_hermes_channel_yaml_config()?;
+    merge_hermes_provider_overrides_config(&mut config, &form)?;
+    let backup = write_hermes_yaml_config(&config_path, &config)?;
+    Ok(serde_json::json!({
+        "ok": true,
+        "configPath": config_path.to_string_lossy(),
+        "backup": backup,
+        "values": build_hermes_provider_overrides_config_values(&config),
     }))
 }
 
@@ -15617,6 +15811,196 @@ streaming:
         )
         .unwrap_err();
         assert!(err.contains("quick_commands.restart.target"));
+    }
+}
+
+#[cfg(test)]
+mod hermes_provider_overrides_config_tests {
+    use super::{
+        build_hermes_provider_overrides_config_values, merge_hermes_provider_overrides_config,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn provider_overrides_values_have_empty_defaults() {
+        let config: serde_yaml::Value = serde_yaml::from_str("{}").unwrap();
+        let values = build_hermes_provider_overrides_config_values(&config);
+        assert_eq!(values["providerOverridesJson"], "{}");
+    }
+
+    #[test]
+    fn provider_overrides_values_read_yaml_mapping() {
+        let config: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+providers:
+  ollama-local:
+    request_timeout_seconds: 300
+    stale_timeout_seconds: 900
+  anthropic:
+    request_timeout_seconds: 30
+    models:
+      claude-opus-4.6:
+        timeout_seconds: 600
+"#,
+        )
+        .unwrap();
+
+        let values = build_hermes_provider_overrides_config_values(&config);
+        let mapping: serde_json::Value =
+            serde_json::from_str(values["providerOverridesJson"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            mapping["ollama-local"]["request_timeout_seconds"].as_i64(),
+            Some(300)
+        );
+        assert_eq!(
+            mapping["ollama-local"]["stale_timeout_seconds"].as_i64(),
+            Some(900)
+        );
+        assert_eq!(
+            mapping["anthropic"]["models"]["claude-opus-4.6"]["timeout_seconds"].as_i64(),
+            Some(600)
+        );
+    }
+
+    #[test]
+    fn merge_provider_overrides_config_preserves_unknown_fields() {
+        let mut config: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+model:
+  provider: openrouter
+providers:
+  anthropic:
+    request_timeout_seconds: 30
+    custom_flag: keep-provider
+    models:
+      claude-opus-4.6:
+        timeout_seconds: 600
+        custom_flag: keep-model
+openrouter:
+  response_cache: true
+"#,
+        )
+        .unwrap();
+
+        merge_hermes_provider_overrides_config(
+            &mut config,
+            &json!({
+                "providerOverridesJson": r#"{
+                  "anthropic": {
+                    "request_timeout_seconds": 45,
+                    "stale_timeout_seconds": 300,
+                    "custom_flag": "keep-provider",
+                    "models": {
+                      "claude-opus-4.6": {
+                        "timeout_seconds": 900,
+                        "stale_timeout_seconds": 1200,
+                        "custom_flag": "keep-model"
+                      }
+                    }
+                  },
+                  "openai-codex": {
+                    "models": {
+                      "gpt-5.4": {
+                        "stale_timeout_seconds": 1800
+                      }
+                    }
+                  }
+                }"#,
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(config["model"]["provider"].as_str(), Some("openrouter"));
+        assert_eq!(config["openrouter"]["response_cache"].as_bool(), Some(true));
+        assert_eq!(
+            config["providers"]["anthropic"]["request_timeout_seconds"].as_i64(),
+            Some(45)
+        );
+        assert_eq!(
+            config["providers"]["anthropic"]["stale_timeout_seconds"].as_i64(),
+            Some(300)
+        );
+        assert_eq!(
+            config["providers"]["anthropic"]["custom_flag"].as_str(),
+            Some("keep-provider")
+        );
+        assert_eq!(
+            config["providers"]["anthropic"]["models"]["claude-opus-4.6"]["timeout_seconds"]
+                .as_i64(),
+            Some(900)
+        );
+        assert_eq!(
+            config["providers"]["anthropic"]["models"]["claude-opus-4.6"]["stale_timeout_seconds"]
+                .as_i64(),
+            Some(1200)
+        );
+        assert_eq!(
+            config["providers"]["anthropic"]["models"]["claude-opus-4.6"]["custom_flag"].as_str(),
+            Some("keep-model")
+        );
+        assert_eq!(
+            config["providers"]["openai-codex"]["models"]["gpt-5.4"]["stale_timeout_seconds"]
+                .as_i64(),
+            Some(1800)
+        );
+    }
+
+    #[test]
+    fn merge_provider_overrides_config_removes_empty_mapping() {
+        let mut config: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+providers:
+  anthropic:
+    request_timeout_seconds: 30
+streaming:
+  enabled: true
+"#,
+        )
+        .unwrap();
+
+        merge_hermes_provider_overrides_config(
+            &mut config,
+            &json!({ "providerOverridesJson": "{}" }),
+        )
+        .unwrap();
+
+        assert!(config["providers"].is_null());
+        assert_eq!(config["streaming"]["enabled"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn merge_provider_overrides_config_rejects_invalid_values() {
+        let mut config = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let err = merge_hermes_provider_overrides_config(
+            &mut config,
+            &json!({ "providerOverridesJson": "[" }),
+        )
+        .unwrap_err();
+        assert!(err.contains("providers JSON"));
+        let err = merge_hermes_provider_overrides_config(
+            &mut config,
+            &json!({ "providerOverridesJson": r#"{ "bad provider": { "request_timeout_seconds": 30 } }"# }),
+        )
+        .unwrap_err();
+        assert!(err.contains("providers.bad provider"));
+        let err = merge_hermes_provider_overrides_config(
+            &mut config,
+            &json!({ "providerOverridesJson": r#"{ "anthropic": { "request_timeout_seconds": 0 } }"# }),
+        )
+        .unwrap_err();
+        assert!(err.contains("providers.anthropic.request_timeout_seconds"));
+        let err = merge_hermes_provider_overrides_config(
+            &mut config,
+            &json!({ "providerOverridesJson": r#"{ "anthropic": { "models": { "../secret": { "timeout_seconds": 30 } } } }"# }),
+        )
+        .unwrap_err();
+        assert!(err.contains("providers.anthropic.models.../secret"));
+        let err = merge_hermes_provider_overrides_config(
+            &mut config,
+            &json!({ "providerOverridesJson": r#"{ "anthropic": { "models": { "opus": { "timeout_seconds": "slow" } } } }"# }),
+        )
+        .unwrap_err();
+        assert!(err.contains("providers.anthropic.models.opus.timeout_seconds"));
     }
 }
 
