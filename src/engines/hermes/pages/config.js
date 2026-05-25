@@ -138,6 +138,9 @@ const DISPLAY_DEFAULTS = {
   displayToolProgress: 'all',
   displayCompact: false,
   displaySkin: 'default',
+  displayShowReasoning: false,
+  displayToolPreviewLength: 0,
+  displayCleanupProgress: false,
   displayToolProgressCommand: false,
   displayInterimAssistantMessages: true,
   displayRuntimeFooterEnabled: false,
@@ -1287,6 +1290,10 @@ export function render() {
               <input id="hm-display-persistent-output-max-lines" class="hm-input" type="number" inputmode="numeric" min="0" max="100000" step="1" value="${esc(displayValues.displayPersistentOutputMaxLines)}" ${disabled ? 'disabled' : ''}>
             </label>
             <label class="hm-field">
+              <span class="hm-field-label">${t('engine.hermesDisplayConfigToolPreviewLength')}</span>
+              <input id="hm-display-tool-preview-length" class="hm-input" type="number" inputmode="numeric" min="0" max="200000" step="1" value="${esc(displayValues.displayToolPreviewLength)}" ${disabled ? 'disabled' : ''}>
+            </label>
+            <label class="hm-field">
               <span class="hm-field-label">${t('engine.hermesDisplayConfigRuntimeFooterFields')}</span>
               <textarea id="hm-display-runtime-footer-fields" class="hm-input" ${disabled ? 'disabled' : ''} style="min-height:96px;resize:vertical">${esc(displayValues.displayRuntimeFooterFields)}</textarea>
             </label>
@@ -1295,6 +1302,14 @@ export function render() {
             <label class="hm-channel-check">
               <input id="hm-display-compact" type="checkbox" ${displayValues.displayCompact ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
               <span>${t('engine.hermesDisplayConfigCompact')}</span>
+            </label>
+            <label class="hm-channel-check">
+              <input id="hm-display-show-reasoning" type="checkbox" ${displayValues.displayShowReasoning ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
+              <span>${t('engine.hermesDisplayConfigShowReasoning')}</span>
+            </label>
+            <label class="hm-channel-check">
+              <input id="hm-display-cleanup-progress" type="checkbox" ${displayValues.displayCleanupProgress ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
+              <span>${t('engine.hermesDisplayConfigCleanupProgress')}</span>
             </label>
             <label class="hm-channel-check">
               <input id="hm-display-tool-progress-command" type="checkbox" ${displayValues.displayToolProgressCommand ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
@@ -3174,6 +3189,9 @@ export function render() {
       displayToolProgress: el.querySelector('#hm-display-tool-progress')?.value || 'all',
       displayCompact: !!el.querySelector('#hm-display-compact')?.checked,
       displaySkin: el.querySelector('#hm-display-skin')?.value || 'default',
+      displayShowReasoning: !!el.querySelector('#hm-display-show-reasoning')?.checked,
+      displayToolPreviewLength: el.querySelector('#hm-display-tool-preview-length')?.value || '0',
+      displayCleanupProgress: !!el.querySelector('#hm-display-cleanup-progress')?.checked,
       displayToolProgressCommand: !!el.querySelector('#hm-display-tool-progress-command')?.checked,
       displayInterimAssistantMessages: !!el.querySelector('#hm-display-interim-assistant-messages')?.checked,
       displayRuntimeFooterEnabled: !!el.querySelector('#hm-display-runtime-footer-enabled')?.checked,

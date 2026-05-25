@@ -5878,6 +5878,11 @@ fn build_hermes_display_config_values(config: &serde_yaml::Value) -> Value {
             false,
             "display.tool_progress",
         ).unwrap_or_else(|_| "all".to_string()),
+        "displayShowReasoning": display.and_then(|map| yaml_bool_field(map, "show_reasoning")).unwrap_or(false),
+        "displayToolPreviewLength": display
+            .map(|map| bounded_hermes_i64(yaml_i64_field(map, "tool_preview_length"), 0, 0, 200000))
+            .unwrap_or(0),
+        "displayCleanupProgress": display.and_then(|map| yaml_bool_field(map, "cleanup_progress")).unwrap_or(false),
         "displayToolProgressCommand": display.and_then(|map| yaml_bool_field(map, "tool_progress_command")).unwrap_or(false),
         "displayInterimAssistantMessages": display.and_then(|map| yaml_bool_field(map, "interim_assistant_messages")).unwrap_or(true),
         "displayRuntimeFooterEnabled": runtime_footer.and_then(|map| yaml_bool_field(map, "enabled")).unwrap_or(false),
@@ -5949,6 +5954,14 @@ fn merge_hermes_display_config(config: &mut serde_yaml::Value, form: &Value) -> 
         0,
         100000,
     )?;
+    let tool_preview_length = validate_hermes_i64(
+        form_i64(form, "displayToolPreviewLength")
+            .or_else(|| current["displayToolPreviewLength"].as_i64()),
+        "display.tool_preview_length",
+        0,
+        0,
+        200000,
+    )?;
 
     let display = yaml_child_object(ensure_yaml_object(config)?, "display")?;
     display.insert(
@@ -5969,6 +5982,24 @@ fn merge_hermes_display_config(config: &mut serde_yaml::Value, form: &Value) -> 
     display.insert(
         yaml_key("tool_progress"),
         serde_yaml::Value::String(tool_progress),
+    );
+    display.insert(
+        yaml_key("show_reasoning"),
+        serde_yaml::Value::Bool(
+            form_bool(form, "displayShowReasoning")
+                .unwrap_or_else(|| current["displayShowReasoning"].as_bool().unwrap_or(false)),
+        ),
+    );
+    display.insert(
+        yaml_key("tool_preview_length"),
+        serde_yaml::Value::Number(serde_yaml::Number::from(tool_preview_length)),
+    );
+    display.insert(
+        yaml_key("cleanup_progress"),
+        serde_yaml::Value::Bool(
+            form_bool(form, "displayCleanupProgress")
+                .unwrap_or_else(|| current["displayCleanupProgress"].as_bool().unwrap_or(false)),
+        ),
     );
     display.insert(
         yaml_key("tool_progress_command"),
@@ -17834,6 +17865,9 @@ mod hermes_display_config_tests {
         assert_eq!(values["displayToolProgress"], "all");
         assert_eq!(values["displayCompact"], false);
         assert_eq!(values["displaySkin"], "default");
+        assert_eq!(values["displayShowReasoning"], false);
+        assert_eq!(values["displayToolPreviewLength"], 0);
+        assert_eq!(values["displayCleanupProgress"], false);
         assert_eq!(values["displayToolProgressCommand"], false);
         assert_eq!(values["displayInterimAssistantMessages"], true);
         assert_eq!(values["displayRuntimeFooterEnabled"], false);
@@ -17861,6 +17895,9 @@ display:
   tool_progress: VERBOSE
   compact: true
   skin: MONO
+  show_reasoning: true
+  tool_preview_length: 80
+  cleanup_progress: true
   tool_progress_command: true
   interim_assistant_messages: false
   runtime_footer:
@@ -17886,6 +17923,9 @@ display:
         assert_eq!(values["displayToolProgress"], "verbose");
         assert_eq!(values["displayCompact"], true);
         assert_eq!(values["displaySkin"], "mono");
+        assert_eq!(values["displayShowReasoning"], true);
+        assert_eq!(values["displayToolPreviewLength"], 80);
+        assert_eq!(values["displayCleanupProgress"], true);
         assert_eq!(values["displayToolProgressCommand"], true);
         assert_eq!(values["displayInterimAssistantMessages"], false);
         assert_eq!(values["displayRuntimeFooterEnabled"], true);
@@ -17931,6 +17971,9 @@ memory:
                 "displayToolProgress": "off",
                 "displayCompact": true,
                 "displaySkin": "slate",
+                "displayShowReasoning": true,
+                "displayToolPreviewLength": 120,
+                "displayCleanupProgress": true,
                 "displayToolProgressCommand": true,
                 "displayInterimAssistantMessages": false,
                 "displayRuntimeFooterEnabled": true,
@@ -17953,6 +17996,9 @@ memory:
         assert_eq!(config["memory"]["memory_enabled"].as_bool(), Some(true));
         assert_eq!(config["display"]["compact"].as_bool(), Some(true));
         assert_eq!(config["display"]["skin"].as_str(), Some("slate"));
+        assert_eq!(config["display"]["show_reasoning"].as_bool(), Some(true));
+        assert_eq!(config["display"]["tool_preview_length"].as_i64(), Some(120));
+        assert_eq!(config["display"]["cleanup_progress"].as_bool(), Some(true));
         assert_eq!(
             config["display"]["platforms"]["telegram"]["tool_progress"].as_str(),
             Some("new")
@@ -18068,6 +18114,13 @@ memory:
         )
         .unwrap_err();
         assert!(err.contains("display.persistent_output_max_lines"));
+
+        let err = merge_hermes_display_config(
+            &mut config,
+            &json!({ "displayToolPreviewLength": 200001 }),
+        )
+        .unwrap_err();
+        assert!(err.contains("display.tool_preview_length"));
     }
 }
 

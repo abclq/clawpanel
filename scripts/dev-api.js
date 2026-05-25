@@ -3671,6 +3671,9 @@ export function buildHermesDisplayConfigValues(config = {}) {
     displayCompact: readHermesBool(display.compact, false),
     displaySkin: normalizeHermesDisplaySkin(display.skin, false),
     displayToolProgress: normalizeHermesDisplayToolProgress(display.tool_progress, false),
+    displayShowReasoning: readHermesBool(display.show_reasoning, false),
+    displayToolPreviewLength: parseHermesInteger(display.tool_preview_length, 'display.tool_preview_length', 0, 0, 200000, false),
+    displayCleanupProgress: readHermesBool(display.cleanup_progress, false),
     displayToolProgressCommand: readHermesBool(display.tool_progress_command, false),
     displayInterimAssistantMessages: readHermesBool(display.interim_assistant_messages, true),
     displayRuntimeFooterEnabled: readHermesBool(runtimeFooter.enabled, false),
@@ -3701,6 +3704,9 @@ export function mergeHermesDisplayConfig(config = {}, form = {}) {
   display.compact = formHermesBool(form, 'displayCompact', currentValues.displayCompact)
   display.skin = normalizeHermesDisplaySkin(Object.hasOwn(form, 'displaySkin') ? form.displaySkin : currentValues.displaySkin, true)
   display.tool_progress = normalizeHermesDisplayToolProgress(Object.hasOwn(form, 'displayToolProgress') ? form.displayToolProgress : currentValues.displayToolProgress, true, 'display.tool_progress')
+  display.show_reasoning = formHermesBool(form, 'displayShowReasoning', currentValues.displayShowReasoning)
+  display.tool_preview_length = parseHermesInteger(Object.hasOwn(form, 'displayToolPreviewLength') ? form.displayToolPreviewLength : currentValues.displayToolPreviewLength, 'display.tool_preview_length', 0, 0, 200000, true)
+  display.cleanup_progress = formHermesBool(form, 'displayCleanupProgress', currentValues.displayCleanupProgress)
   display.tool_progress_command = formHermesBool(form, 'displayToolProgressCommand', currentValues.displayToolProgressCommand)
   display.interim_assistant_messages = formHermesBool(form, 'displayInterimAssistantMessages', currentValues.displayInterimAssistantMessages)
   runtimeFooter.enabled = formHermesBool(form, 'displayRuntimeFooterEnabled', currentValues.displayRuntimeFooterEnabled)
