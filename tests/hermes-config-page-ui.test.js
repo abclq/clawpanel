@@ -288,6 +288,8 @@ test('Hermes 配置页会暴露执行与委派限制结构化配置字段', () =
     'hm-delegation-child-timeout-seconds',
     'hm-delegation-max-concurrent-children',
     'hm-delegation-max-spawn-depth',
+    'hm-delegation-model',
+    'hm-delegation-provider',
     'hm-delegation-orchestrator-enabled',
     'hm-delegation-subagent-auto-approve',
     'hm-delegation-inherit-mcp-toolsets',

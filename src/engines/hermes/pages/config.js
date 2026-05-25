@@ -192,6 +192,8 @@ const EXECUTION_LIMITS_DEFAULTS = {
   delegationOrchestratorEnabled: true,
   delegationSubagentAutoApprove: false,
   delegationInheritMcpToolsets: true,
+  delegationModel: '',
+  delegationProvider: '',
 }
 
 const IO_SAFETY_DEFAULTS = {
@@ -1547,6 +1549,14 @@ export function render() {
             <label class="hm-field">
               <span class="hm-field-label">${t('engine.hermesExecutionLimitsDelegationMaxSpawnDepth')}</span>
               <input id="hm-delegation-max-spawn-depth" class="hm-input" type="number" inputmode="numeric" min="1" max="3" step="1" value="${esc(executionLimitsValues.delegationMaxSpawnDepth)}" ${disabled ? 'disabled' : ''}>
+            </label>
+            <label class="hm-field">
+              <span class="hm-field-label">${t('engine.hermesExecutionLimitsDelegationModel')}</span>
+              <input id="hm-delegation-model" class="hm-input" value="${esc(executionLimitsValues.delegationModel)}" placeholder="google/gemini-3-flash-preview" ${disabled ? 'disabled' : ''}>
+            </label>
+            <label class="hm-field">
+              <span class="hm-field-label">${t('engine.hermesExecutionLimitsDelegationProvider')}</span>
+              <input id="hm-delegation-provider" class="hm-input" value="${esc(executionLimitsValues.delegationProvider)}" placeholder="openrouter" ${disabled ? 'disabled' : ''}>
             </label>
           </div>
           <div class="hm-config-check-grid">
@@ -3402,6 +3412,8 @@ export function render() {
       delegationChildTimeoutSeconds: el.querySelector('#hm-delegation-child-timeout-seconds')?.value || '600',
       delegationMaxConcurrentChildren: el.querySelector('#hm-delegation-max-concurrent-children')?.value || '3',
       delegationMaxSpawnDepth: el.querySelector('#hm-delegation-max-spawn-depth')?.value || '1',
+      delegationModel: el.querySelector('#hm-delegation-model')?.value || '',
+      delegationProvider: el.querySelector('#hm-delegation-provider')?.value || '',
       delegationOrchestratorEnabled: !!el.querySelector('#hm-delegation-orchestrator-enabled')?.checked,
       delegationSubagentAutoApprove: !!el.querySelector('#hm-delegation-subagent-auto-approve')?.checked,
       delegationInheritMcpToolsets: !!el.querySelector('#hm-delegation-inherit-mcp-toolsets')?.checked,

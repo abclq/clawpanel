@@ -6878,6 +6878,16 @@ fn build_hermes_execution_limits_config_values(config: &serde_yaml::Value) -> Va
     let delegation_inherit_mcp_toolsets = delegation
         .and_then(|map| yaml_bool_field(map, "inherit_mcp_toolsets"))
         .unwrap_or(true);
+    let delegation_model = delegation
+        .and_then(|map| yaml_string_field(map, "model"))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default();
+    let delegation_provider = delegation
+        .and_then(|map| yaml_string_field(map, "provider"))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default();
 
     serde_json::json!({
         "codeExecutionMode": code_execution_mode,
@@ -6890,6 +6900,8 @@ fn build_hermes_execution_limits_config_values(config: &serde_yaml::Value) -> Va
         "delegationOrchestratorEnabled": delegation_orchestrator_enabled,
         "delegationSubagentAutoApprove": delegation_subagent_auto_approve,
         "delegationInheritMcpToolsets": delegation_inherit_mcp_toolsets,
+        "delegationModel": delegation_model,
+        "delegationProvider": delegation_provider,
     })
 }
 
@@ -7733,6 +7745,20 @@ fn merge_hermes_execution_limits_config(
                 .as_bool()
                 .unwrap_or(true)
         });
+    let delegation_model = form_string(form, "delegationModel")
+        .or_else(|| current["delegationModel"].as_str().map(ToString::to_string))
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let delegation_provider = form_string(form, "delegationProvider")
+        .or_else(|| {
+            current["delegationProvider"]
+                .as_str()
+                .map(ToString::to_string)
+        })
+        .unwrap_or_default()
+        .trim()
+        .to_string();
 
     let root = ensure_yaml_object(config)?;
     let code_execution = yaml_child_object(root, "code_execution")?;
@@ -7778,6 +7804,22 @@ fn merge_hermes_execution_limits_config(
         yaml_key("inherit_mcp_toolsets"),
         serde_yaml::Value::Bool(delegation_inherit_mcp_toolsets),
     );
+    if delegation_model.is_empty() {
+        delegation.remove(yaml_key("model"));
+    } else {
+        delegation.insert(
+            yaml_key("model"),
+            serde_yaml::Value::String(delegation_model),
+        );
+    }
+    if delegation_provider.is_empty() {
+        delegation.remove(yaml_key("provider"));
+    } else {
+        delegation.insert(
+            yaml_key("provider"),
+            serde_yaml::Value::String(delegation_provider),
+        );
+    }
     Ok(())
 }
 
@@ -15465,6 +15507,8 @@ mod hermes_execution_limits_config_tests {
         assert_eq!(values["delegationOrchestratorEnabled"], true);
         assert_eq!(values["delegationSubagentAutoApprove"], false);
         assert_eq!(values["delegationInheritMcpToolsets"], true);
+        assert_eq!(values["delegationModel"], "");
+        assert_eq!(values["delegationProvider"], "");
     }
 
     #[test]
@@ -15483,6 +15527,8 @@ delegation:
   orchestrator_enabled: false
   subagent_auto_approve: true
   inherit_mcp_toolsets: false
+  model: google/gemini-3-flash-preview
+  provider: openrouter
 "#,
         )
         .unwrap();
@@ -15497,6 +15543,8 @@ delegation:
         assert_eq!(values["delegationOrchestratorEnabled"], false);
         assert_eq!(values["delegationSubagentAutoApprove"], true);
         assert_eq!(values["delegationInheritMcpToolsets"], false);
+        assert_eq!(values["delegationModel"], "google/gemini-3-flash-preview");
+        assert_eq!(values["delegationProvider"], "openrouter");
     }
 
     #[test]
@@ -15531,6 +15579,8 @@ streaming:
                 "delegationOrchestratorEnabled": false,
                 "delegationSubagentAutoApprove": true,
                 "delegationInheritMcpToolsets": false,
+                "delegationModel": "anthropic/claude-haiku-4.6",
+                "delegationProvider": "anthropic",
             }),
         )
         .unwrap();
@@ -15569,11 +15619,40 @@ streaming:
             config["delegation"]["inherit_mcp_toolsets"].as_bool(),
             Some(false)
         );
-        assert_eq!(config["delegation"]["model"].as_str(), Some("child-model"));
         assert_eq!(
-            config["delegation"]["provider"].as_str(),
-            Some("openrouter")
+            config["delegation"]["model"].as_str(),
+            Some("anthropic/claude-haiku-4.6")
         );
+        assert_eq!(config["delegation"]["provider"].as_str(), Some("anthropic"));
+        assert_eq!(
+            config["delegation"]["custom_flag"].as_str(),
+            Some("keep-delegation")
+        );
+    }
+
+    #[test]
+    fn merge_execution_limits_config_removes_empty_child_model_overrides() {
+        let mut config: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+delegation:
+  model: child-model
+  provider: openrouter
+  custom_flag: keep-delegation
+"#,
+        )
+        .unwrap();
+
+        merge_hermes_execution_limits_config(
+            &mut config,
+            &json!({
+                "delegationModel": "  ",
+                "delegationProvider": "",
+            }),
+        )
+        .unwrap();
+
+        assert!(config["delegation"]["model"].is_null());
+        assert!(config["delegation"]["provider"].is_null());
         assert_eq!(
             config["delegation"]["custom_flag"].as_str(),
             Some("keep-delegation")

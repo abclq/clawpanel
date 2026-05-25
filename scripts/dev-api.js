@@ -4880,6 +4880,8 @@ export function buildHermesExecutionLimitsConfigValues(config = {}) {
     delegationOrchestratorEnabled: readHermesBool(delegation.orchestrator_enabled, true),
     delegationSubagentAutoApprove: readHermesBool(delegation.subagent_auto_approve, false),
     delegationInheritMcpToolsets: readHermesBool(delegation.inherit_mcp_toolsets, true),
+    delegationModel: typeof delegation.model === 'string' ? delegation.model.trim() : '',
+    delegationProvider: typeof delegation.provider === 'string' ? delegation.provider.trim() : '',
   }
 }
 
@@ -5198,6 +5200,12 @@ export function mergeHermesExecutionLimitsConfig(config = {}, form = {}) {
   delegation.orchestrator_enabled = formHermesBool(form, 'delegationOrchestratorEnabled', currentValues.delegationOrchestratorEnabled)
   delegation.subagent_auto_approve = formHermesBool(form, 'delegationSubagentAutoApprove', currentValues.delegationSubagentAutoApprove)
   delegation.inherit_mcp_toolsets = formHermesBool(form, 'delegationInheritMcpToolsets', currentValues.delegationInheritMcpToolsets)
+  const delegationModel = normalizeHermesModelConfigString(Object.hasOwn(form, 'delegationModel') ? form.delegationModel : currentValues.delegationModel, 'delegation.model')
+  if (delegationModel) delegation.model = delegationModel
+  else delete delegation.model
+  const delegationProvider = normalizeHermesModelConfigString(Object.hasOwn(form, 'delegationProvider') ? form.delegationProvider : currentValues.delegationProvider, 'delegation.provider')
+  if (delegationProvider) delegation.provider = delegationProvider
+  else delete delegation.provider
   next.code_execution = codeExecution
   next.delegation = delegation
   return next
