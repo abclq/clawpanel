@@ -3519,6 +3519,55 @@ fn merge_hermes_prompt_caching_config(
     Ok(())
 }
 
+fn build_hermes_openrouter_cache_config_values(config: &serde_yaml::Value) -> Value {
+    let root = config.as_mapping();
+    let openrouter = root.and_then(|map| yaml_get_mapping(map, "openrouter"));
+    serde_json::json!({
+        "openrouterResponseCache": openrouter.and_then(|map| yaml_bool_field(map, "response_cache")).unwrap_or(true),
+        "openrouterResponseCacheTtl": openrouter.map(|map| bounded_hermes_i64(yaml_i64_field(map, "response_cache_ttl"), 300, 1, 86400)).unwrap_or(300),
+    })
+}
+
+fn merge_hermes_openrouter_cache_config(
+    config: &mut serde_yaml::Value,
+    form: &Value,
+) -> Result<(), String> {
+    let current = build_hermes_openrouter_cache_config_values(config);
+    let response_cache = form_bool(form, "openrouterResponseCache")
+        .unwrap_or_else(|| current["openrouterResponseCache"].as_bool().unwrap_or(true));
+    let response_cache_ttl_input = if form.get("openrouterResponseCacheTtl").is_some() {
+        Some(
+            form_i64(form, "openrouterResponseCacheTtl")
+                .ok_or_else(|| "openrouter.response_cache_ttl 必须是整数".to_string())?,
+        )
+    } else {
+        Some(
+            current["openrouterResponseCacheTtl"]
+                .as_i64()
+                .unwrap_or(300),
+        )
+    };
+    let response_cache_ttl = validate_hermes_i64(
+        response_cache_ttl_input,
+        "openrouter.response_cache_ttl",
+        300,
+        1,
+        86400,
+    )?;
+
+    let root = ensure_yaml_object(config)?;
+    let openrouter = yaml_child_object(root, "openrouter")?;
+    openrouter.insert(
+        yaml_key("response_cache"),
+        serde_yaml::Value::Bool(response_cache),
+    );
+    openrouter.insert(
+        yaml_key("response_cache_ttl"),
+        serde_yaml::Value::Number(response_cache_ttl.into()),
+    );
+    Ok(())
+}
+
 fn hermes_auxiliary_task<'a>(
     root: Option<&'a serde_yaml::Mapping>,
     key: &str,
@@ -7498,6 +7547,30 @@ pub fn hermes_prompt_caching_config_save(form: Value) -> Result<Value, String> {
         "configPath": config_path.to_string_lossy(),
         "backup": backup,
         "values": build_hermes_prompt_caching_config_values(&config),
+    }))
+}
+
+#[tauri::command]
+pub fn hermes_openrouter_cache_config_read() -> Result<Value, String> {
+    let (config_path, exists, config) = read_hermes_channel_yaml_config()?;
+    ensure_yaml_object(&mut config.clone())?;
+    Ok(serde_json::json!({
+        "exists": exists,
+        "configPath": config_path.to_string_lossy(),
+        "values": build_hermes_openrouter_cache_config_values(&config),
+    }))
+}
+
+#[tauri::command]
+pub fn hermes_openrouter_cache_config_save(form: Value) -> Result<Value, String> {
+    let (config_path, _exists, mut config) = read_hermes_channel_yaml_config()?;
+    merge_hermes_openrouter_cache_config(&mut config, &form)?;
+    let backup = write_hermes_yaml_config(&config_path, &config)?;
+    Ok(serde_json::json!({
+        "ok": true,
+        "configPath": config_path.to_string_lossy(),
+        "backup": backup,
+        "values": build_hermes_openrouter_cache_config_values(&config),
     }))
 }
 
@@ -13175,6 +13248,89 @@ compression:
             merge_hermes_prompt_caching_config(&mut config, &json!({ "promptCacheTtl": "30m" }))
                 .unwrap_err();
         assert!(err.contains("prompt_caching.cache_ttl"));
+    }
+}
+
+#[cfg(test)]
+mod hermes_openrouter_cache_config_tests {
+    use super::{
+        build_hermes_openrouter_cache_config_values, merge_hermes_openrouter_cache_config,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn openrouter_cache_values_have_upstream_defaults() {
+        let config: serde_yaml::Value = serde_yaml::from_str("{}").unwrap();
+        let values = build_hermes_openrouter_cache_config_values(&config);
+        assert_eq!(values["openrouterResponseCache"], true);
+        assert_eq!(values["openrouterResponseCacheTtl"], 300);
+    }
+
+    #[test]
+    fn openrouter_cache_values_read_yaml_fields() {
+        let config: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+openrouter:
+  response_cache: false
+  response_cache_ttl: 900
+"#,
+        )
+        .unwrap();
+
+        let values = build_hermes_openrouter_cache_config_values(&config);
+        assert_eq!(values["openrouterResponseCache"], false);
+        assert_eq!(values["openrouterResponseCacheTtl"], 900);
+    }
+
+    #[test]
+    fn merge_openrouter_cache_config_preserves_unknown_fields() {
+        let mut config: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+model:
+  provider: openrouter
+openrouter:
+  response_cache: false
+  response_cache_ttl: 900
+  custom_flag: keep-openrouter
+streaming:
+  enabled: true
+"#,
+        )
+        .unwrap();
+
+        merge_hermes_openrouter_cache_config(
+            &mut config,
+            &json!({
+                "openrouterResponseCache": true,
+                "openrouterResponseCacheTtl": "600",
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(config["model"]["provider"].as_str(), Some("openrouter"));
+        assert_eq!(config["streaming"]["enabled"].as_bool(), Some(true));
+        assert_eq!(config["openrouter"]["response_cache"].as_bool(), Some(true));
+        assert_eq!(
+            config["openrouter"]["response_cache_ttl"].as_i64(),
+            Some(600)
+        );
+        assert_eq!(
+            config["openrouter"]["custom_flag"].as_str(),
+            Some("keep-openrouter")
+        );
+    }
+
+    #[test]
+    fn merge_openrouter_cache_config_rejects_invalid_ttl() {
+        let mut config: serde_yaml::Value = serde_yaml::from_str("{}").unwrap();
+        for ttl in ["0", "86401", "1.5"] {
+            let err = merge_hermes_openrouter_cache_config(
+                &mut config,
+                &json!({ "openrouterResponseCacheTtl": ttl }),
+            )
+            .unwrap_err();
+            assert!(err.contains("openrouter.response_cache_ttl"));
+        }
     }
 }
 

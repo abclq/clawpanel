@@ -3743,6 +3743,29 @@ export function mergeHermesPromptCachingConfig(config = {}, form = {}) {
   return next
 }
 
+export function buildHermesOpenrouterCacheConfigValues(config = {}) {
+  const root = config && typeof config === 'object' && !Array.isArray(config) ? config : {}
+  const openrouter = root.openrouter && typeof root.openrouter === 'object' && !Array.isArray(root.openrouter)
+    ? root.openrouter
+    : {}
+  return {
+    openrouterResponseCache: readHermesBool(openrouter.response_cache, true),
+    openrouterResponseCacheTtl: parseHermesInteger(openrouter.response_cache_ttl, 'openrouter.response_cache_ttl', 300, 1, 86400, false),
+  }
+}
+
+export function mergeHermesOpenrouterCacheConfig(config = {}, form = {}) {
+  const next = mergeConfigsPreservingFields({}, config && typeof config === 'object' && !Array.isArray(config) ? config : {})
+  const currentValues = buildHermesOpenrouterCacheConfigValues(next)
+  const openrouter = next.openrouter && typeof next.openrouter === 'object' && !Array.isArray(next.openrouter)
+    ? mergeConfigsPreservingFields(next.openrouter, {})
+    : {}
+  openrouter.response_cache = formHermesBool(form, 'openrouterResponseCache', currentValues.openrouterResponseCache)
+  openrouter.response_cache_ttl = parseHermesInteger(Object.hasOwn(form, 'openrouterResponseCacheTtl') ? form.openrouterResponseCacheTtl : currentValues.openrouterResponseCacheTtl, 'openrouter.response_cache_ttl', 300, 1, 86400, true)
+  next.openrouter = openrouter
+  return next
+}
+
 function hermesAuxiliaryTask(root, key) {
   const auxiliary = root.auxiliary && typeof root.auxiliary === 'object' && !Array.isArray(root.auxiliary)
     ? root.auxiliary
@@ -10905,6 +10928,27 @@ const handlers = {
       configPath,
       backup,
       values: buildHermesPromptCachingConfigValues(next),
+    }
+  },
+
+  hermes_openrouter_cache_config_read() {
+    const { configPath, exists, config } = readHermesConfigYamlObject()
+    return {
+      exists,
+      configPath,
+      values: buildHermesOpenrouterCacheConfigValues(config),
+    }
+  },
+
+  hermes_openrouter_cache_config_save({ form } = {}) {
+    const { configPath, config } = readHermesConfigYamlObject()
+    const next = mergeHermesOpenrouterCacheConfig(config, form || {})
+    const backup = writeHermesConfigYamlObject(configPath, next)
+    return {
+      ok: true,
+      configPath,
+      backup,
+      values: buildHermesOpenrouterCacheConfigValues(next),
     }
   },
 
