@@ -6775,6 +6775,15 @@ body[data-active-engine="hermes"][data-theme="dark"] {
   gap: 16px;
   align-items: end;
 }
+[data-engine="hermes"] .hm-config-runtime-grid .hm-field--wide {
+  grid-column: 1 / -1;
+}
+[data-engine="hermes"] .hm-textarea {
+  min-height: 104px;
+  height: auto;
+  resize: vertical;
+  line-height: 1.6;
+}
 [data-engine="hermes"] .hm-config-compression-grid {
   grid-template-columns: repeat(4, minmax(140px, 1fr));
   margin-top: 18px;

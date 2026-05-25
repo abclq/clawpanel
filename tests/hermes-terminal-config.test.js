@@ -24,6 +24,7 @@ test('Hermes 终端执行配置读取会提供上游默认值', () => {
     terminalSingularityImage: '',
     terminalModalImage: '',
     terminalDaytonaImage: '',
+    terminalDockerForwardEnv: '',
     terminalSshHost: '',
     terminalSshUser: '',
     terminalSshPort: 22,
@@ -41,6 +42,7 @@ test('Hermes 终端执行配置读取会回显 YAML 字段', () => {
       docker_mount_cwd_to_workspace: true,
       docker_run_as_host_user: true,
       docker_image: 'nikolaik/python-nodejs:python3.11-nodejs20',
+      docker_forward_env: ['GITHUB_TOKEN', 'NPM_TOKEN'],
       singularity_image: 'docker://nikolaik/python-nodejs:python3.11-nodejs20',
       modal_image: 'python:3.12',
       daytona_image: 'ubuntu:24.04',
@@ -62,6 +64,7 @@ test('Hermes 终端执行配置读取会回显 YAML 字段', () => {
   assert.equal(values.terminalDockerMountCwdToWorkspace, true)
   assert.equal(values.terminalDockerRunAsHostUser, true)
   assert.equal(values.terminalDockerImage, 'nikolaik/python-nodejs:python3.11-nodejs20')
+  assert.equal(values.terminalDockerForwardEnv, 'GITHUB_TOKEN\nNPM_TOKEN')
   assert.equal(values.terminalSingularityImage, 'docker://nikolaik/python-nodejs:python3.11-nodejs20')
   assert.equal(values.terminalModalImage, 'python:3.12')
   assert.equal(values.terminalDaytonaImage, 'ubuntu:24.04')
@@ -81,7 +84,7 @@ test('Hermes 终端执行配置保存会保留未知字段并写入上游结构'
     terminal: {
       backend: 'local',
       docker_image: 'custom/python-node',
-      docker_forward_env: ['GITHUB_TOKEN'],
+      docker_forward_env: ['OLD_TOKEN'],
       custom_flag: 'keep-terminal',
     },
     streaming: { enabled: true },
@@ -93,6 +96,7 @@ test('Hermes 终端执行配置保存会保留未知字段并写入上游结构'
     terminalDockerMountCwdToWorkspace: true,
     terminalDockerRunAsHostUser: true,
     terminalDockerImage: 'nikolaik/python-nodejs:python3.12-nodejs22',
+    terminalDockerForwardEnv: 'GITHUB_TOKEN\nNPM_TOKEN\nGITHUB_TOKEN',
     terminalSingularityImage: 'docker://ubuntu:24.04',
     terminalModalImage: 'debian:bookworm',
     terminalDaytonaImage: 'ubuntu:22.04',
@@ -126,7 +130,21 @@ test('Hermes 终端执行配置保存会保留未知字段并写入上游结构'
   assert.equal(next.terminal.container_memory, 6144)
   assert.equal(next.terminal.container_disk, 20480)
   assert.equal(next.terminal.container_persistent, false)
-  assert.deepEqual(next.terminal.docker_forward_env, ['GITHUB_TOKEN'])
+  assert.deepEqual(next.terminal.docker_forward_env, ['GITHUB_TOKEN', 'NPM_TOKEN'])
+  assert.equal(next.terminal.custom_flag, 'keep-terminal')
+})
+
+test('Hermes 终端执行配置保存空 Docker 环境变量转发会删除对应字段', () => {
+  const next = mergeHermesTerminalConfig({
+    terminal: {
+      docker_forward_env: ['GITHUB_TOKEN'],
+      custom_flag: 'keep-terminal',
+    },
+  }, {
+    terminalDockerForwardEnv: '  \n',
+  })
+
+  assert.equal(Object.hasOwn(next.terminal, 'docker_forward_env'), false)
   assert.equal(next.terminal.custom_flag, 'keep-terminal')
 })
 
@@ -204,5 +222,9 @@ test('Hermes 终端执行配置保存会拒绝非法后端和越界值', () => {
   assert.throws(
     () => mergeHermesTerminalConfig({}, { terminalSshPort: '65536' }),
     /terminal\.ssh_port/,
+  )
+  assert.throws(
+    () => mergeHermesTerminalConfig({}, { terminalDockerForwardEnv: 'GOOD_TOKEN\nBAD TOKEN' }),
+    /terminal\.docker_forward_env/,
   )
 })

@@ -266,6 +266,7 @@ const TERMINAL_DEFAULTS = {
   terminalSingularityImage: '',
   terminalModalImage: '',
   terminalDaytonaImage: '',
+  terminalDockerForwardEnv: '',
   terminalSshHost: '',
   terminalSshUser: '',
   terminalSshPort: 22,
@@ -2022,6 +2023,10 @@ export function render() {
               <span class="hm-field-label">${t('engine.hermesTerminalConfigDockerImage')}</span>
               <input id="hm-terminal-docker-image" class="hm-input" value="${esc(terminalValues.terminalDockerImage)}" placeholder="nikolaik/python-nodejs:python3.11-nodejs20" ${disabled ? 'disabled' : ''}>
             </label>
+            <label class="hm-field hm-field--wide">
+              <span class="hm-field-label">${t('engine.hermesTerminalConfigDockerForwardEnv')}</span>
+              <textarea id="hm-terminal-docker-forward-env" class="hm-input hm-textarea" rows="3" placeholder="GITHUB_TOKEN&#10;NPM_TOKEN" ${disabled ? 'disabled' : ''}>${esc(terminalValues.terminalDockerForwardEnv)}</textarea>
+            </label>
             <label class="hm-field">
               <span class="hm-field-label">${t('engine.hermesTerminalConfigSingularityImage')}</span>
               <input id="hm-terminal-singularity-image" class="hm-input" value="${esc(terminalValues.terminalSingularityImage)}" placeholder="docker://nikolaik/python-nodejs:python3.11-nodejs20" ${disabled ? 'disabled' : ''}>
@@ -3718,6 +3723,7 @@ export function render() {
       terminalDockerMountCwdToWorkspace: !!el.querySelector('#hm-terminal-docker-mount-cwd-to-workspace')?.checked,
       terminalDockerRunAsHostUser: !!el.querySelector('#hm-terminal-docker-run-as-host-user')?.checked,
       terminalDockerImage: el.querySelector('#hm-terminal-docker-image')?.value || '',
+      terminalDockerForwardEnv: el.querySelector('#hm-terminal-docker-forward-env')?.value || '',
       terminalSingularityImage: el.querySelector('#hm-terminal-singularity-image')?.value || '',
       terminalModalImage: el.querySelector('#hm-terminal-modal-image')?.value || '',
       terminalDaytonaImage: el.querySelector('#hm-terminal-daytona-image')?.value || '',

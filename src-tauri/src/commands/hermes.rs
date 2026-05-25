@@ -2340,6 +2340,31 @@ fn normalize_hermes_provider_routing_list(
     Ok(values)
 }
 
+fn normalize_hermes_env_name_list(raw: Option<String>, key: &str) -> Result<Vec<String>, String> {
+    let mut values = Vec::new();
+    for item in normalize_hermes_multiline_list(raw) {
+        let name = item.trim().to_string();
+        if name.is_empty() {
+            continue;
+        }
+        let mut chars = name.chars();
+        let valid_first = chars
+            .next()
+            .map(|ch| ch.is_ascii_alphabetic() || ch == '_')
+            .unwrap_or(false);
+        let valid_rest = chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_');
+        if !valid_first || !valid_rest {
+            return Err(format!(
+                "{key} 只能填写环境变量名，每行一个，例如 GITHUB_TOKEN"
+            ));
+        }
+        if !values.contains(&name) {
+            values.push(name);
+        }
+    }
+    Ok(values)
+}
+
 fn normalize_hermes_auxiliary_provider(
     value: Option<String>,
     key: &str,
@@ -7867,6 +7892,9 @@ fn build_hermes_terminal_config_values(config: &serde_yaml::Value) -> Value {
     let terminal_singularity_image = terminal_string("singularity_image");
     let terminal_modal_image = terminal_string("modal_image");
     let terminal_daytona_image = terminal_string("daytona_image");
+    let terminal_docker_forward_env = terminal
+        .map(|map| yaml_string_sequence_field(map, "docker_forward_env").join("\n"))
+        .unwrap_or_default();
     let terminal_ssh_host = terminal_string("ssh_host");
     let terminal_ssh_user = terminal_string("ssh_user");
     let terminal_ssh_port = terminal
@@ -7897,6 +7925,7 @@ fn build_hermes_terminal_config_values(config: &serde_yaml::Value) -> Value {
         "terminalSingularityImage": terminal_singularity_image,
         "terminalModalImage": terminal_modal_image,
         "terminalDaytonaImage": terminal_daytona_image,
+        "terminalDockerForwardEnv": terminal_docker_forward_env,
         "terminalSshHost": terminal_ssh_host,
         "terminalSshUser": terminal_ssh_user,
         "terminalSshPort": terminal_ssh_port,
@@ -8004,6 +8033,14 @@ fn merge_hermes_terminal_config(
         .unwrap_or_default()
         .trim()
         .to_string();
+    let terminal_docker_forward_env = normalize_hermes_env_name_list(
+        form_string(form, "terminalDockerForwardEnv").or_else(|| {
+            current["terminalDockerForwardEnv"]
+                .as_str()
+                .map(ToString::to_string)
+        }),
+        "terminal.docker_forward_env",
+    )?;
     let terminal_ssh_host = form_string(form, "terminalSshHost")
         .or_else(|| current["terminalSshHost"].as_str().map(ToString::to_string))
         .unwrap_or_default()
@@ -8097,6 +8134,19 @@ fn merge_hermes_terminal_config(
     set_optional_yaml_string(terminal, "singularity_image", terminal_singularity_image);
     set_optional_yaml_string(terminal, "modal_image", terminal_modal_image);
     set_optional_yaml_string(terminal, "daytona_image", terminal_daytona_image);
+    if terminal_docker_forward_env.is_empty() {
+        terminal.remove(yaml_key("docker_forward_env"));
+    } else {
+        terminal.insert(
+            yaml_key("docker_forward_env"),
+            serde_yaml::Value::Sequence(
+                terminal_docker_forward_env
+                    .into_iter()
+                    .map(serde_yaml::Value::String)
+                    .collect(),
+            ),
+        );
+    }
     set_optional_yaml_string(terminal, "ssh_host", terminal_ssh_host);
     set_optional_yaml_string(terminal, "ssh_user", terminal_ssh_user);
     terminal.insert(
@@ -16625,6 +16675,7 @@ mod hermes_terminal_config_tests {
         assert_eq!(values["terminalSingularityImage"], "");
         assert_eq!(values["terminalModalImage"], "");
         assert_eq!(values["terminalDaytonaImage"], "");
+        assert_eq!(values["terminalDockerForwardEnv"], "");
         assert_eq!(values["terminalSshHost"], "");
         assert_eq!(values["terminalSshUser"], "");
         assert_eq!(values["terminalSshPort"], 22);
@@ -16643,6 +16694,9 @@ terminal:
   docker_mount_cwd_to_workspace: true
   docker_run_as_host_user: true
   docker_image: nikolaik/python-nodejs:python3.11-nodejs20
+  docker_forward_env:
+    - GITHUB_TOKEN
+    - NPM_TOKEN
   singularity_image: docker://nikolaik/python-nodejs:python3.11-nodejs20
   modal_image: python:3.12
   daytona_image: ubuntu:24.04
@@ -16667,6 +16721,10 @@ terminal:
         assert_eq!(
             values["terminalDockerImage"],
             "nikolaik/python-nodejs:python3.11-nodejs20"
+        );
+        assert_eq!(
+            values["terminalDockerForwardEnv"],
+            "GITHUB_TOKEN\nNPM_TOKEN"
         );
         assert_eq!(
             values["terminalSingularityImage"],
@@ -16694,7 +16752,7 @@ terminal:
   backend: local
   docker_image: custom/python-node
   docker_forward_env:
-    - GITHUB_TOKEN
+    - OLD_TOKEN
   custom_flag: keep-terminal
 streaming:
   enabled: true
@@ -16712,6 +16770,7 @@ streaming:
                 "terminalDockerMountCwdToWorkspace": true,
                 "terminalDockerRunAsHostUser": true,
                 "terminalDockerImage": "nikolaik/python-nodejs:python3.12-nodejs22",
+                "terminalDockerForwardEnv": "GITHUB_TOKEN\nNPM_TOKEN\nGITHUB_TOKEN",
                 "terminalSingularityImage": "docker://ubuntu:24.04",
                 "terminalModalImage": "debian:bookworm",
                 "terminalDaytonaImage": "ubuntu:22.04",
@@ -16778,6 +16837,44 @@ streaming:
             config["terminal"]["docker_forward_env"][0].as_str(),
             Some("GITHUB_TOKEN")
         );
+        assert_eq!(
+            config["terminal"]["docker_forward_env"][1].as_str(),
+            Some("NPM_TOKEN")
+        );
+        assert_eq!(
+            config["terminal"]["docker_forward_env"]
+                .as_sequence()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            config["terminal"]["custom_flag"].as_str(),
+            Some("keep-terminal")
+        );
+    }
+
+    #[test]
+    fn merge_terminal_config_removes_empty_docker_forward_env() {
+        let mut config: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+terminal:
+  docker_forward_env:
+    - GITHUB_TOKEN
+  custom_flag: keep-terminal
+"#,
+        )
+        .unwrap();
+
+        merge_hermes_terminal_config(
+            &mut config,
+            &json!({
+                "terminalDockerForwardEnv": "  \n",
+            }),
+        )
+        .unwrap();
+
+        assert!(config["terminal"]["docker_forward_env"].is_null());
         assert_eq!(
             config["terminal"]["custom_flag"].as_str(),
             Some("keep-terminal")
@@ -16881,6 +16978,12 @@ terminal:
         let err = merge_hermes_terminal_config(&mut config, &json!({ "terminalSshPort": 65536 }))
             .unwrap_err();
         assert!(err.contains("terminal.ssh_port"));
+        let err = merge_hermes_terminal_config(
+            &mut config,
+            &json!({ "terminalDockerForwardEnv": "GOOD_TOKEN\nBAD TOKEN" }),
+        )
+        .unwrap_err();
+        assert!(err.contains("terminal.docker_forward_env"));
     }
 }
 

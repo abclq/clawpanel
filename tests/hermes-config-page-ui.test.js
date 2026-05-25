@@ -393,6 +393,7 @@ test('Hermes 配置页会暴露终端执行结构化配置字段', () => {
     'hm-terminal-docker-mount-cwd-to-workspace',
     'hm-terminal-docker-run-as-host-user',
     'hm-terminal-docker-image',
+    'hm-terminal-docker-forward-env',
     'hm-terminal-singularity-image',
     'hm-terminal-modal-image',
     'hm-terminal-daytona-image',

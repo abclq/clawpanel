@@ -3560,6 +3560,22 @@ function normalizeHermesProviderRoutingList(value, key) {
   return normalized
 }
 
+function normalizeHermesEnvNameList(value, key) {
+  const seen = new Set()
+  const normalized = []
+  for (const item of normalizeHermesMultilineList(value)) {
+    const name = String(item ?? '').trim()
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) {
+      throw new Error(`${key} 只能填写环境变量名，每行一个，例如 GITHUB_TOKEN`)
+    }
+    if (!seen.has(name)) {
+      seen.add(name)
+      normalized.push(name)
+    }
+  }
+  return normalized
+}
+
 function normalizeHermesAuxiliaryProvider(value, key, strict = false) {
   const provider = String(value ?? '').trim().toLowerCase() || 'auto'
   if (HERMES_AUXILIARY_PROVIDERS.has(provider)) return provider
@@ -5163,6 +5179,7 @@ export function buildHermesTerminalConfigValues(config = {}) {
     terminalSingularityImage: typeof terminal.singularity_image === 'string' ? terminal.singularity_image.trim() : '',
     terminalModalImage: typeof terminal.modal_image === 'string' ? terminal.modal_image.trim() : '',
     terminalDaytonaImage: typeof terminal.daytona_image === 'string' ? terminal.daytona_image.trim() : '',
+    terminalDockerForwardEnv: normalizeHermesEnvNameList(terminal.docker_forward_env || [], 'terminal.docker_forward_env').join('\n'),
     terminalSshHost: typeof terminal.ssh_host === 'string' ? terminal.ssh_host.trim() : '',
     terminalSshUser: typeof terminal.ssh_user === 'string' ? terminal.ssh_user.trim() : '',
     terminalSshPort: parseHermesInteger(terminal.ssh_port, 'terminal.ssh_port', 22, 1, 65535, false),
@@ -5196,6 +5213,9 @@ export function mergeHermesTerminalConfig(config = {}, form = {}) {
     if (image) terminal[yamlKey] = image
     else delete terminal[yamlKey]
   }
+  const dockerForwardEnv = normalizeHermesEnvNameList(Object.hasOwn(form, 'terminalDockerForwardEnv') ? form.terminalDockerForwardEnv : currentValues.terminalDockerForwardEnv, 'terminal.docker_forward_env')
+  if (dockerForwardEnv.length) terminal.docker_forward_env = dockerForwardEnv
+  else delete terminal.docker_forward_env
   for (const [formKey, yamlKey] of [
     ['terminalSshHost', 'ssh_host'],
     ['terminalSshUser', 'ssh_user'],
