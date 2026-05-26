@@ -339,6 +339,8 @@ const TERMINAL_DEFAULTS = {
   terminalDockerImage: '',
   terminalSingularityImage: '',
   terminalModalImage: '',
+  terminalModalMode: 'auto',
+  terminalVercelRuntime: 'node24',
   terminalDaytonaImage: '',
   terminalDockerForwardEnv: '',
   terminalSshHost: '',
@@ -355,6 +357,8 @@ const SESSION_RESET_MODES = ['both', 'idle', 'daily', 'none']
 const STREAMING_TRANSPORTS = ['edit', 'auto', 'draft', 'off']
 const CODE_EXECUTION_MODES = ['project', 'strict']
 const TERMINAL_BACKENDS = ['local', 'ssh', 'docker', 'singularity', 'modal', 'daytona', 'vercel_sandbox']
+const TERMINAL_MODAL_MODES = ['auto', 'managed', 'direct']
+const TERMINAL_VERCEL_RUNTIMES = ['node24', 'node22', 'python3.13']
 const BROWSER_ENGINES = ['auto', 'lightpanda', 'chrome']
 const BROWSER_DIALOG_POLICIES = ['must_respond', 'auto_dismiss', 'auto_accept']
 const STT_PROVIDERS = ['auto', 'local', 'groq', 'openai', 'mistral']
@@ -2509,6 +2513,18 @@ export function render() {
               <input id="hm-terminal-modal-image" class="hm-input" value="${esc(terminalValues.terminalModalImage)}" placeholder="nikolaik/python-nodejs:python3.11-nodejs20" ${disabled ? 'disabled' : ''}>
             </label>
             <label class="hm-field">
+              <span class="hm-field-label">${t('engine.hermesTerminalConfigModalMode')}</span>
+              <select id="hm-terminal-modal-mode" class="hm-input" ${disabled ? 'disabled' : ''}>
+                ${TERMINAL_MODAL_MODES.map(mode => option(`engine.hermesTerminalConfigModalMode_${mode}`, mode, terminalValues.terminalModalMode)).join('')}
+              </select>
+            </label>
+            <label class="hm-field">
+              <span class="hm-field-label">${t('engine.hermesTerminalConfigVercelRuntime')}</span>
+              <select id="hm-terminal-vercel-runtime" class="hm-input" ${disabled ? 'disabled' : ''}>
+                ${TERMINAL_VERCEL_RUNTIMES.map(runtime => option(`engine.hermesTerminalConfigVercelRuntime_${runtime.replace('.', '_')}`, runtime, terminalValues.terminalVercelRuntime)).join('')}
+              </select>
+            </label>
+            <label class="hm-field">
               <span class="hm-field-label">${t('engine.hermesTerminalConfigDaytonaImage')}</span>
               <input id="hm-terminal-daytona-image" class="hm-input" value="${esc(terminalValues.terminalDaytonaImage)}" placeholder="nikolaik/python-nodejs:python3.11-nodejs20" ${disabled ? 'disabled' : ''}>
             </label>
@@ -4474,6 +4490,8 @@ export function render() {
       terminalDockerForwardEnv: el.querySelector('#hm-terminal-docker-forward-env')?.value || '',
       terminalSingularityImage: el.querySelector('#hm-terminal-singularity-image')?.value || '',
       terminalModalImage: el.querySelector('#hm-terminal-modal-image')?.value || '',
+      terminalModalMode: el.querySelector('#hm-terminal-modal-mode')?.value || 'auto',
+      terminalVercelRuntime: el.querySelector('#hm-terminal-vercel-runtime')?.value || 'node24',
       terminalDaytonaImage: el.querySelector('#hm-terminal-daytona-image')?.value || '',
       terminalSshHost: el.querySelector('#hm-terminal-ssh-host')?.value || '',
       terminalSshUser: el.querySelector('#hm-terminal-ssh-user')?.value || '',

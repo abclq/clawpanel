@@ -27,6 +27,8 @@ test('Hermes 终端执行配置读取会提供上游默认值', () => {
     terminalDockerImage: '',
     terminalSingularityImage: '',
     terminalModalImage: '',
+    terminalModalMode: 'auto',
+    terminalVercelRuntime: 'node24',
     terminalDaytonaImage: '',
     terminalDockerForwardEnv: '',
     terminalSshHost: '',
@@ -53,6 +55,8 @@ test('Hermes 终端执行配置读取会回显 YAML 字段', () => {
       docker_forward_env: ['GITHUB_TOKEN', 'NPM_TOKEN'],
       singularity_image: 'docker://nikolaik/python-nodejs:python3.11-nodejs20',
       modal_image: 'python:3.12',
+      modal_mode: 'managed',
+      vercel_runtime: 'python3.13',
       daytona_image: 'ubuntu:24.04',
       ssh_host: 'build.example.com',
       ssh_user: 'deploy',
@@ -79,6 +83,8 @@ test('Hermes 终端执行配置读取会回显 YAML 字段', () => {
   assert.equal(values.terminalDockerForwardEnv, 'GITHUB_TOKEN\nNPM_TOKEN')
   assert.equal(values.terminalSingularityImage, 'docker://nikolaik/python-nodejs:python3.11-nodejs20')
   assert.equal(values.terminalModalImage, 'python:3.12')
+  assert.equal(values.terminalModalMode, 'managed')
+  assert.equal(values.terminalVercelRuntime, 'python3.13')
   assert.equal(values.terminalDaytonaImage, 'ubuntu:24.04')
   assert.equal(values.terminalSshHost, 'build.example.com')
   assert.equal(values.terminalSshUser, 'deploy')
@@ -117,6 +123,8 @@ test('Hermes 终端执行配置保存会保留未知字段并写入上游结构'
     terminalDockerForwardEnv: 'GITHUB_TOKEN\nNPM_TOKEN\nGITHUB_TOKEN',
     terminalSingularityImage: 'docker://ubuntu:24.04',
     terminalModalImage: 'debian:bookworm',
+    terminalModalMode: 'direct',
+    terminalVercelRuntime: 'node22',
     terminalDaytonaImage: 'ubuntu:22.04',
     terminalSshHost: 'ssh.example.com',
     terminalSshUser: 'hermes',
@@ -143,6 +151,8 @@ test('Hermes 终端执行配置保存会保留未知字段并写入上游结构'
   assert.equal(next.terminal.docker_image, 'nikolaik/python-nodejs:python3.12-nodejs22')
   assert.equal(next.terminal.singularity_image, 'docker://ubuntu:24.04')
   assert.equal(next.terminal.modal_image, 'debian:bookworm')
+  assert.equal(next.terminal.modal_mode, 'direct')
+  assert.equal(next.terminal.vercel_runtime, 'node22')
   assert.equal(next.terminal.daytona_image, 'ubuntu:22.04')
   assert.equal(next.terminal.ssh_host, 'ssh.example.com')
   assert.equal(next.terminal.ssh_user, 'hermes')
@@ -248,6 +258,14 @@ test('Hermes 终端执行配置保存会拒绝非法后端和越界值', () => {
   assert.throws(
     () => mergeHermesTerminalConfig({}, { terminalBackend: 'unsafe' }),
     /terminal\.backend/,
+  )
+  assert.throws(
+    () => mergeHermesTerminalConfig({}, { terminalModalMode: 'unsafe' }),
+    /terminal\.modal_mode/,
+  )
+  assert.throws(
+    () => mergeHermesTerminalConfig({}, { terminalVercelRuntime: 'ruby' }),
+    /terminal\.vercel_runtime/,
   )
   assert.throws(
     () => mergeHermesTerminalConfig({}, { terminalTimeout: '0' }),

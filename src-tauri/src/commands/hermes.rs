@@ -7079,6 +7079,46 @@ fn normalize_hermes_terminal_backend(
     }
 }
 
+fn normalize_hermes_terminal_modal_mode(
+    value: Option<String>,
+    strict: bool,
+) -> Result<String, String> {
+    let mode = value.unwrap_or_default().trim().to_ascii_lowercase();
+    let mode = if mode.is_empty() {
+        "auto".to_string()
+    } else {
+        mode
+    };
+    if matches!(mode.as_str(), "auto" | "managed" | "direct") {
+        return Ok(mode);
+    }
+    if strict {
+        Err("terminal.modal_mode 必须是 auto、managed 或 direct".to_string())
+    } else {
+        Ok("auto".to_string())
+    }
+}
+
+fn normalize_hermes_terminal_vercel_runtime(
+    value: Option<String>,
+    strict: bool,
+) -> Result<String, String> {
+    let runtime = value.unwrap_or_default().trim().to_ascii_lowercase();
+    let runtime = if runtime.is_empty() {
+        "node24".to_string()
+    } else {
+        runtime
+    };
+    if matches!(runtime.as_str(), "node24" | "node22" | "python3.13") {
+        return Ok(runtime);
+    }
+    if strict {
+        Err("terminal.vercel_runtime 必须是 node24、node22 或 python3.13".to_string())
+    } else {
+        Ok("node24".to_string())
+    }
+}
+
 fn normalize_hermes_browser_engine(value: Option<String>, strict: bool) -> Result<String, String> {
     let engine = value.unwrap_or_default().trim().to_ascii_lowercase();
     let engine = if engine.is_empty() {
@@ -8964,6 +9004,16 @@ fn build_hermes_terminal_config_values(config: &serde_yaml::Value) -> Value {
     let terminal_docker_image = terminal_string("docker_image");
     let terminal_singularity_image = terminal_string("singularity_image");
     let terminal_modal_image = terminal_string("modal_image");
+    let terminal_modal_mode = normalize_hermes_terminal_modal_mode(
+        terminal.and_then(|map| yaml_string_field(map, "modal_mode")),
+        false,
+    )
+    .unwrap_or_else(|_| "auto".to_string());
+    let terminal_vercel_runtime = normalize_hermes_terminal_vercel_runtime(
+        terminal.and_then(|map| yaml_string_field(map, "vercel_runtime")),
+        false,
+    )
+    .unwrap_or_else(|_| "node24".to_string());
     let terminal_daytona_image = terminal_string("daytona_image");
     let terminal_docker_forward_env = terminal
         .map(|map| yaml_string_sequence_field(map, "docker_forward_env").join("\n"))
@@ -9001,6 +9051,8 @@ fn build_hermes_terminal_config_values(config: &serde_yaml::Value) -> Value {
         "terminalDockerImage": terminal_docker_image,
         "terminalSingularityImage": terminal_singularity_image,
         "terminalModalImage": terminal_modal_image,
+        "terminalModalMode": terminal_modal_mode,
+        "terminalVercelRuntime": terminal_vercel_runtime,
         "terminalDaytonaImage": terminal_daytona_image,
         "terminalDockerForwardEnv": terminal_docker_forward_env,
         "terminalSshHost": terminal_ssh_host,
@@ -9098,6 +9150,26 @@ fn merge_hermes_terminal_config(
                 .as_bool()
                 .unwrap_or(false)
         });
+    let terminal_modal_mode = normalize_hermes_terminal_modal_mode(
+        if form.get("terminalModalMode").is_some() {
+            form_string(form, "terminalModalMode")
+        } else {
+            current["terminalModalMode"]
+                .as_str()
+                .map(ToString::to_string)
+        },
+        true,
+    )?;
+    let terminal_vercel_runtime = normalize_hermes_terminal_vercel_runtime(
+        if form.get("terminalVercelRuntime").is_some() {
+            form_string(form, "terminalVercelRuntime")
+        } else {
+            current["terminalVercelRuntime"]
+                .as_str()
+                .map(ToString::to_string)
+        },
+        true,
+    )?;
     let terminal_docker_image = form_string(form, "terminalDockerImage")
         .or_else(|| {
             current["terminalDockerImage"]
@@ -9268,6 +9340,14 @@ fn merge_hermes_terminal_config(
     set_optional_yaml_string(terminal, "docker_image", terminal_docker_image);
     set_optional_yaml_string(terminal, "singularity_image", terminal_singularity_image);
     set_optional_yaml_string(terminal, "modal_image", terminal_modal_image);
+    terminal.insert(
+        yaml_key("modal_mode"),
+        serde_yaml::Value::String(terminal_modal_mode),
+    );
+    terminal.insert(
+        yaml_key("vercel_runtime"),
+        serde_yaml::Value::String(terminal_vercel_runtime),
+    );
     set_optional_yaml_string(terminal, "daytona_image", terminal_daytona_image);
     if terminal_docker_forward_env.is_empty() {
         terminal.remove(yaml_key("docker_forward_env"));
@@ -18450,6 +18530,8 @@ mod hermes_terminal_config_tests {
         assert_eq!(values["terminalDockerImage"], "");
         assert_eq!(values["terminalSingularityImage"], "");
         assert_eq!(values["terminalModalImage"], "");
+        assert_eq!(values["terminalModalMode"], "auto");
+        assert_eq!(values["terminalVercelRuntime"], "node24");
         assert_eq!(values["terminalDaytonaImage"], "");
         assert_eq!(values["terminalDockerForwardEnv"], "");
         assert_eq!(values["terminalSshHost"], "");
@@ -18483,6 +18565,8 @@ terminal:
     - NPM_TOKEN
   singularity_image: docker://nikolaik/python-nodejs:python3.11-nodejs20
   modal_image: python:3.12
+  modal_mode: managed
+  vercel_runtime: python3.13
   daytona_image: ubuntu:24.04
   ssh_host: build.example.com
   ssh_user: deploy
@@ -18525,6 +18609,8 @@ terminal:
             "docker://nikolaik/python-nodejs:python3.11-nodejs20"
         );
         assert_eq!(values["terminalModalImage"], "python:3.12");
+        assert_eq!(values["terminalModalMode"], "managed");
+        assert_eq!(values["terminalVercelRuntime"], "python3.13");
         assert_eq!(values["terminalDaytonaImage"], "ubuntu:24.04");
         assert_eq!(values["terminalSshHost"], "build.example.com");
         assert_eq!(values["terminalSshUser"], "deploy");
@@ -18575,6 +18661,8 @@ streaming:
                 "terminalDockerForwardEnv": "GITHUB_TOKEN\nNPM_TOKEN\nGITHUB_TOKEN",
                 "terminalSingularityImage": "docker://ubuntu:24.04",
                 "terminalModalImage": "debian:bookworm",
+                "terminalModalMode": "direct",
+                "terminalVercelRuntime": "node22",
                 "terminalDaytonaImage": "ubuntu:22.04",
                 "terminalSshHost": "ssh.example.com",
                 "terminalSshUser": "hermes",
@@ -18651,6 +18739,11 @@ streaming:
         assert_eq!(
             config["terminal"]["modal_image"].as_str(),
             Some("debian:bookworm")
+        );
+        assert_eq!(config["terminal"]["modal_mode"].as_str(), Some("direct"));
+        assert_eq!(
+            config["terminal"]["vercel_runtime"].as_str(),
+            Some("node22")
         );
         assert_eq!(
             config["terminal"]["daytona_image"].as_str(),
@@ -18852,6 +18945,14 @@ terminal:
             merge_hermes_terminal_config(&mut config, &json!({ "terminalBackend": "unsafe" }))
                 .unwrap_err();
         assert!(err.contains("terminal.backend"));
+        let err =
+            merge_hermes_terminal_config(&mut config, &json!({ "terminalModalMode": "unsafe" }))
+                .unwrap_err();
+        assert!(err.contains("terminal.modal_mode"));
+        let err =
+            merge_hermes_terminal_config(&mut config, &json!({ "terminalVercelRuntime": "ruby" }))
+                .unwrap_err();
+        assert!(err.contains("terminal.vercel_runtime"));
         let err = merge_hermes_terminal_config(&mut config, &json!({ "terminalTimeout": 0 }))
             .unwrap_err();
         assert!(err.contains("terminal.timeout"));

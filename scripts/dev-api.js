@@ -3324,6 +3324,8 @@ const HERMES_SESSION_RESET_MODES = new Set(['both', 'idle', 'daily', 'none'])
 const HERMES_STREAMING_TRANSPORTS = new Set(['auto', 'draft', 'edit', 'off'])
 const HERMES_CODE_EXECUTION_MODES = new Set(['project', 'strict'])
 const HERMES_TERMINAL_BACKENDS = new Set(['local', 'ssh', 'docker', 'singularity', 'modal', 'daytona', 'vercel_sandbox'])
+const HERMES_TERMINAL_MODAL_MODES = new Set(['auto', 'managed', 'direct'])
+const HERMES_TERMINAL_VERCEL_RUNTIMES = new Set(['node24', 'node22', 'python3.13'])
 const HERMES_BROWSER_ENGINES = new Set(['auto', 'lightpanda', 'chrome'])
 const HERMES_BROWSER_DIALOG_POLICIES = new Set(['must_respond', 'auto_dismiss', 'auto_accept'])
 const HERMES_STT_PROVIDERS = new Set(['auto', 'local', 'groq', 'openai', 'mistral'])
@@ -3456,6 +3458,20 @@ function normalizeHermesTerminalBackend(value, strict = false) {
   if (HERMES_TERMINAL_BACKENDS.has(backend)) return backend
   if (strict) throw new Error('terminal.backend 必须是 local、ssh、docker、singularity、modal、daytona 或 vercel_sandbox')
   return 'local'
+}
+
+function normalizeHermesTerminalModalMode(value, strict = false) {
+  const mode = String(value ?? '').trim().toLowerCase() || 'auto'
+  if (HERMES_TERMINAL_MODAL_MODES.has(mode)) return mode
+  if (strict) throw new Error('terminal.modal_mode 必须是 auto、managed 或 direct')
+  return 'auto'
+}
+
+function normalizeHermesTerminalVercelRuntime(value, strict = false) {
+  const runtime = String(value ?? '').trim().toLowerCase() || 'node24'
+  if (HERMES_TERMINAL_VERCEL_RUNTIMES.has(runtime)) return runtime
+  if (strict) throw new Error('terminal.vercel_runtime 必须是 node24、node22 或 python3.13')
+  return 'node24'
 }
 
 function normalizeHermesBrowserEngine(value, strict = false) {
@@ -5636,6 +5652,8 @@ export function buildHermesTerminalConfigValues(config = {}) {
     terminalDockerImage: typeof terminal.docker_image === 'string' ? terminal.docker_image.trim() : '',
     terminalSingularityImage: typeof terminal.singularity_image === 'string' ? terminal.singularity_image.trim() : '',
     terminalModalImage: typeof terminal.modal_image === 'string' ? terminal.modal_image.trim() : '',
+    terminalModalMode: normalizeHermesTerminalModalMode(terminal.modal_mode, false),
+    terminalVercelRuntime: normalizeHermesTerminalVercelRuntime(terminal.vercel_runtime, false),
     terminalDaytonaImage: typeof terminal.daytona_image === 'string' ? terminal.daytona_image.trim() : '',
     terminalDockerForwardEnv: normalizeHermesEnvNameList(terminal.docker_forward_env || [], 'terminal.docker_forward_env').join('\n'),
     terminalSshHost: typeof terminal.ssh_host === 'string' ? terminal.ssh_host.trim() : '',
@@ -5669,6 +5687,8 @@ export function mergeHermesTerminalConfig(config = {}, form = {}) {
   else delete terminal.env_passthrough
   terminal.docker_mount_cwd_to_workspace = formHermesBool(form, 'terminalDockerMountCwdToWorkspace', currentValues.terminalDockerMountCwdToWorkspace)
   terminal.docker_run_as_host_user = formHermesBool(form, 'terminalDockerRunAsHostUser', currentValues.terminalDockerRunAsHostUser)
+  terminal.modal_mode = normalizeHermesTerminalModalMode(Object.hasOwn(form, 'terminalModalMode') ? form.terminalModalMode : currentValues.terminalModalMode, true)
+  terminal.vercel_runtime = normalizeHermesTerminalVercelRuntime(Object.hasOwn(form, 'terminalVercelRuntime') ? form.terminalVercelRuntime : currentValues.terminalVercelRuntime, true)
   for (const [formKey, yamlKey] of [
     ['terminalDockerImage', 'docker_image'],
     ['terminalSingularityImage', 'singularity_image'],

@@ -448,6 +448,8 @@ test('Hermes 配置页会暴露终端执行结构化配置字段', () => {
     'hm-terminal-docker-forward-env',
     'hm-terminal-singularity-image',
     'hm-terminal-modal-image',
+    'hm-terminal-modal-mode',
+    'hm-terminal-vercel-runtime',
     'hm-terminal-daytona-image',
     'hm-terminal-ssh-host',
     'hm-terminal-ssh-user',
