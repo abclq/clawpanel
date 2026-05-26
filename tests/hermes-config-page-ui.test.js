@@ -442,6 +442,18 @@ test('Hermes 配置页会暴露 Web 工具后端结构化配置字段', () => {
   }
 })
 
+test('Hermes 配置页会暴露 LSP 语义诊断结构化配置字段', () => {
+  for (const id of [
+    'hm-lsp-save',
+    'hm-lsp-enabled',
+    'hm-lsp-wait-mode',
+    'hm-lsp-wait-timeout',
+    'hm-lsp-install-strategy',
+  ]) {
+    assert.match(source, new RegExp(`id="${id}"`), `缺少 ${id}`)
+  }
+})
+
 test('Hermes 配置页会暴露终端执行结构化配置字段', () => {
   for (const id of [
     'hm-terminal-save',

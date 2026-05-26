@@ -329,6 +329,8 @@ pub fn run() {
             hermes::hermes_browser_config_save,
             hermes::hermes_web_config_read,
             hermes::hermes_web_config_save,
+            hermes::hermes_lsp_config_read,
+            hermes::hermes_lsp_config_save,
             hermes::hermes_stt_config_read,
             hermes::hermes_stt_config_save,
             hermes::hermes_tts_voice_config_read,

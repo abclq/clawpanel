@@ -3329,6 +3329,8 @@ const HERMES_TERMINAL_VERCEL_RUNTIMES = new Set(['node24', 'node22', 'python3.13
 const HERMES_BROWSER_ENGINES = new Set(['auto', 'lightpanda', 'chrome'])
 const HERMES_BROWSER_DIALOG_POLICIES = new Set(['must_respond', 'auto_dismiss', 'auto_accept'])
 const HERMES_WEB_BACKENDS = new Set(['tavily', 'firecrawl', 'parallel', 'exa', 'searxng', 'brave', 'brave_free', 'ddgs', 'xai', 'native'])
+const HERMES_LSP_WAIT_MODES = new Set(['document', 'full'])
+const HERMES_LSP_INSTALL_STRATEGIES = new Set(['auto', 'manual', 'off'])
 const HERMES_STT_PROVIDERS = new Set(['auto', 'local', 'groq', 'openai', 'mistral'])
 const HERMES_STT_LOCAL_MODELS = new Set(['tiny', 'base', 'small', 'medium', 'large-v3', 'turbo'])
 const HERMES_STT_OPENAI_MODELS = new Set(['whisper-1', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe'])
@@ -3495,6 +3497,20 @@ function normalizeHermesWebBackend(value, key, strict = false) {
   if (HERMES_WEB_BACKENDS.has(backend)) return backend
   if (strict) throw new Error(`${key} 必须为空或 tavily、firecrawl、parallel、exa、searxng、brave、brave_free、ddgs、xai、native`)
   return ''
+}
+
+function normalizeHermesLspWaitMode(value, strict = false) {
+  const mode = String(value ?? '').trim().toLowerCase() || 'document'
+  if (HERMES_LSP_WAIT_MODES.has(mode)) return mode
+  if (strict) throw new Error('lsp.wait_mode 必须是 document 或 full')
+  return 'document'
+}
+
+function normalizeHermesLspInstallStrategy(value, strict = false) {
+  const strategy = String(value ?? '').trim().toLowerCase() || 'auto'
+  if (HERMES_LSP_INSTALL_STRATEGIES.has(strategy)) return strategy
+  if (strict) throw new Error('lsp.install_strategy 必须是 auto、manual 或 off')
+  return 'auto'
 }
 
 function normalizeHermesSttProvider(value, strict = false) {
@@ -5532,6 +5548,33 @@ export function mergeHermesWebConfig(config = {}, form = {}) {
   if (extractBackend) web.extract_backend = extractBackend
   else delete web.extract_backend
   next.web = web
+  return next
+}
+
+export function buildHermesLspConfigValues(config = {}) {
+  const root = config && typeof config === 'object' && !Array.isArray(config) ? config : {}
+  const lsp = root.lsp && typeof root.lsp === 'object' && !Array.isArray(root.lsp)
+    ? root.lsp
+    : {}
+  return {
+    lspEnabled: readHermesBool(lsp.enabled, true),
+    lspWaitMode: normalizeHermesLspWaitMode(lsp.wait_mode, false),
+    lspWaitTimeout: parseHermesFloat(lsp.wait_timeout, 'lsp.wait_timeout', 5, 0.1, 120, false),
+    lspInstallStrategy: normalizeHermesLspInstallStrategy(lsp.install_strategy, false),
+  }
+}
+
+export function mergeHermesLspConfig(config = {}, form = {}) {
+  const next = mergeConfigsPreservingFields({}, config && typeof config === 'object' && !Array.isArray(config) ? config : {})
+  const currentValues = buildHermesLspConfigValues(next)
+  const lsp = next.lsp && typeof next.lsp === 'object' && !Array.isArray(next.lsp)
+    ? mergeConfigsPreservingFields(next.lsp, {})
+    : {}
+  lsp.enabled = formHermesBool(form, 'lspEnabled', currentValues.lspEnabled)
+  lsp.wait_mode = normalizeHermesLspWaitMode(Object.hasOwn(form, 'lspWaitMode') ? form.lspWaitMode : currentValues.lspWaitMode, true)
+  lsp.wait_timeout = parseHermesFloat(Object.hasOwn(form, 'lspWaitTimeout') ? form.lspWaitTimeout : currentValues.lspWaitTimeout, 'lsp.wait_timeout', 5, 0.1, 120, true)
+  lsp.install_strategy = normalizeHermesLspInstallStrategy(Object.hasOwn(form, 'lspInstallStrategy') ? form.lspInstallStrategy : currentValues.lspInstallStrategy, true)
+  next.lsp = lsp
   return next
 }
 
@@ -12835,6 +12878,27 @@ const handlers = {
       configPath,
       backup,
       values: buildHermesWebConfigValues(next),
+    }
+  },
+
+  hermes_lsp_config_read() {
+    const { configPath, exists, config } = readHermesConfigYamlObject()
+    return {
+      exists,
+      configPath,
+      values: buildHermesLspConfigValues(config),
+    }
+  },
+
+  hermes_lsp_config_save({ form } = {}) {
+    const { configPath, config } = readHermesConfigYamlObject()
+    const next = mergeHermesLspConfig(config, form || {})
+    const backup = writeHermesConfigYamlObject(configPath, next)
+    return {
+      ok: true,
+      configPath,
+      backup,
+      values: buildHermesLspConfigValues(next),
     }
   },
 

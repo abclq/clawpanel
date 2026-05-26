@@ -7190,6 +7190,43 @@ fn normalize_hermes_web_backend(
     }
 }
 
+fn normalize_hermes_lsp_wait_mode(value: Option<String>, strict: bool) -> Result<String, String> {
+    let mode = value.unwrap_or_default().trim().to_ascii_lowercase();
+    let mode = if mode.is_empty() {
+        "document".to_string()
+    } else {
+        mode
+    };
+    if matches!(mode.as_str(), "document" | "full") {
+        return Ok(mode);
+    }
+    if strict {
+        Err("lsp.wait_mode 必须是 document 或 full".to_string())
+    } else {
+        Ok("document".to_string())
+    }
+}
+
+fn normalize_hermes_lsp_install_strategy(
+    value: Option<String>,
+    strict: bool,
+) -> Result<String, String> {
+    let strategy = value.unwrap_or_default().trim().to_ascii_lowercase();
+    let strategy = if strategy.is_empty() {
+        "auto".to_string()
+    } else {
+        strategy
+    };
+    if matches!(strategy.as_str(), "auto" | "manual" | "off") {
+        return Ok(strategy);
+    }
+    if strict {
+        Err("lsp.install_strategy 必须是 auto、manual 或 off".to_string())
+    } else {
+        Ok("auto".to_string())
+    }
+}
+
 fn normalize_hermes_stt_provider(value: Option<String>, strict: bool) -> Result<String, String> {
     let provider = value.unwrap_or_default().trim().to_ascii_lowercase();
     let provider = if provider.is_empty() {
@@ -8520,6 +8557,86 @@ fn merge_hermes_web_config(config: &mut serde_yaml::Value, form: &Value) -> Resu
     set_optional_yaml_string(web, "backend", web_backend);
     set_optional_yaml_string(web, "search_backend", web_search_backend);
     set_optional_yaml_string(web, "extract_backend", web_extract_backend);
+    Ok(())
+}
+
+fn build_hermes_lsp_config_values(config: &serde_yaml::Value) -> Value {
+    let root = config.as_mapping();
+    let lsp = root.and_then(|map| yaml_get_mapping(map, "lsp"));
+    let lsp_enabled = lsp
+        .and_then(|map| yaml_bool_field(map, "enabled"))
+        .unwrap_or(true);
+    let lsp_wait_mode = normalize_hermes_lsp_wait_mode(
+        lsp.and_then(|map| yaml_string_field(map, "wait_mode")),
+        false,
+    )
+    .unwrap_or_else(|_| "document".to_string());
+    let lsp_wait_timeout = lsp
+        .map(|map| bounded_hermes_f64(yaml_f64_field(map, "wait_timeout"), 5.0, 0.1, 120.0))
+        .unwrap_or(5.0);
+    let lsp_install_strategy = normalize_hermes_lsp_install_strategy(
+        lsp.and_then(|map| yaml_string_field(map, "install_strategy")),
+        false,
+    )
+    .unwrap_or_else(|_| "auto".to_string());
+
+    serde_json::json!({
+        "lspEnabled": lsp_enabled,
+        "lspWaitMode": lsp_wait_mode,
+        "lspWaitTimeout": lsp_wait_timeout,
+        "lspInstallStrategy": lsp_install_strategy,
+    })
+}
+
+fn merge_hermes_lsp_config(config: &mut serde_yaml::Value, form: &Value) -> Result<(), String> {
+    let current = build_hermes_lsp_config_values(config);
+    let lsp_enabled = form_bool(form, "lspEnabled")
+        .unwrap_or_else(|| current["lspEnabled"].as_bool().unwrap_or(true));
+    let lsp_wait_mode = normalize_hermes_lsp_wait_mode(
+        if form.get("lspWaitMode").is_some() {
+            form_string(form, "lspWaitMode")
+        } else {
+            current["lspWaitMode"].as_str().map(ToString::to_string)
+        },
+        true,
+    )?;
+    let lsp_wait_timeout = validate_hermes_f64(
+        if form.get("lspWaitTimeout").is_some() {
+            form_f64(form, "lspWaitTimeout")
+        } else {
+            current["lspWaitTimeout"].as_f64()
+        },
+        "lsp.wait_timeout",
+        5.0,
+        0.1,
+        120.0,
+    )?;
+    let lsp_install_strategy = normalize_hermes_lsp_install_strategy(
+        if form.get("lspInstallStrategy").is_some() {
+            form_string(form, "lspInstallStrategy")
+        } else {
+            current["lspInstallStrategy"]
+                .as_str()
+                .map(ToString::to_string)
+        },
+        true,
+    )?;
+
+    let root = ensure_yaml_object(config)?;
+    let lsp = yaml_child_object(root, "lsp")?;
+    lsp.insert(yaml_key("enabled"), serde_yaml::Value::Bool(lsp_enabled));
+    lsp.insert(
+        yaml_key("wait_mode"),
+        serde_yaml::Value::String(lsp_wait_mode),
+    );
+    lsp.insert(
+        yaml_key("wait_timeout"),
+        serde_yaml::Value::Number(serde_yaml::Number::from(lsp_wait_timeout)),
+    );
+    lsp.insert(
+        yaml_key("install_strategy"),
+        serde_yaml::Value::String(lsp_install_strategy),
+    );
     Ok(())
 }
 
@@ -11173,6 +11290,30 @@ pub fn hermes_web_config_save(form: Value) -> Result<Value, String> {
         "configPath": config_path.to_string_lossy(),
         "backup": backup,
         "values": build_hermes_web_config_values(&config),
+    }))
+}
+
+#[tauri::command]
+pub fn hermes_lsp_config_read() -> Result<Value, String> {
+    let (config_path, exists, config) = read_hermes_channel_yaml_config()?;
+    ensure_yaml_object(&mut config.clone())?;
+    Ok(serde_json::json!({
+        "exists": exists,
+        "configPath": config_path.to_string_lossy(),
+        "values": build_hermes_lsp_config_values(&config),
+    }))
+}
+
+#[tauri::command]
+pub fn hermes_lsp_config_save(form: Value) -> Result<Value, String> {
+    let (config_path, _exists, mut config) = read_hermes_channel_yaml_config()?;
+    merge_hermes_lsp_config(&mut config, &form)?;
+    let backup = write_hermes_yaml_config(&config_path, &config)?;
+    Ok(serde_json::json!({
+        "ok": true,
+        "configPath": config_path.to_string_lossy(),
+        "backup": backup,
+        "values": build_hermes_lsp_config_values(&config),
     }))
 }
 
@@ -17766,6 +17907,106 @@ web:
         let err = merge_hermes_web_config(&mut config, &json!({ "webExtractBackend": "unsafe" }))
             .unwrap_err();
         assert!(err.contains("web.extract_backend"));
+    }
+}
+
+#[cfg(test)]
+mod hermes_lsp_config_tests {
+    use super::{build_hermes_lsp_config_values, merge_hermes_lsp_config};
+    use serde_json::json;
+
+    #[test]
+    fn lsp_values_have_upstream_defaults() {
+        let config: serde_yaml::Value = serde_yaml::from_str("{}").unwrap();
+        let values = build_hermes_lsp_config_values(&config);
+        assert_eq!(values["lspEnabled"], true);
+        assert_eq!(values["lspWaitMode"], "document");
+        assert_eq!(values["lspWaitTimeout"], 5.0);
+        assert_eq!(values["lspInstallStrategy"], "auto");
+    }
+
+    #[test]
+    fn lsp_values_read_yaml_fields() {
+        let config: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+lsp:
+  enabled: false
+  wait_mode: full
+  wait_timeout: 12.5
+  install_strategy: manual
+  servers:
+    pyright:
+      disabled: true
+"#,
+        )
+        .unwrap();
+        let values = build_hermes_lsp_config_values(&config);
+        assert_eq!(values["lspEnabled"], false);
+        assert_eq!(values["lspWaitMode"], "full");
+        assert_eq!(values["lspWaitTimeout"], 12.5);
+        assert_eq!(values["lspInstallStrategy"], "manual");
+    }
+
+    #[test]
+    fn merge_lsp_config_preserves_unknown_fields() {
+        let mut config: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+model:
+  provider: anthropic
+lsp:
+  enabled: false
+  wait_mode: full
+  wait_timeout: 12.5
+  install_strategy: manual
+  servers:
+    pyright:
+      disabled: true
+  custom_flag: keep-lsp
+streaming:
+  enabled: true
+"#,
+        )
+        .unwrap();
+
+        merge_hermes_lsp_config(
+            &mut config,
+            &json!({
+                "lspEnabled": true,
+                "lspWaitMode": "document",
+                "lspWaitTimeout": 7.5,
+                "lspInstallStrategy": "off",
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(config["model"]["provider"].as_str(), Some("anthropic"));
+        assert_eq!(config["streaming"]["enabled"].as_bool(), Some(true));
+        assert_eq!(config["lsp"]["enabled"].as_bool(), Some(true));
+        assert_eq!(config["lsp"]["wait_mode"].as_str(), Some("document"));
+        assert_eq!(config["lsp"]["wait_timeout"].as_f64(), Some(7.5));
+        assert_eq!(config["lsp"]["install_strategy"].as_str(), Some("off"));
+        assert_eq!(
+            config["lsp"]["servers"]["pyright"]["disabled"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(config["lsp"]["custom_flag"].as_str(), Some("keep-lsp"));
+    }
+
+    #[test]
+    fn merge_lsp_config_rejects_invalid_values() {
+        let mut config = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let err = merge_hermes_lsp_config(&mut config, &json!({ "lspWaitMode": "workspace" }))
+            .unwrap_err();
+        assert!(err.contains("lsp.wait_mode"));
+        let err = merge_hermes_lsp_config(&mut config, &json!({ "lspInstallStrategy": "unsafe" }))
+            .unwrap_err();
+        assert!(err.contains("lsp.install_strategy"));
+        let err =
+            merge_hermes_lsp_config(&mut config, &json!({ "lspWaitTimeout": 0 })).unwrap_err();
+        assert!(err.contains("lsp.wait_timeout"));
+        let err =
+            merge_hermes_lsp_config(&mut config, &json!({ "lspWaitTimeout": 120.5 })).unwrap_err();
+        assert!(err.contains("lsp.wait_timeout"));
     }
 }
 

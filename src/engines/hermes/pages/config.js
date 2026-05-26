@@ -300,6 +300,13 @@ const WEB_DEFAULTS = {
   webExtractBackend: '',
 }
 
+const LSP_DEFAULTS = {
+  lspEnabled: true,
+  lspWaitMode: 'document',
+  lspWaitTimeout: 5,
+  lspInstallStrategy: 'auto',
+}
+
 const STT_DEFAULTS = {
   sttEnabled: true,
   sttProvider: 'auto',
@@ -368,6 +375,8 @@ const TERMINAL_VERCEL_RUNTIMES = ['node24', 'node22', 'python3.13']
 const BROWSER_ENGINES = ['auto', 'lightpanda', 'chrome']
 const BROWSER_DIALOG_POLICIES = ['must_respond', 'auto_dismiss', 'auto_accept']
 const WEB_BACKENDS = ['', 'tavily', 'firecrawl', 'parallel', 'exa', 'searxng', 'brave', 'brave_free', 'ddgs', 'xai', 'native']
+const LSP_WAIT_MODES = ['document', 'full']
+const LSP_INSTALL_STRATEGIES = ['auto', 'manual', 'off']
 const STT_PROVIDERS = ['auto', 'local', 'groq', 'openai', 'mistral']
 const STT_LOCAL_MODELS = ['tiny', 'base', 'small', 'medium', 'large-v3', 'turbo']
 const STT_OPENAI_MODELS = ['whisper-1', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe']
@@ -434,6 +443,7 @@ export function render() {
   let privacyValues = { ...PRIVACY_DEFAULTS }
   let browserValues = { ...BROWSER_DEFAULTS }
   let webValues = { ...WEB_DEFAULTS }
+  let lspValues = { ...LSP_DEFAULTS }
   let sttValues = { ...STT_DEFAULTS }
   let ttsVoiceValues = { ...TTS_VOICE_DEFAULTS }
   let terminalValues = { ...TERMINAL_DEFAULTS }
@@ -474,6 +484,7 @@ export function render() {
   let privacyLoading = true
   let browserLoading = true
   let webLoading = true
+  let lspLoading = true
   let sttLoading = true
   let ttsVoiceLoading = true
   let terminalLoading = true
@@ -514,6 +525,7 @@ export function render() {
   let privacySaving = false
   let browserSaving = false
   let webSaving = false
+  let lspSaving = false
   let sttSaving = false
   let ttsVoiceSaving = false
   let terminalSaving = false
@@ -554,6 +566,7 @@ export function render() {
   let privacyError = null
   let browserError = null
   let webError = null
+  let lspError = null
   let sttError = null
   let ttsVoiceError = null
   let terminalError = null
@@ -567,7 +580,7 @@ export function render() {
   }
 
   function isBusy() {
-    return loading || runtimeLoading || sessionsMaintenanceLoading || updatesLoading || compressionLoading || promptCachingLoading || openrouterCacheLoading || providerRoutingLoading || auxiliaryLoading || toolGuardrailsLoading || memoryLoading || skillsLoading || curatorLoading || quickCommandsLoading || modelLoading || modelAliasesLoading || hooksLoading || providerOverridesLoading || mcpServersLoading || agentToolsetsLoading || platformToolsetsLoading || agentRuntimeLoading || unauthorizedDmLoading || securityLoading || displayLoading || humanDelayLoading || kanbanLoading || streamingLoading || executionLimitsLoading || ioSafetyLoading || checkpointsLoading || cronLoading || loggingLoading || approvalsLoading || privacyLoading || browserLoading || webLoading || sttLoading || ttsVoiceLoading || terminalLoading || saving || runtimeSaving || sessionsMaintenanceSaving || updatesSaving || compressionSaving || promptCachingSaving || openrouterCacheSaving || providerRoutingSaving || auxiliarySaving || toolGuardrailsSaving || memorySaving || skillsSaving || curatorSaving || quickCommandsSaving || modelSaving || modelAliasesSaving || hooksSaving || providerOverridesSaving || mcpServersSaving || agentToolsetsSaving || platformToolsetsSaving || agentRuntimeSaving || unauthorizedDmSaving || securitySaving || displaySaving || humanDelaySaving || kanbanSaving || streamingSaving || executionLimitsSaving || ioSafetySaving || checkpointsSaving || cronSaving || loggingSaving || approvalsSaving || privacySaving || browserSaving || webSaving || sttSaving || ttsVoiceSaving || terminalSaving
+    return loading || runtimeLoading || sessionsMaintenanceLoading || updatesLoading || compressionLoading || promptCachingLoading || openrouterCacheLoading || providerRoutingLoading || auxiliaryLoading || toolGuardrailsLoading || memoryLoading || skillsLoading || curatorLoading || quickCommandsLoading || modelLoading || modelAliasesLoading || hooksLoading || providerOverridesLoading || mcpServersLoading || agentToolsetsLoading || platformToolsetsLoading || agentRuntimeLoading || unauthorizedDmLoading || securityLoading || displayLoading || humanDelayLoading || kanbanLoading || streamingLoading || executionLimitsLoading || ioSafetyLoading || checkpointsLoading || cronLoading || loggingLoading || approvalsLoading || privacyLoading || browserLoading || webLoading || lspLoading || sttLoading || ttsVoiceLoading || terminalLoading || saving || runtimeSaving || sessionsMaintenanceSaving || updatesSaving || compressionSaving || promptCachingSaving || openrouterCacheSaving || providerRoutingSaving || auxiliarySaving || toolGuardrailsSaving || memorySaving || skillsSaving || curatorSaving || quickCommandsSaving || modelSaving || modelAliasesSaving || hooksSaving || providerOverridesSaving || mcpServersSaving || agentToolsetsSaving || platformToolsetsSaving || agentRuntimeSaving || unauthorizedDmSaving || securitySaving || displaySaving || humanDelaySaving || kanbanSaving || streamingSaving || executionLimitsSaving || ioSafetySaving || checkpointsSaving || cronSaving || loggingSaving || approvalsSaving || privacySaving || browserSaving || webSaving || lspSaving || sttSaving || ttsVoiceSaving || terminalSaving
   }
 
   function option(labelKey, value, selected) {
@@ -2257,7 +2270,7 @@ export function render() {
   }
 
   function renderWebConfigPanel() {
-    const disabled = loading || saving || webLoading || webSaving || browserSaving || approvalsSaving || cronSaving || loggingSaving || privacySaving || sttSaving || terminalSaving || runtimeSaving || compressionSaving || promptCachingSaving || openrouterCacheSaving || providerRoutingSaving || auxiliarySaving || toolGuardrailsSaving || memorySaving || skillsSaving || quickCommandsSaving || providerOverridesSaving || agentToolsetsSaving || agentRuntimeSaving || unauthorizedDmSaving || streamingSaving || executionLimitsSaving || ioSafetySaving || checkpointsSaving
+    const disabled = loading || saving || webLoading || webSaving || browserSaving || lspSaving || approvalsSaving || cronSaving || loggingSaving || privacySaving || sttSaving || terminalSaving || runtimeSaving || compressionSaving || promptCachingSaving || openrouterCacheSaving || providerRoutingSaving || auxiliarySaving || toolGuardrailsSaving || memorySaving || skillsSaving || quickCommandsSaving || providerOverridesSaving || agentToolsetsSaving || agentRuntimeSaving || unauthorizedDmSaving || streamingSaving || executionLimitsSaving || ioSafetySaving || checkpointsSaving
     return `
       <div class="hm-panel hm-config-runtime-panel hm-config-web-panel">
         <div class="hm-panel-header">
@@ -2298,8 +2311,54 @@ export function render() {
     `
   }
 
+  function renderLspConfigPanel() {
+    const disabled = loading || saving || lspLoading || lspSaving || webSaving || browserSaving || approvalsSaving || cronSaving || loggingSaving || privacySaving || sttSaving || terminalSaving || runtimeSaving || compressionSaving || promptCachingSaving || openrouterCacheSaving || providerRoutingSaving || auxiliarySaving || toolGuardrailsSaving || memorySaving || skillsSaving || quickCommandsSaving || providerOverridesSaving || agentToolsetsSaving || agentRuntimeSaving || unauthorizedDmSaving || streamingSaving || executionLimitsSaving || ioSafetySaving || checkpointsSaving
+    return `
+      <div class="hm-panel hm-config-runtime-panel hm-config-lsp-panel">
+        <div class="hm-panel-header">
+          <div>
+            <div class="hm-panel-title">${t('engine.hermesLspConfigTitle')}</div>
+            <div class="hm-channel-panel-desc">${t('engine.hermesLspConfigDesc')}</div>
+          </div>
+          <div class="hm-panel-actions">
+            <span class="hm-muted">${lspSaving ? t('engine.hermesConfigStatusSaving') : lspLoading ? t('engine.hermesConfigStatusLoading') : t('engine.hermesLspConfigStatusReady')}</span>
+            <button class="hm-btn hm-btn--cta hm-btn--sm" id="hm-lsp-save" ${disabled ? 'disabled' : ''}>${t('engine.hermesLspConfigSave')}</button>
+          </div>
+        </div>
+        <div class="hm-panel-body">
+          ${renderError(lspError)}
+          <div class="hm-config-check-grid">
+            <label class="hm-channel-check">
+              <input id="hm-lsp-enabled" type="checkbox" ${lspValues.lspEnabled ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
+              <span>${t('engine.hermesLspConfigEnabled')}</span>
+            </label>
+          </div>
+          <div class="hm-config-runtime-grid hm-config-lsp-grid">
+            <label class="hm-field">
+              <span class="hm-field-label">${t('engine.hermesLspConfigWaitMode')}</span>
+              <select id="hm-lsp-wait-mode" class="hm-input" ${disabled ? 'disabled' : ''}>
+                ${LSP_WAIT_MODES.map(mode => option(`engine.hermesLspConfigWaitMode_${mode}`, mode, lspValues.lspWaitMode)).join('')}
+              </select>
+            </label>
+            <label class="hm-field">
+              <span class="hm-field-label">${t('engine.hermesLspConfigWaitTimeout')}</span>
+              <input id="hm-lsp-wait-timeout" class="hm-input" type="number" inputmode="decimal" min="0.1" max="120" step="0.1" value="${esc(lspValues.lspWaitTimeout)}" ${disabled ? 'disabled' : ''}>
+            </label>
+            <label class="hm-field">
+              <span class="hm-field-label">${t('engine.hermesLspConfigInstallStrategy')}</span>
+              <select id="hm-lsp-install-strategy" class="hm-input" ${disabled ? 'disabled' : ''}>
+                ${LSP_INSTALL_STRATEGIES.map(strategy => option(`engine.hermesLspConfigInstallStrategy_${strategy}`, strategy, lspValues.lspInstallStrategy)).join('')}
+              </select>
+            </label>
+          </div>
+          <div class="hm-channel-footnote">${t('engine.hermesLspConfigFootnote')}</div>
+        </div>
+      </div>
+    `
+  }
+
   function renderSttPanel() {
-    const disabled = loading || saving || sttLoading || sttSaving || webSaving || approvalsSaving || cronSaving || loggingSaving || privacySaving || browserSaving || terminalSaving || runtimeSaving || compressionSaving || promptCachingSaving || openrouterCacheSaving || providerRoutingSaving || auxiliarySaving || toolGuardrailsSaving || memorySaving || skillsSaving || quickCommandsSaving || providerOverridesSaving || agentToolsetsSaving || agentRuntimeSaving || unauthorizedDmSaving || streamingSaving || executionLimitsSaving || ioSafetySaving || checkpointsSaving
+    const disabled = loading || saving || sttLoading || sttSaving || webSaving || lspSaving || approvalsSaving || cronSaving || loggingSaving || privacySaving || browserSaving || terminalSaving || runtimeSaving || compressionSaving || promptCachingSaving || openrouterCacheSaving || providerRoutingSaving || auxiliarySaving || toolGuardrailsSaving || memorySaving || skillsSaving || quickCommandsSaving || providerOverridesSaving || agentToolsetsSaving || agentRuntimeSaving || unauthorizedDmSaving || streamingSaving || executionLimitsSaving || ioSafetySaving || checkpointsSaving
     return `
       <div class="hm-panel hm-config-runtime-panel hm-config-stt-panel">
         <div class="hm-panel-header">
@@ -2628,6 +2687,7 @@ export function render() {
       ${renderPrivacyPanel()}
       ${renderBrowserPanel()}
       ${renderWebConfigPanel()}
+      ${renderLspConfigPanel()}
       ${renderSttPanel()}
       ${renderTtsVoicePanel()}
       ${renderCompressionPanel()}
@@ -2708,6 +2768,7 @@ export function render() {
     el.querySelector('#hm-privacy-save')?.addEventListener('click', savePrivacyConfig)
     el.querySelector('#hm-browser-save')?.addEventListener('click', saveBrowserConfig)
     el.querySelector('#hm-web-config-save')?.addEventListener('click', saveWebConfig)
+    el.querySelector('#hm-lsp-save')?.addEventListener('click', saveLspConfig)
     el.querySelector('#hm-stt-save')?.addEventListener('click', saveSttConfig)
     el.querySelector('#hm-tts-voice-save')?.addEventListener('click', saveTtsVoiceConfig)
     el.querySelector('#hm-terminal-save')?.addEventListener('click', saveTerminal)
@@ -2898,6 +2959,11 @@ export function render() {
     webValues = { ...WEB_DEFAULTS, ...(data?.values || {}) }
   }
 
+  async function loadLspConfig() {
+    const data = await api.hermesLspConfigRead()
+    lspValues = { ...LSP_DEFAULTS, ...(data?.values || {}) }
+  }
+
   async function loadSttConfig() {
     const data = await api.hermesSttConfigRead()
     sttValues = { ...STT_DEFAULTS, ...(data?.values || {}) }
@@ -2951,6 +3017,7 @@ export function render() {
     privacyLoading = true
     browserLoading = true
     webLoading = true
+    lspLoading = true
     sttLoading = true
     ttsVoiceLoading = true
     terminalLoading = true
@@ -2990,6 +3057,7 @@ export function render() {
     privacyError = null
     browserError = null
     webError = null
+    lspError = null
     sttError = null
     ttsVoiceError = null
     terminalError = null
@@ -3151,6 +3219,14 @@ export function render() {
       webError = humanizeError(err, t('engine.hermesWebConfigLoadFailed') || 'Load web tool config failed')
     } finally {
       webLoading = false
+      draw()
+    }
+    try {
+      await loadLspConfig()
+    } catch (err) {
+      lspError = humanizeError(err, t('engine.hermesLspConfigLoadFailed') || 'Load LSP config failed')
+    } finally {
+      lspLoading = false
       draw()
     }
     try {
@@ -4494,6 +4570,34 @@ export function render() {
       toast(webError, 'error')
     } finally {
       webSaving = false
+      draw()
+    }
+  }
+
+  async function saveLspConfig() {
+    const form = {
+      lspEnabled: !!el.querySelector('#hm-lsp-enabled')?.checked,
+      lspWaitMode: el.querySelector('#hm-lsp-wait-mode')?.value || 'document',
+      lspWaitTimeout: el.querySelector('#hm-lsp-wait-timeout')?.value || '5',
+      lspInstallStrategy: el.querySelector('#hm-lsp-install-strategy')?.value || 'auto',
+    }
+    lspSaving = true
+    lspError = null
+    draw()
+    try {
+      const result = await api.hermesLspConfigSave(form)
+      lspValues = { ...LSP_DEFAULTS, ...(result?.values || form) }
+      await refreshRawAfterStructuredSave()
+      const backup = result?.backup || ''
+      toast({
+        message: t('engine.hermesLspConfigSaveSuccess'),
+        hint: backup ? t('engine.hermesConfigBackupHint', { path: backup }) : '',
+      }, 'success')
+    } catch (err) {
+      lspError = humanizeError(err, t('engine.hermesLspConfigSaveFailed') || 'Save LSP config failed')
+      toast(lspError, 'error')
+    } finally {
+      lspSaving = false
       draw()
     }
   }
