@@ -183,6 +183,8 @@ const KANBAN_DEFAULTS = {
   autoDecomposePerTick: 3,
   workerLogRotateBytes: 2097152,
   workerLogBackupCount: 1,
+  orchestratorProfile: '',
+  defaultAssignee: '',
   dispatchStaleTimeoutSeconds: 14400,
 }
 
@@ -1534,6 +1536,14 @@ export function render() {
             <label class="hm-field">
               <span class="hm-field-label">${t('engine.hermesKanbanConfigWorkerLogBackupCount')}</span>
               <input id="hm-kanban-worker-log-backup-count" class="hm-input" type="number" inputmode="numeric" min="0" max="100" step="1" value="${esc(kanbanValues.workerLogBackupCount)}" ${disabled ? 'disabled' : ''}>
+            </label>
+            <label class="hm-field">
+              <span class="hm-field-label">${t('engine.hermesKanbanConfigOrchestratorProfile')}</span>
+              <input id="hm-kanban-orchestrator-profile" class="hm-input" type="text" value="${esc(kanbanValues.orchestratorProfile)}" placeholder="${t('engine.hermesKanbanConfigProfileDefault')}" ${disabled ? 'disabled' : ''}>
+            </label>
+            <label class="hm-field">
+              <span class="hm-field-label">${t('engine.hermesKanbanConfigDefaultAssignee')}</span>
+              <input id="hm-kanban-default-assignee" class="hm-input" type="text" value="${esc(kanbanValues.defaultAssignee)}" placeholder="${t('engine.hermesKanbanConfigProfileDefault')}" ${disabled ? 'disabled' : ''}>
             </label>
             <label class="hm-field">
               <span class="hm-field-label">${t('engine.hermesKanbanConfigDispatchStaleTimeoutSeconds')}</span>
@@ -3542,6 +3552,8 @@ export function render() {
       autoDecomposePerTick: el.querySelector('#hm-kanban-auto-decompose-per-tick')?.value || '3',
       workerLogRotateBytes: el.querySelector('#hm-kanban-worker-log-rotate-bytes')?.value || '2097152',
       workerLogBackupCount: el.querySelector('#hm-kanban-worker-log-backup-count')?.value || '1',
+      orchestratorProfile: el.querySelector('#hm-kanban-orchestrator-profile')?.value || '',
+      defaultAssignee: el.querySelector('#hm-kanban-default-assignee')?.value || '',
       dispatchStaleTimeoutSeconds: el.querySelector('#hm-kanban-dispatch-stale-timeout-seconds')?.value || '14400',
     }
     kanbanSaving = true

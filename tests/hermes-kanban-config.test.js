@@ -19,6 +19,8 @@ test('Hermes Kanban 配置读取会提供上游默认值', () => {
     autoDecomposePerTick: 3,
     workerLogRotateBytes: 2097152,
     workerLogBackupCount: 1,
+    orchestratorProfile: '',
+    defaultAssignee: '',
     dispatchStaleTimeoutSeconds: 14400,
   })
 })
@@ -35,6 +37,8 @@ test('Hermes Kanban 配置读取会规范化已有字段', () => {
       auto_decompose_per_tick: '7',
       worker_log_rotate_bytes: '4194304',
       worker_log_backup_count: '3',
+      orchestrator_profile: 'triage',
+      default_assignee: 'builder',
       dispatch_stale_timeout_seconds: '7200',
     },
   })
@@ -48,6 +52,8 @@ test('Hermes Kanban 配置读取会规范化已有字段', () => {
   assert.equal(values.autoDecomposePerTick, 7)
   assert.equal(values.workerLogRotateBytes, 4194304)
   assert.equal(values.workerLogBackupCount, 3)
+  assert.equal(values.orchestratorProfile, 'triage')
+  assert.equal(values.defaultAssignee, 'builder')
   assert.equal(values.dispatchStaleTimeoutSeconds, 7200)
 })
 
@@ -71,6 +77,8 @@ test('Hermes Kanban 配置保存会保留未知 YAML 并写入 kanban', () => {
     autoDecomposePerTick: '2',
     workerLogRotateBytes: '1048576',
     workerLogBackupCount: '0',
+    orchestratorProfile: 'triage',
+    defaultAssignee: 'builder',
     dispatchStaleTimeoutSeconds: '0',
   })
 
@@ -86,7 +94,26 @@ test('Hermes Kanban 配置保存会保留未知 YAML 并写入 kanban', () => {
   assert.equal(next.kanban.auto_decompose_per_tick, 2)
   assert.equal(next.kanban.worker_log_rotate_bytes, 1048576)
   assert.equal(next.kanban.worker_log_backup_count, 0)
+  assert.equal(next.kanban.orchestrator_profile, 'triage')
+  assert.equal(next.kanban.default_assignee, 'builder')
   assert.equal(next.kanban.dispatch_stale_timeout_seconds, 0)
+})
+
+test('Hermes Kanban profile 路由保存为空会移除可选字段', () => {
+  const next = mergeHermesKanbanConfig({
+    kanban: {
+      orchestrator_profile: 'triage',
+      default_assignee: 'builder',
+      custom_flag: 'keep-me',
+    },
+  }, {
+    orchestratorProfile: '   ',
+    defaultAssignee: '',
+  })
+
+  assert.equal(next.kanban.custom_flag, 'keep-me')
+  assert.equal(Object.hasOwn(next.kanban, 'orchestrator_profile'), false)
+  assert.equal(Object.hasOwn(next.kanban, 'default_assignee'), false)
 })
 
 test('Hermes Kanban 并发上限保存为 0 会移除可选限制字段', () => {
@@ -134,6 +161,14 @@ test('Hermes Kanban 配置保存会拒绝非法调度参数', () => {
   assert.throws(
     () => mergeHermesKanbanConfig({}, { workerLogBackupCount: '-1' }),
     /kanban\.worker_log_backup_count/,
+  )
+  assert.throws(
+    () => mergeHermesKanbanConfig({}, { orchestratorProfile: 123 }),
+    /kanban\.orchestrator_profile/,
+  )
+  assert.throws(
+    () => mergeHermesKanbanConfig({}, { defaultAssignee: false }),
+    /kanban\.default_assignee/,
   )
   assert.throws(
     () => mergeHermesKanbanConfig({}, { dispatchStaleTimeoutSeconds: '-1' }),

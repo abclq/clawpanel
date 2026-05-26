@@ -6605,6 +6605,12 @@ fn build_hermes_kanban_config_values(config: &serde_yaml::Value) -> Value {
                 100,
             ))
             .unwrap_or(1),
+        "orchestratorProfile": kanban
+            .and_then(|map| yaml_string_field(map, "orchestrator_profile"))
+            .unwrap_or_default(),
+        "defaultAssignee": kanban
+            .and_then(|map| yaml_string_field(map, "default_assignee"))
+            .unwrap_or_default(),
         "dispatchStaleTimeoutSeconds": kanban
             .map(|map| bounded_hermes_i64(
                 yaml_i64_field(map, "dispatch_stale_timeout_seconds"),
@@ -6674,6 +6680,30 @@ fn merge_hermes_kanban_config(config: &mut serde_yaml::Value, form: &Value) -> R
         0,
         100,
     )?;
+    let orchestrator_profile = if form.get("orchestratorProfile").is_some() {
+        form_string(form, "orchestratorProfile")
+            .ok_or_else(|| "kanban.orchestrator_profile must be a string".to_string())?
+            .trim()
+            .to_string()
+    } else {
+        current["orchestratorProfile"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    };
+    let default_assignee = if form.get("defaultAssignee").is_some() {
+        form_string(form, "defaultAssignee")
+            .ok_or_else(|| "kanban.default_assignee must be a string".to_string())?
+            .trim()
+            .to_string()
+    } else {
+        current["defaultAssignee"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    };
     let stale_timeout = validate_hermes_i64(
         form_i64(form, "dispatchStaleTimeoutSeconds")
             .or_else(|| current["dispatchStaleTimeoutSeconds"].as_i64()),
@@ -6728,6 +6758,8 @@ fn merge_hermes_kanban_config(config: &mut serde_yaml::Value, form: &Value) -> R
         yaml_key("worker_log_backup_count"),
         serde_yaml::Value::Number(serde_yaml::Number::from(worker_log_backup_count)),
     );
+    set_optional_yaml_string(kanban, "orchestrator_profile", orchestrator_profile);
+    set_optional_yaml_string(kanban, "default_assignee", default_assignee);
     kanban.insert(
         yaml_key("dispatch_stale_timeout_seconds"),
         serde_yaml::Value::Number(serde_yaml::Number::from(stale_timeout)),
@@ -19500,6 +19532,8 @@ mod hermes_kanban_config_tests {
         assert_eq!(values["autoDecomposePerTick"], 3);
         assert_eq!(values["workerLogRotateBytes"], 2097152);
         assert_eq!(values["workerLogBackupCount"], 1);
+        assert_eq!(values["orchestratorProfile"], "");
+        assert_eq!(values["defaultAssignee"], "");
         assert_eq!(values["dispatchStaleTimeoutSeconds"], 14400);
     }
 
@@ -19517,6 +19551,8 @@ kanban:
   auto_decompose_per_tick: "7"
   worker_log_rotate_bytes: "4194304"
   worker_log_backup_count: "3"
+  orchestrator_profile: triage
+  default_assignee: builder
   dispatch_stale_timeout_seconds: "7200"
 "#,
         )
@@ -19531,6 +19567,8 @@ kanban:
         assert_eq!(values["autoDecomposePerTick"], 7);
         assert_eq!(values["workerLogRotateBytes"], 4194304);
         assert_eq!(values["workerLogBackupCount"], 3);
+        assert_eq!(values["orchestratorProfile"], "triage");
+        assert_eq!(values["defaultAssignee"], "builder");
         assert_eq!(values["dispatchStaleTimeoutSeconds"], 7200);
     }
 
@@ -19563,6 +19601,8 @@ memory:
                 "autoDecomposePerTick": 2,
                 "workerLogRotateBytes": 1048576,
                 "workerLogBackupCount": 0,
+                "orchestratorProfile": "triage",
+                "defaultAssignee": "builder",
                 "dispatchStaleTimeoutSeconds": 0,
             }),
         )
@@ -19596,9 +19636,43 @@ memory:
             Some(0)
         );
         assert_eq!(
+            config["kanban"]["orchestrator_profile"].as_str(),
+            Some("triage")
+        );
+        assert_eq!(
+            config["kanban"]["default_assignee"].as_str(),
+            Some("builder")
+        );
+        assert_eq!(
             config["kanban"]["dispatch_stale_timeout_seconds"].as_i64(),
             Some(0)
         );
+    }
+
+    #[test]
+    fn merge_kanban_config_removes_optional_profile_routes() {
+        let mut config: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+kanban:
+  orchestrator_profile: triage
+  default_assignee: builder
+  custom_flag: keep-me
+"#,
+        )
+        .unwrap();
+
+        merge_hermes_kanban_config(
+            &mut config,
+            &json!({
+                "orchestratorProfile": "   ",
+                "defaultAssignee": "",
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(config["kanban"]["custom_flag"].as_str(), Some("keep-me"));
+        assert!(config["kanban"].get("orchestrator_profile").is_none());
+        assert!(config["kanban"].get("default_assignee").is_none());
     }
 
     #[test]
@@ -19656,6 +19730,14 @@ kanban:
         let err = merge_hermes_kanban_config(&mut config, &json!({ "workerLogBackupCount": -1 }))
             .unwrap_err();
         assert!(err.contains("kanban.worker_log_backup_count"));
+
+        let err = merge_hermes_kanban_config(&mut config, &json!({ "orchestratorProfile": 123 }))
+            .unwrap_err();
+        assert!(err.contains("kanban.orchestrator_profile"));
+
+        let err = merge_hermes_kanban_config(&mut config, &json!({ "defaultAssignee": false }))
+            .unwrap_err();
+        assert!(err.contains("kanban.default_assignee"));
 
         let err =
             merge_hermes_kanban_config(&mut config, &json!({ "dispatchStaleTimeoutSeconds": -1 }))

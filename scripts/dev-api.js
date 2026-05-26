@@ -3425,6 +3425,15 @@ function formHermesBool(form, key, fallback) {
   return readHermesBool(form?.[key], fallback)
 }
 
+function normalizeHermesKanbanOptionalString(value, key, strict = false) {
+  if (value === undefined || value === null) return ''
+  if (typeof value !== 'string') {
+    if (strict) throw new Error(`${key} must be a string`)
+    return ''
+  }
+  return value.trim()
+}
+
 function normalizeHermesStreamingTransport(value, strict = false) {
   const transport = String(value ?? '').trim().toLowerCase() || 'edit'
   if (HERMES_STREAMING_TRANSPORTS.has(transport)) return transport
@@ -3816,6 +3825,16 @@ export function buildHermesKanbanConfigValues(config = {}) {
       100,
       false,
     ),
+    orchestratorProfile: normalizeHermesKanbanOptionalString(
+      kanban.orchestrator_profile,
+      'kanban.orchestrator_profile',
+      false,
+    ),
+    defaultAssignee: normalizeHermesKanbanOptionalString(
+      kanban.default_assignee,
+      'kanban.default_assignee',
+      false,
+    ),
     dispatchStaleTimeoutSeconds: parseHermesInteger(
       kanban.dispatch_stale_timeout_seconds,
       'kanban.dispatch_stale_timeout_seconds',
@@ -3896,6 +3915,20 @@ export function mergeHermesKanbanConfig(config = {}, form = {}) {
     100,
     true,
   )
+  const orchestratorProfile = normalizeHermesKanbanOptionalString(
+    Object.hasOwn(form, 'orchestratorProfile') ? form.orchestratorProfile : currentValues.orchestratorProfile,
+    'kanban.orchestrator_profile',
+    true,
+  )
+  if (orchestratorProfile) kanban.orchestrator_profile = orchestratorProfile
+  else delete kanban.orchestrator_profile
+  const defaultAssignee = normalizeHermesKanbanOptionalString(
+    Object.hasOwn(form, 'defaultAssignee') ? form.defaultAssignee : currentValues.defaultAssignee,
+    'kanban.default_assignee',
+    true,
+  )
+  if (defaultAssignee) kanban.default_assignee = defaultAssignee
+  else delete kanban.default_assignee
   kanban.dispatch_stale_timeout_seconds = parseHermesInteger(
     Object.hasOwn(form, 'dispatchStaleTimeoutSeconds') ? form.dispatchStaleTimeoutSeconds : currentValues.dispatchStaleTimeoutSeconds,
     'kanban.dispatch_stale_timeout_seconds',

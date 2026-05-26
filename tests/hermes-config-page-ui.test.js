@@ -437,6 +437,8 @@ test('Hermes 配置页会暴露 Kanban 调度稳定性结构化配置字段', ()
     'hm-kanban-auto-decompose-per-tick',
     'hm-kanban-worker-log-rotate-bytes',
     'hm-kanban-worker-log-backup-count',
+    'hm-kanban-orchestrator-profile',
+    'hm-kanban-default-assignee',
     'hm-kanban-dispatch-stale-timeout-seconds',
   ]) {
     assert.match(source, new RegExp(`id="${id}"`), `缺少 ${id}`)
