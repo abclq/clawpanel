@@ -147,6 +147,7 @@ const DISPLAY_DEFAULTS = {
   displayToolProgress: 'all',
   displayCompact: false,
   displaySkin: 'default',
+  displayToolPrefix: '┊',
   displayShowReasoning: false,
   displayToolPreviewLength: 0,
   displayCleanupProgress: false,
@@ -1326,6 +1327,10 @@ export function render() {
               <select id="hm-display-skin" class="hm-input" ${disabled ? 'disabled' : ''}>
                 ${DISPLAY_SKINS.map(mode => option(`engine.hermesDisplayConfigSkin_${mode}`, mode, displayValues.displaySkin)).join('')}
               </select>
+            </label>
+            <label class="hm-field">
+              <span class="hm-field-label">${t('engine.hermesDisplayConfigToolPrefix')}</span>
+              <input id="hm-display-tool-prefix" class="hm-input" maxlength="8" value="${esc(displayValues.displayToolPrefix)}" ${disabled ? 'disabled' : ''}>
             </label>
             <label class="hm-field">
               <span class="hm-field-label">${t('engine.hermesDisplayConfigLanguage')}</span>
@@ -3355,6 +3360,7 @@ export function render() {
       displayToolProgress: el.querySelector('#hm-display-tool-progress')?.value || 'all',
       displayCompact: !!el.querySelector('#hm-display-compact')?.checked,
       displaySkin: el.querySelector('#hm-display-skin')?.value || 'default',
+      displayToolPrefix: el.querySelector('#hm-display-tool-prefix')?.value || '┊',
       displayShowReasoning: !!el.querySelector('#hm-display-show-reasoning')?.checked,
       displayToolPreviewLength: el.querySelector('#hm-display-tool-preview-length')?.value || '0',
       displayCleanupProgress: !!el.querySelector('#hm-display-cleanup-progress')?.checked,

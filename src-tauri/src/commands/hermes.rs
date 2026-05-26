@@ -2209,6 +2209,25 @@ fn normalize_hermes_display_tool_progress(
     }
 }
 
+fn normalize_hermes_display_tool_prefix(
+    value: Option<String>,
+    strict: bool,
+) -> Result<String, String> {
+    let prefix = value.unwrap_or_default().trim().to_string();
+    let prefix = if prefix.is_empty() {
+        "┊".to_string()
+    } else {
+        prefix
+    };
+    if prefix.chars().count() <= 8 && !prefix.contains(['\r', '\n', '\t']) {
+        Ok(prefix)
+    } else if strict {
+        Err("display.tool_prefix 必须是 1 到 8 个字符，且不能包含换行或制表符".to_string())
+    } else {
+        Ok("┊".to_string())
+    }
+}
+
 fn normalize_hermes_display_streaming_text(
     value: Option<String>,
     strict: bool,
@@ -6232,6 +6251,10 @@ fn build_hermes_display_config_values(config: &serde_yaml::Value) -> Value {
             display.and_then(|map| yaml_string_field(map, "skin")),
             false,
         ).unwrap_or_else(|_| "default".to_string()),
+        "displayToolPrefix": normalize_hermes_display_tool_prefix(
+            display.and_then(|map| yaml_string_field(map, "tool_prefix")),
+            false,
+        ).unwrap_or_else(|_| "┊".to_string()),
         "displayToolProgress": normalize_hermes_display_tool_progress(
             display.and_then(|map| yaml_string_field(map, "tool_progress")),
             false,
@@ -6335,6 +6358,17 @@ fn merge_hermes_display_config(config: &mut serde_yaml::Value, form: &Value) -> 
         serde_yaml::Value::String(normalize_hermes_display_skin(
             form_string(form, "displaySkin")
                 .or_else(|| current["displaySkin"].as_str().map(ToString::to_string)),
+            true,
+        )?),
+    );
+    display.insert(
+        yaml_key("tool_prefix"),
+        serde_yaml::Value::String(normalize_hermes_display_tool_prefix(
+            form_string(form, "displayToolPrefix").or_else(|| {
+                current["displayToolPrefix"]
+                    .as_str()
+                    .map(ToString::to_string)
+            }),
             true,
         )?),
     );
@@ -18958,6 +18992,7 @@ mod hermes_display_config_tests {
         assert_eq!(values["displayToolProgress"], "all");
         assert_eq!(values["displayCompact"], false);
         assert_eq!(values["displaySkin"], "default");
+        assert_eq!(values["displayToolPrefix"], "┊");
         assert_eq!(values["displayShowReasoning"], false);
         assert_eq!(values["displayToolPreviewLength"], 0);
         assert_eq!(values["displayCleanupProgress"], false);
@@ -18988,6 +19023,7 @@ display:
   tool_progress: VERBOSE
   compact: true
   skin: MONO
+  tool_prefix: "╎"
   show_reasoning: true
   tool_preview_length: 80
   cleanup_progress: true
@@ -19016,6 +19052,7 @@ display:
         assert_eq!(values["displayToolProgress"], "verbose");
         assert_eq!(values["displayCompact"], true);
         assert_eq!(values["displaySkin"], "mono");
+        assert_eq!(values["displayToolPrefix"], "╎");
         assert_eq!(values["displayShowReasoning"], true);
         assert_eq!(values["displayToolPreviewLength"], 80);
         assert_eq!(values["displayCleanupProgress"], true);
@@ -19064,6 +19101,7 @@ memory:
                 "displayToolProgress": "off",
                 "displayCompact": true,
                 "displaySkin": "slate",
+                "displayToolPrefix": "│",
                 "displayShowReasoning": true,
                 "displayToolPreviewLength": 120,
                 "displayCleanupProgress": true,
@@ -19089,6 +19127,7 @@ memory:
         assert_eq!(config["memory"]["memory_enabled"].as_bool(), Some(true));
         assert_eq!(config["display"]["compact"].as_bool(), Some(true));
         assert_eq!(config["display"]["skin"].as_str(), Some("slate"));
+        assert_eq!(config["display"]["tool_prefix"].as_str(), Some("│"));
         assert_eq!(config["display"]["show_reasoning"].as_bool(), Some(true));
         assert_eq!(config["display"]["tool_preview_length"].as_i64(), Some(120));
         assert_eq!(config["display"]["cleanup_progress"].as_bool(), Some(true));
@@ -19165,6 +19204,13 @@ memory:
         let err = merge_hermes_display_config(&mut config, &json!({ "displaySkin": "unknown" }))
             .unwrap_err();
         assert!(err.contains("display.skin"));
+
+        let err = merge_hermes_display_config(
+            &mut config,
+            &json!({ "displayToolPrefix": "too-long-prefix" }),
+        )
+        .unwrap_err();
+        assert!(err.contains("display.tool_prefix"));
 
         let err =
             merge_hermes_display_config(&mut config, &json!({ "displayResumeDisplay": "compact" }))

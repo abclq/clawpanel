@@ -191,6 +191,7 @@ test('Hermes 配置页会暴露全局显示与可靠性结构化配置字段', (
     'hm-display-tool-progress',
     'hm-display-compact',
     'hm-display-skin',
+    'hm-display-tool-prefix',
     'hm-display-show-reasoning',
     'hm-display-tool-preview-length',
     'hm-display-cleanup-progress',

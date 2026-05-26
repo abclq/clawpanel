@@ -3599,6 +3599,13 @@ function normalizeHermesDisplayToolProgress(value, strict = false, key = 'displa
   return 'all'
 }
 
+function normalizeHermesDisplayToolPrefix(value, strict = false) {
+  const prefix = String(value ?? '').trim() || '┊'
+  if (prefix.length <= 8 && !/[\r\n\t]/.test(prefix)) return prefix
+  if (strict) throw new Error('display.tool_prefix 必须是 1 到 8 个字符，且不能包含换行或制表符')
+  return '┊'
+}
+
 function normalizeHermesDisplayStreaming(value, strict = false, key = 'display.streaming') {
   if (typeof value === 'boolean') return value ? 'true' : 'false'
   const streaming = String(value ?? '').trim().toLowerCase() || 'inherit'
@@ -3687,6 +3694,7 @@ export function buildHermesDisplayConfigValues(config = {}) {
   return {
     displayCompact: readHermesBool(display.compact, false),
     displaySkin: normalizeHermesDisplaySkin(display.skin, false),
+    displayToolPrefix: normalizeHermesDisplayToolPrefix(display.tool_prefix, false),
     displayToolProgress: normalizeHermesDisplayToolProgress(display.tool_progress, false),
     displayShowReasoning: readHermesBool(display.show_reasoning, false),
     displayToolPreviewLength: parseHermesInteger(display.tool_preview_length, 'display.tool_preview_length', 0, 0, 200000, false),
@@ -3720,6 +3728,7 @@ export function mergeHermesDisplayConfig(config = {}, form = {}) {
 
   display.compact = formHermesBool(form, 'displayCompact', currentValues.displayCompact)
   display.skin = normalizeHermesDisplaySkin(Object.hasOwn(form, 'displaySkin') ? form.displaySkin : currentValues.displaySkin, true)
+  display.tool_prefix = normalizeHermesDisplayToolPrefix(Object.hasOwn(form, 'displayToolPrefix') ? form.displayToolPrefix : currentValues.displayToolPrefix, true)
   display.tool_progress = normalizeHermesDisplayToolProgress(Object.hasOwn(form, 'displayToolProgress') ? form.displayToolProgress : currentValues.displayToolProgress, true, 'display.tool_progress')
   display.show_reasoning = formHermesBool(form, 'displayShowReasoning', currentValues.displayShowReasoning)
   display.tool_preview_length = parseHermesInteger(Object.hasOwn(form, 'displayToolPreviewLength') ? form.displayToolPreviewLength : currentValues.displayToolPreviewLength, 'display.tool_preview_length', 0, 0, 200000, true)

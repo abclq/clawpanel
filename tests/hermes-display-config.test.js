@@ -13,6 +13,7 @@ test('Hermes 显示配置读取会提供上游默认值', () => {
     displayToolProgress: 'all',
     displayCompact: false,
     displaySkin: 'default',
+    displayToolPrefix: '┊',
     displayShowReasoning: false,
     displayToolPreviewLength: 0,
     displayCleanupProgress: false,
@@ -39,6 +40,7 @@ test('Hermes 显示配置读取会规范化已有字段', () => {
       tool_progress: 'VERBOSE',
       compact: true,
       skin: 'MONO',
+      tool_prefix: '╎',
       show_reasoning: true,
       tool_preview_length: 80,
       cleanup_progress: true,
@@ -64,6 +66,7 @@ test('Hermes 显示配置读取会规范化已有字段', () => {
   assert.equal(values.displayToolProgress, 'verbose')
   assert.equal(values.displayCompact, true)
   assert.equal(values.displaySkin, 'mono')
+  assert.equal(values.displayToolPrefix, '╎')
   assert.equal(values.displayShowReasoning, true)
   assert.equal(values.displayToolPreviewLength, 80)
   assert.equal(values.displayCleanupProgress, true)
@@ -101,6 +104,7 @@ test('Hermes 显示配置保存会保留未知 YAML 并写入 display', () => {
     displayToolProgress: 'off',
     displayCompact: true,
     displaySkin: 'slate',
+    displayToolPrefix: '│',
     displayShowReasoning: true,
     displayToolPreviewLength: 120,
     displayCleanupProgress: true,
@@ -124,6 +128,7 @@ test('Hermes 显示配置保存会保留未知 YAML 并写入 display', () => {
   assert.deepEqual(next.memory, { memory_enabled: true })
   assert.equal(next.display.compact, true)
   assert.equal(next.display.skin, 'slate')
+  assert.equal(next.display.tool_prefix, '│')
   assert.equal(next.display.show_reasoning, true)
   assert.equal(next.display.tool_preview_length, 120)
   assert.equal(next.display.cleanup_progress, true)
@@ -154,6 +159,10 @@ test('Hermes 显示配置保存会拒绝非法枚举和页脚字段', () => {
   assert.throws(
     () => mergeHermesDisplayConfig({}, { displaySkin: 'unknown' }),
     /display\.skin/,
+  )
+  assert.throws(
+    () => mergeHermesDisplayConfig({}, { displayToolPrefix: 'too-long-prefix' }),
+    /display\.tool_prefix/,
   )
   assert.throws(
     () => mergeHermesDisplayConfig({}, { displayResumeDisplay: 'compact' }),
