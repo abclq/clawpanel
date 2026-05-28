@@ -1565,6 +1565,30 @@ fn extract_uv_tar_gz(data: &[u8], dest: &std::path::Path) -> Result<(), String> 
 
 const HERMES_GIT_URL: &str = "git+https://github.com/NousResearch/hermes-agent.git";
 
+/// Runtime Python deps that `hermes-agent` needs at runtime but are NOT declared as
+/// install-time dependencies in its `[project].dependencies` (e.g. lazy-loaded
+/// platform adapters). Without these, `hermes gateway run` starts but cannot bring
+/// up the API server. Keep in sync between fresh install and upgrade paths.
+const HERMES_RUNTIME_EXTRA_DEPS: &[&str] =
+    &["croniter", "httpx", "openai", "aiohttp", "websockets"];
+
+/// Append `--with <dep>` for every required runtime extra to the given command.
+fn append_hermes_runtime_extras(cmd: &mut tokio::process::Command) {
+    for dep in HERMES_RUNTIME_EXTRA_DEPS {
+        cmd.args(["--with", dep]);
+    }
+}
+
+/// Human-readable `--with X --with Y ...` segment for log lines so users see the
+/// exact command we ran.
+fn hermes_runtime_extras_log_segment() -> String {
+    HERMES_RUNTIME_EXTRA_DEPS
+        .iter()
+        .map(|d| format!("--with {d}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn sanitize_hermes_install_output(text: &str) -> String {
     let mut out = text.replace(HERMES_GIT_URL, "hermes-agent");
     out = out.replace(
@@ -1655,24 +1679,8 @@ async fn install_via_uv_tool(
     };
 
     let mut cmd = tokio::process::Command::new(uv_path);
-    cmd.args([
-        "tool",
-        "install",
-        "--force",
-        &pkg,
-        "--python",
-        "3.11",
-        "--with",
-        "croniter",
-        "--with",
-        "httpx",
-        "--with",
-        "openai",
-        "--with",
-        "aiohttp",
-        "--with",
-        "websockets",
-    ]);
+    cmd.args(["tool", "install", "--force", &pkg, "--python", "3.11"]);
+    append_hermes_runtime_extras(&mut cmd);
 
     // 配置 PyPI 镜像（extras 的依赖仍从 PyPI 下载）
     if let Some(mirror) = pypi_mirror_url() {
@@ -1696,7 +1704,10 @@ async fn install_via_uv_tool(
 
     let _ = app.emit(
         "hermes-install-log",
-        "uv tool install hermes-agent --python 3.11 --with croniter --with httpx --with openai --with aiohttp --with websockets",
+        format!(
+            "uv tool install hermes-agent --python 3.11 {}",
+            hermes_runtime_extras_log_segment()
+        ),
     );
 
     let child = cmd.spawn().map_err(|e| format!("启动安装进程失败: {e}"))?;
@@ -13418,20 +13429,15 @@ pub async fn update_hermes(app: tauri::AppHandle) -> Result<String, String> {
 
     let pkg = format!("hermes-agent[web] @ {}", HERMES_GIT_URL);
     let mut cmd = tokio::process::Command::new(&uv);
-    cmd.args([
-        "tool",
-        "install",
-        "--reinstall",
-        &pkg,
-        "--python",
-        "3.11",
-        "--with",
-        "croniter",
-    ]);
+    cmd.args(["tool", "install", "--reinstall", &pkg, "--python", "3.11"]);
+    append_hermes_runtime_extras(&mut cmd);
     let _ = app.emit("hermes-install-progress", 20u32);
     let _ = app.emit(
         "hermes-install-log",
-        "uv tool install --reinstall hermes-agent --python 3.11 --with croniter",
+        format!(
+            "uv tool install --reinstall hermes-agent --python 3.11 {}",
+            hermes_runtime_extras_log_segment()
+        ),
     );
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     if let Some(mirror) = pypi_mirror_url() {
