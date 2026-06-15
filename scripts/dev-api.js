@@ -40,20 +40,20 @@ const HERMES_PROVIDER_REGISTRY = [
   hermesProvider('nvidia', 'NVIDIA NIM', 'api_key', 'https://integrate.api.nvidia.com/v1', 'NVIDIA_BASE_URL', ['NVIDIA_API_KEY'], 'openai_chat', 'openai', []),
   hermesProvider('ollama-cloud', 'Ollama Cloud', 'api_key', 'https://ollama.com/v1', 'OLLAMA_BASE_URL', ['OLLAMA_API_KEY'], 'openai_chat', 'openai', []),
   hermesProvider('copilot', 'GitHub Copilot (PAT)', 'api_key', 'https://api.githubcopilot.com', '', ['COPILOT_GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'], 'openai_chat', 'none', ['gpt-4o', 'gpt-4.1', 'claude-3.5-sonnet', 'claude-3.7-sonnet', 'claude-sonnet-4-5', 'o1', 'o1-mini', 'gemini-2.5-pro']),
-  hermesProvider('zai', 'Z.AI / GLM', 'api_key', 'https://api.z.ai/api/paas/v4', 'GLM_BASE_URL', ['GLM_API_KEY', 'ZAI_API_KEY', 'Z_AI_API_KEY'], 'openai_chat', 'openai', ['glm-5.1', 'glm-5', 'glm-5v-turbo', 'glm-5-turbo', 'glm-4.7', 'glm-4.5', 'glm-4.5-flash']),
-  hermesProvider('kimi-coding', 'Kimi / Moonshot', 'api_key', 'https://api.moonshot.ai/v1', 'KIMI_BASE_URL', ['KIMI_API_KEY'], 'openai_chat', 'openai', ['kimi-for-coding', 'kimi-k2.6', 'kimi-k2.5', 'kimi-k2-thinking', 'kimi-k2-turbo-preview', 'kimi-k2-0905-preview']),
-  hermesProvider('kimi-coding-cn', 'Kimi / Moonshot (China)', 'api_key', 'https://api.moonshot.cn/v1', '', ['KIMI_CN_API_KEY'], 'openai_chat', 'openai', ['kimi-for-coding', 'kimi-k2.6', 'kimi-k2.5', 'kimi-k2-thinking', 'kimi-k2-turbo-preview']),
-  hermesProvider('alibaba', 'Alibaba Cloud (DashScope)', 'api_key', 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', 'DASHSCOPE_BASE_URL', ['DASHSCOPE_API_KEY'], 'openai_chat', 'openai', ['qwen3.5-plus', 'qwen3-coder-plus', 'qwen3-coder-next', 'glm-5', 'glm-4.7', 'kimi-k2.5', 'MiniMax-M2.5']),
+  hermesProvider('zai', 'Z.AI / GLM', 'api_key', 'https://api.z.ai/api/paas/v4', 'GLM_BASE_URL', ['GLM_API_KEY', 'ZAI_API_KEY', 'Z_AI_API_KEY'], 'openai_chat', 'openai', ['glm-5.2', 'glm-5.1', 'glm-5', 'glm-5v-turbo', 'glm-5-turbo', 'glm-4.7', 'glm-4.5', 'glm-4.5-flash']),
+  hermesProvider('kimi-coding', 'Kimi / Moonshot', 'api_key', 'https://api.moonshot.ai/v1', 'KIMI_BASE_URL', ['KIMI_API_KEY'], 'openai_chat', 'openai', ['kimi-k2.7-code', 'kimi-for-coding', 'kimi-k2.6', 'kimi-k2.5', 'kimi-k2-thinking', 'kimi-k2-turbo-preview', 'kimi-k2-0905-preview']),
+  hermesProvider('kimi-coding-cn', 'Kimi / Moonshot (China)', 'api_key', 'https://api.moonshot.cn/v1', '', ['KIMI_CN_API_KEY'], 'openai_chat', 'openai', ['kimi-k2.7-code', 'kimi-for-coding', 'kimi-k2.6', 'kimi-k2.5', 'kimi-k2-thinking', 'kimi-k2-turbo-preview']),
+  hermesProvider('alibaba', 'Alibaba Cloud (DashScope)', 'api_key', 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', 'DASHSCOPE_BASE_URL', ['DASHSCOPE_API_KEY'], 'openai_chat', 'openai', ['qwen3.5-plus', 'qwen3-coder-plus', 'qwen3-coder-next', 'glm-5.2', 'glm-5', 'glm-4.7', 'kimi-k2.7-code', 'kimi-k2.5', 'MiniMax-M2.5']),
   hermesProvider('alibaba-coding-plan', 'Alibaba Cloud (Coding Plan)', 'api_key', 'https://coding-intl.dashscope.aliyuncs.com/v1', 'ALIBABA_CODING_PLAN_BASE_URL', ['ALIBABA_CODING_PLAN_API_KEY', 'DASHSCOPE_API_KEY'], 'openai_chat', 'openai', ['qwen3-coder-plus', 'qwen3-coder-next', 'qwen3.5-plus', 'qwen3.5-coder']),
   hermesProvider('minimax-cn', 'MiniMax (China)', 'api_key', 'https://api.minimaxi.com/v1', 'MINIMAX_CN_BASE_URL', ['MINIMAX_CN_API_KEY'], 'anthropic_messages', 'anthropic', ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed']),
   hermesProvider('xiaomi', 'Xiaomi MiMo', 'api_key', 'https://api.xiaomimimo.com/v1', 'XIAOMI_BASE_URL', ['XIAOMI_API_KEY'], 'openai_chat', 'openai', ['mimo-v2-pro', 'mimo-v2-omni', 'mimo-v2-flash']),
   hermesProvider('bedrock', 'AWS Bedrock', 'aws_sdk', 'https://bedrock-runtime.us-east-1.amazonaws.com', 'BEDROCK_BASE_URL', [], 'anthropic_messages', 'none', []),
   hermesProvider('openrouter', 'OpenRouter', 'api_key', 'https://openrouter.ai/api/v1', 'OPENAI_BASE_URL', ['OPENROUTER_API_KEY'], 'openai_chat', 'openai', [], true),
   hermesProvider('ai-gateway', 'Vercel AI Gateway', 'api_key', 'https://ai-gateway.vercel.sh/v1', 'AI_GATEWAY_BASE_URL', ['AI_GATEWAY_API_KEY'], 'openai_chat', 'openai', ['anthropic/claude-opus-4.6', 'anthropic/claude-sonnet-4.6', 'anthropic/claude-sonnet-4.5', 'anthropic/claude-haiku-4.5', 'openai/gpt-5', 'openai/gpt-4.1', 'openai/gpt-4.1-mini', 'google/gemini-3-pro-preview', 'google/gemini-3-flash', 'google/gemini-2.5-pro', 'google/gemini-2.5-flash', 'deepseek/deepseek-v3.2'], true),
-  hermesProvider('opencode-zen', 'OpenCode Zen', 'api_key', 'https://opencode.ai/zen/v1', 'OPENCODE_ZEN_BASE_URL', ['OPENCODE_ZEN_API_KEY'], 'openai_chat', 'openai', ['gpt-5.4-pro', 'gpt-5.4', 'gpt-5.3-codex', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5', 'gemini-3.1-pro', 'gemini-3-pro', 'minimax-m2.7', 'glm-5', 'kimi-k2.5', 'qwen3-coder'], true),
-  hermesProvider('opencode-go', 'OpenCode Go', 'api_key', 'https://opencode.ai/zen/go/v1', 'OPENCODE_GO_BASE_URL', ['OPENCODE_GO_API_KEY'], 'openai_chat', 'openai', ['glm-5.1', 'glm-5', 'kimi-k2.5', 'mimo-v2-pro', 'mimo-v2-omni', 'minimax-m2.7', 'minimax-m2.5'], true),
+  hermesProvider('opencode-zen', 'OpenCode Zen', 'api_key', 'https://opencode.ai/zen/v1', 'OPENCODE_ZEN_BASE_URL', ['OPENCODE_ZEN_API_KEY'], 'openai_chat', 'openai', ['gpt-5.4-pro', 'gpt-5.4', 'gpt-5.3-codex', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5', 'gemini-3.1-pro', 'gemini-3-pro', 'minimax-m2.7', 'glm-5.2', 'glm-5', 'kimi-k2.7-code', 'kimi-k2.5', 'qwen3-coder'], true),
+  hermesProvider('opencode-go', 'OpenCode Go', 'api_key', 'https://opencode.ai/zen/go/v1', 'OPENCODE_GO_BASE_URL', ['OPENCODE_GO_API_KEY'], 'openai_chat', 'openai', ['glm-5.2', 'glm-5.1', 'glm-5', 'kimi-k2.7-code', 'kimi-k2.5', 'mimo-v2-pro', 'mimo-v2-omni', 'minimax-m2.7', 'minimax-m2.5'], true),
   hermesProvider('kilocode', 'Kilo Code', 'api_key', 'https://api.kilo.ai/api/gateway', 'KILOCODE_BASE_URL', ['KILOCODE_API_KEY'], 'openai_chat', 'openai', ['anthropic/claude-opus-4.6', 'anthropic/claude-sonnet-4.6', 'openai/gpt-5.4', 'google/gemini-3-pro-preview', 'google/gemini-3-flash-preview'], true),
-  hermesProvider('nous', 'Nous Portal', 'oauth_device_code', 'https://inference-api.nousresearch.com/v1', '', [], 'openai_chat', 'none', ['moonshotai/kimi-k2.6', 'anthropic/claude-opus-4.7', 'anthropic/claude-sonnet-4.6', 'openai/gpt-5.4', 'google/gemini-3-pro-preview', 'qwen/qwen3.5-plus-02-15', 'minimax/minimax-m2.7', 'z-ai/glm-5.1', 'x-ai/grok-4.20-beta'], true, 'hermes auth login nous'),
+  hermesProvider('nous', 'Nous Portal', 'oauth_device_code', 'https://inference-api.nousresearch.com/v1', '', [], 'openai_chat', 'none', ['moonshotai/kimi-k2.6', 'moonshotai/kimi-k2.7-code', 'anthropic/claude-opus-4.7', 'anthropic/claude-sonnet-4.6', 'openai/gpt-5.4', 'google/gemini-3-pro-preview', 'qwen/qwen3.5-plus-02-15', 'minimax/minimax-m2.7', 'z-ai/glm-5.1', 'x-ai/grok-4.20-beta'], true, 'hermes auth login nous'),
   hermesProvider('openai-codex', 'OpenAI Codex', 'oauth_external', 'https://chatgpt.com/backend-api/codex', '', [], 'codex_responses', 'none', ['gpt-5.5', 'gpt-5.4-mini', 'gpt-5.4', 'gpt-5.3-codex', 'gpt-5.2-codex', 'gpt-5.1-codex-max', 'gpt-5.1-codex-mini'], false, 'hermes auth login openai-codex'),
   hermesProvider('qwen-oauth', 'Qwen OAuth', 'oauth_external', 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', '', [], 'openai_chat', 'none', ['qwen3.5-plus', 'qwen3-coder-plus', 'qwen3-coder-next'], false, 'hermes auth login qwen-oauth'),
   hermesProvider('google-gemini-cli', 'Google Gemini (OAuth)', 'oauth_external', 'https://generativelanguage.googleapis.com/v1beta/openai', '', [], 'openai_chat', 'none', ['gemini-2.5-pro', 'gemini-2.5-flash'], false, 'hermes auth login google-gemini-cli'),
@@ -3868,7 +3868,7 @@ const HERMES_TERMINAL_MODAL_MODES = new Set(['auto', 'managed', 'direct'])
 const HERMES_TERMINAL_VERCEL_RUNTIMES = new Set(['node24', 'node22', 'python3.13'])
 const HERMES_BROWSER_ENGINES = new Set(['auto', 'lightpanda', 'chrome'])
 const HERMES_BROWSER_DIALOG_POLICIES = new Set(['must_respond', 'auto_dismiss', 'auto_accept'])
-const HERMES_WEB_BACKENDS = new Set(['tavily', 'firecrawl', 'parallel-free', 'parallel', 'exa', 'searxng', 'brave', 'brave_free', 'ddgs', 'xai', 'native'])
+const HERMES_WEB_BACKENDS = new Set(['tavily', 'firecrawl', 'parallel', 'exa', 'searxng', 'brave', 'brave_free', 'ddgs', 'xai', 'native'])
 const HERMES_LSP_WAIT_MODES = new Set(['document', 'full'])
 const HERMES_LSP_INSTALL_STRATEGIES = new Set(['auto', 'manual', 'off'])
 const HERMES_MODEL_CATALOG_DEFAULT_URL = 'https://hermes-agent.nousresearch.com/docs/api/model-catalog.json'
@@ -4038,7 +4038,7 @@ function normalizeHermesWebBackend(value, key, strict = false) {
   const backend = String(value ?? '').trim().toLowerCase()
   if (!backend) return ''
   if (HERMES_WEB_BACKENDS.has(backend)) return backend
-  if (strict) throw new Error(`${key} 必须为空或 tavily、firecrawl、parallel-free、parallel、exa、searxng、brave、brave_free、ddgs、xai、native`)
+  if (strict) throw new Error(`${key} 必须为空或 tavily、firecrawl、parallel、exa、searxng、brave、brave_free、ddgs、xai、native`)
   return ''
 }
 

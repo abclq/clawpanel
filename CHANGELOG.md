@@ -5,6 +5,23 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.18.4] - 2026-06-15
+
+### 兼容性 (Compatibility)
+
+- **跟进 Hermes Agent 最新版 Web Search 策略** — Hermes upstream 已回滚无 Key 的 `parallel-free` 后端；面板不再提供或写入 `parallel-free`，Parallel 搜索统一使用需要 `PARALLEL_API_KEY` 的 `parallel`
+- **补充 Hermes 最新模型候选** — Z.AI / GLM、Kimi / Moonshot、Nous Portal 与聚合服务商候选模型补充 `glm-5.2`、`kimi-k2.7-code`，减少用户手动输入新版模型名的成本
+
+### 测试与验证 (Testing)
+
+- 已通过 `node --test tests/hermes-web-config.test.js tests/hermes-config-page-ui.test.js`
+- 已通过 `cd src-tauri && cargo test hermes_web_config --lib`
+- 已通过 `npm run build`
+- 已通过 `node -e "import('./scripts/dev-api.js').then(()=>console.log('dev-api import ok'))"`
+- 已通过 `cd src-tauri && cargo fmt --check`
+- 已通过 `cd src-tauri && cargo check`
+- 已通过 `git diff --check`
+
 ## [0.18.3] - 2026-06-11
 
 ### 修复 (Fixes)

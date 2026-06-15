@@ -738,7 +738,6 @@ export default {
   hermesWebConfigBackend_auto: _('自动选择', 'Auto select', '自動選擇'),
   hermesWebConfigBackend_tavily: _('Tavily', 'Tavily', 'Tavily'),
   hermesWebConfigBackend_firecrawl: _('Firecrawl', 'Firecrawl', 'Firecrawl'),
-  'hermesWebConfigBackend_parallel-free': _('Parallel Free（免 Key）', 'Parallel Free (no key)', 'Parallel Free（免 Key）'),
   hermesWebConfigBackend_parallel: _('Parallel', 'Parallel', 'Parallel'),
   hermesWebConfigBackend_exa: _('Exa', 'Exa', 'Exa'),
   hermesWebConfigBackend_searxng: _('SearXNG', 'SearXNG', 'SearXNG'),

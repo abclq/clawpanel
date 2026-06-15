@@ -20,13 +20,13 @@ test('Hermes Web 工具配置读取会回显 YAML 字段', () => {
   const values = buildHermesWebConfigValues({
     web: {
       backend: 'tavily',
-      search_backend: 'parallel-free',
+      search_backend: 'parallel',
       extract_backend: 'firecrawl',
     },
   })
 
   assert.equal(values.webBackend, 'tavily')
-  assert.equal(values.webSearchBackend, 'parallel-free')
+  assert.equal(values.webSearchBackend, 'parallel')
   assert.equal(values.webExtractBackend, 'firecrawl')
 })
 
@@ -41,14 +41,14 @@ test('Hermes Web 工具配置保存会保留未知字段并写入上游结构', 
     },
     streaming: { enabled: true },
   }, {
-    webBackend: 'parallel-free',
+    webBackend: 'parallel',
     webSearchBackend: 'exa',
     webExtractBackend: 'native',
   })
 
   assert.deepEqual(next.model, { provider: 'anthropic' })
   assert.deepEqual(next.streaming, { enabled: true })
-  assert.equal(next.web.backend, 'parallel-free')
+  assert.equal(next.web.backend, 'parallel')
   assert.equal(next.web.search_backend, 'exa')
   assert.equal(next.web.extract_backend, 'native')
   assert.equal(next.web.custom_flag, 'keep-web')
@@ -86,5 +86,9 @@ test('Hermes Web 工具配置保存会拒绝非法后端', () => {
   assert.throws(
     () => mergeHermesWebConfig({}, { webExtractBackend: 'unsafe' }),
     /web\.extract_backend/,
+  )
+  assert.throws(
+    () => mergeHermesWebConfig({}, { webBackend: 'parallel-free' }),
+    /web\.backend/,
   )
 })

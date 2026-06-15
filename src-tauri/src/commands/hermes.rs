@@ -8045,7 +8045,6 @@ fn normalize_hermes_web_backend(
         backend.as_str(),
         "tavily"
             | "firecrawl"
-            | "parallel-free"
             | "parallel"
             | "exa"
             | "searxng"
@@ -8058,7 +8057,7 @@ fn normalize_hermes_web_backend(
         return Ok(backend);
     }
     if strict {
-        Err(format!("{key} 必须为空或 tavily、firecrawl、parallel-free、parallel、exa、searxng、brave、brave_free、ddgs、xai、native"))
+        Err(format!("{key} 必须为空或 tavily、firecrawl、parallel、exa、searxng、brave、brave_free、ddgs、xai、native"))
     } else {
         Ok(String::new())
     }
@@ -19454,7 +19453,7 @@ streaming:
         merge_hermes_web_config(
             &mut config,
             &json!({
-                "webBackend": "parallel-free",
+                "webBackend": "parallel",
                 "webSearchBackend": "exa",
                 "webExtractBackend": "native",
             }),
@@ -19463,7 +19462,7 @@ streaming:
 
         assert_eq!(config["model"]["provider"].as_str(), Some("anthropic"));
         assert_eq!(config["streaming"]["enabled"].as_bool(), Some(true));
-        assert_eq!(config["web"]["backend"].as_str(), Some("parallel-free"));
+        assert_eq!(config["web"]["backend"].as_str(), Some("parallel"));
         assert_eq!(config["web"]["search_backend"].as_str(), Some("exa"));
         assert_eq!(config["web"]["extract_backend"].as_str(), Some("native"));
         assert_eq!(config["web"]["custom_flag"].as_str(), Some("keep-web"));
