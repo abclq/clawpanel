@@ -32,11 +32,21 @@ test('渠道读取只返回掩码，写入支持保留旧 Key 哨兵', () => {
   assert.match(devApi, /isChannelKeepSentinel/, 'dev-api 必须实现相同的哨兵语义')
 })
 
-test('Hermes 同步仅覆盖 API Key 型三类 transport', () => {
-  assert.match(lib, /'openai-completions':\s*\{\s*transport:\s*'openai_chat'/, 'openai transport 映射缺失')
-  assert.match(lib, /'anthropic-messages':\s*\{\s*transport:\s*'anthropic_messages'/, 'anthropic transport 映射缺失')
-  assert.match(lib, /'google-generative-ai':\s*\{\s*transport:\s*'google_gemini'/, 'gemini transport 映射缺失')
+test('Hermes 同步契约与内核注册表一致（已按内核源码核对）', () => {
+  // 回退 provider id 必须是注册表真实存在的 API Key 型 id
+  assert.match(lib, /'openai-completions':\s*\{\s*fallbackProvider:\s*'custom'/, 'OpenAI 兼容渠道应回退到 custom provider')
+  assert.match(lib, /'anthropic-messages':\s*\{\s*fallbackProvider:\s*'anthropic'/, 'Anthropic 渠道应回退到 anthropic provider')
+  assert.match(lib, /'google-generative-ai':\s*\{\s*fallbackProvider:\s*'gemini'/, 'Gemini 渠道应回退到 gemini provider（内核经 OpenAI 兼容端点接入）')
   assert.match(lib, /authType === 'api_key'/, 'OAuth/SDK 型 provider 必须被排除在渠道同步之外')
+  // 内核不解析 "provider/model" 前缀：model.default 必须写纯模型 ID
+  assert.match(lib, /modelDefault:\s*channel\.defaultModel,/, 'model.default 必须是纯模型 ID，不得拼接 provider 前缀')
+  // 自定义端点只对 OpenAI 兼容渠道生效，避免破坏 anthropic/gemini 的专用端点
+  assert.match(lib, /channel\.apiType === 'openai-completions'\s*&&\s*Boolean\(channel\.baseUrl\)/, '自定义 Base URL 仅限 OpenAI 兼容渠道')
+})
+
+test('OpenClaw 模型条目恒写完整对象（内核 strict schema 要求 id/name 必填）', () => {
+  assert.match(lib, /name:\s*model\.name\s*\|\|\s*prevObj\.name\s*\|\|\s*model\.id/, '模型条目 name 必填，缺省回退为 id')
+  assert.doesNotMatch(lib, /:\s*model\.id\s*\n\s*\}\)\s*$/m, '不得写裸字符串模型条目')
 })
 
 test('OpenClaw 同步只 upsert 单个 provider 并保留未知字段', () => {

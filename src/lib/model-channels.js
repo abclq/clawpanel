@@ -12,11 +12,18 @@ import { api } from './tauri-api.js'
 
 export const ASSISTANT_STORAGE_KEY = 'clawpanel-assistant'
 
-/** 渠道 apiType → Hermes transport 与回退 provider（仅 API Key 型三族可同步） */
-export const HERMES_TRANSPORT_MAP = {
-  'openai-completions': { transport: 'openai_chat', fallbackProvider: 'openai' },
-  'anthropic-messages': { transport: 'anthropic_messages', fallbackProvider: 'anthropic' },
-  'google-generative-ai': { transport: 'google_gemini', fallbackProvider: 'google' },
+/**
+ * 渠道 apiType → Hermes 回退 provider id（已按内核注册表逐一核对）：
+ * - openai-completions → 'custom'（Custom OpenAI-Compatible：OPENAI_BASE_URL + OPENAI_API_KEY，
+ *   覆盖官方 OpenAI、聚合网关、NewAPI、本地 Ollama 等一切 OpenAI 兼容端点）
+ * - anthropic-messages → 'anthropic'（ANTHROPIC_API_KEY）
+ * - google-generative-ai → 'gemini'（内核经 OpenAI 兼容端点接入 Gemini，GOOGLE_API_KEY）
+ * 仅 API Key 型可同步；OAuth / 云 SDK 型仍走 Hermes 向导。
+ */
+export const HERMES_TARGET_MAP = {
+  'openai-completions': { fallbackProvider: 'custom' },
+  'anthropic-messages': { fallbackProvider: 'anthropic' },
+  'google-generative-ai': { fallbackProvider: 'gemini' },
 }
 
 /** 晴辰助手支持的 apiType 族（见 assistant.js normalizeApiType） */
@@ -25,7 +32,7 @@ export const ASSISTANT_SUPPORTED_API_TYPES = [
 ]
 
 export function hermesSyncSupported(channel) {
-  return Boolean(HERMES_TRANSPORT_MAP[channel?.apiType])
+  return Boolean(HERMES_TARGET_MAP[channel?.apiType])
 }
 
 export function assistantSyncSupported(channel) {
@@ -80,13 +87,19 @@ export async function syncChannelToOpenclaw(channel, { setDefault = false } = {}
   const existing = asObject(config.models.providers[providerKey])
   const existingModels = Array.isArray(existing.models) ? existing.models : []
 
+  // 内核 ModelDefinitionSchema 为 strict 且 id/name 必填（zod-schema.core.ts）：
+  // 恒写完整对象、name 缺省回退为 id，不写裸字符串；保留目标已有条目的
+  // cost/reasoning 等扩展元数据（展开 prevObj）
   const models = (channel.models || []).map(model => {
     const prev = existingModels.find(e => (typeof e === 'string' ? e : e?.id) === model.id)
     const prevObj = prev && typeof prev === 'object' ? prev : {}
-    const merged = { ...prevObj, id: model.id }
-    if (model.name) merged.name = model.name
+    const merged = {
+      ...prevObj,
+      id: model.id,
+      name: model.name || prevObj.name || model.id,
+    }
     if (model.contextWindow) merged.contextWindow = model.contextWindow
-    return Object.keys(merged).length > 1 ? merged : model.id
+    return merged
   })
 
   config.models.providers[providerKey] = {
@@ -110,15 +123,14 @@ export async function syncChannelToOpenclaw(channel, { setDefault = false } = {}
   return { providerKey, modelCount: models.length }
 }
 
-/** 解析渠道对应的 Hermes provider（API Key 型 + transport 匹配），不支持返回 null */
+/** 解析渠道对应的 Hermes provider（API Key 型；预设命中优先，否则用核对过的回退 id），不支持返回 null */
 export async function resolveHermesTarget(channel) {
-  const mapping = HERMES_TRANSPORT_MAP[channel?.apiType]
+  const mapping = HERMES_TARGET_MAP[channel?.apiType]
   if (!mapping) return null
   const raw = await api.hermesListProviders().catch(() => null)
   const list = Array.isArray(raw) ? raw : (Array.isArray(raw?.providers) ? raw.providers : [])
   const usable = p => p
     && p.authType === 'api_key'
-    && p.transport === mapping.transport
     && Array.isArray(p.apiKeyEnvVars) && p.apiKeyEnvVars.length > 0
   const byPreset = list.find(p => p.id === String(channel?.presetKey || '') && usable(p))
   const fallback = list.find(p => p.id === mapping.fallbackProvider && usable(p))
@@ -127,7 +139,7 @@ export async function resolveHermesTarget(channel) {
 
 /**
  * 同步到 Hermes：API Key 写入对应环境变量（Hermes .env），
- * 自定义 Base URL 写 baseUrlEnvVar；可选设为默认模型（config.yaml，自带备份）。
+ * OpenAI 兼容渠道的自定义 Base URL 写 baseUrlEnvVar；可选设为默认模型（config.yaml，自带备份）。
  */
 export async function syncChannelToHermes(channel, { setDefault = false } = {}) {
   const target = await resolveHermesTarget(channel)
@@ -137,18 +149,20 @@ export async function syncChannelToHermes(channel, { setDefault = false } = {}) 
 
   await api.hermesEnvSet(target.apiKeyEnvVars[0], apiKey)
 
+  // 仅 OpenAI 兼容渠道写自定义端点：anthropic / gemini 在 Hermes 侧走各自的
+  // transport 专用端点，渠道里的原生 API 地址格式不一定一致，误写会破坏请求
   const targetBase = String(target.baseUrl || '').replace(/\/+$/, '')
-  const baseUrlDiffers = Boolean(channel.baseUrl) && channel.baseUrl !== targetBase
+  const baseUrlDiffers = channel.apiType === 'openai-completions'
+    && Boolean(channel.baseUrl) && channel.baseUrl !== targetBase
   if (baseUrlDiffers && target.baseUrlEnvVar) {
     await api.hermesEnvSet(target.baseUrlEnvVar, channel.baseUrl)
   }
 
   if (setDefault && channel.defaultModel) {
-    const modelDefault = channel.defaultModel.includes('/')
-      ? channel.defaultModel
-      : `${target.id}/${channel.defaultModel}`
+    // 内核核对结论：model.default 是纯模型 ID（含斜杠的聚合器模型 ID 原样保留），
+    // provider 由 model.provider 单独指定，内核不解析 "provider/model" 前缀
     await api.hermesModelConfigSave({
-      modelDefault,
+      modelDefault: channel.defaultModel,
       modelProvider: target.id,
       modelBaseUrl: baseUrlDiffers && !target.baseUrlEnvVar ? channel.baseUrl : '',
     })

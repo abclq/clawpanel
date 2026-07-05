@@ -37,6 +37,20 @@ function apiTypeLabel(value) {
   return API_TYPES.find(item => item.value === value)?.label || value
 }
 
+// 编辑器内的内核适配性提示：该 API 类型能同步到哪些目标
+function renderCompatHint(apiType) {
+  const fake = { apiType }
+  const targets = [
+    { label: t('modelChannels.targetOpenclaw'), ok: true, hint: '' },
+    { label: t('modelChannels.targetHermes'), ok: hermesSyncSupported(fake), hint: t('modelChannels.syncHermesUnsupported') },
+    { label: t('modelChannels.targetAssistant'), ok: assistantSyncSupported(fake), hint: t('modelChannels.syncAssistantUnsupported') },
+  ]
+  const parts = targets.map(item => item.ok
+    ? `<span style="color:var(--success)">✓ ${esc(item.label)}</span>`
+    : `<span style="color:var(--text-tertiary)" title="${attr(item.hint)}">— ${esc(item.label)}</span>`)
+  return `${esc(t('modelChannels.compatLabel'))}: ${parts.join(' · ')}`
+}
+
 export async function render() {
   const page = document.createElement('div')
   page.className = 'page channels-hub-page'
@@ -231,6 +245,7 @@ function renderEditor(state) {
             <select class="form-input" id="mch-api-type">
               ${API_TYPES.map(item => `<option value="${attr(item.value)}" ${item.value === draft.apiType ? 'selected' : ''}>${esc(item.label)}</option>`).join('')}
             </select>
+            <div class="form-hint" id="mch-compat">${renderCompatHint(draft.apiType)}</div>
           </div>
           <div class="form-group">
             <label class="form-label" for="mch-api-key">${t('modelChannels.apiKey')}</label>
@@ -294,7 +309,14 @@ function bindEvents(page, state) {
         if (apiTypeSelect && preset.api) apiTypeSelect.value = preset.api
         const nameInput = page.querySelector('#mch-name')
         if (nameInput && !nameInput.value.trim()) nameInput.value = preset.label
+        const compat = page.querySelector('#mch-compat')
+        if (compat && preset.api) compat.innerHTML = renderCompatHint(preset.api)
       }
+    }
+    // API 类型变化 → 实时刷新内核适配性提示
+    if (event.target.id === 'mch-api-type' && state.editing) {
+      const compat = page.querySelector('#mch-compat')
+      if (compat) compat.innerHTML = renderCompatHint(event.target.value)
     }
   })
 
