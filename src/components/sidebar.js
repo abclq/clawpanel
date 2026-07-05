@@ -20,6 +20,26 @@ let _kernelPolicyInfo = null
 let _kernelPolicyFetchedAt = 0
 let _kernelPolicyLoading = false
 
+// 便携模式状态在进程生命周期内不变，只需请求一次；缓存后每次渲染侧边栏直接同步取用，
+// 避免用户看到设置向导之外的任何页面（一旦 OpenClaw 已配置，向导会被跳过）时
+// 完全没有线索判断当前连的是便携盘还是本机安装
+let _portableStatus = null
+let _portableStatusPromise = null
+function _ensurePortableStatusLoaded(onReady) {
+  if (_portableStatus) return
+  if (!_portableStatusPromise) {
+    _portableStatusPromise = api.getPortableStatus().then(st => { _portableStatus = st || { enabled: false } }).catch(() => { _portableStatus = { enabled: false } })
+  }
+  _portableStatusPromise.then(onReady)
+}
+
+function _renderPortableBadge() {
+  if (!_portableStatus || !_portableStatus.enabled) return ''
+  const root = String(_portableStatus.root || '')
+  const title = `${t('setup.portableBadge')} · ${root}`.replace(/"/g, '&quot;')
+  return `<span class="sidebar-portable-indicator" title="${title}"><span class="sidebar-portable-dot"></span>${t('setup.portableBadge')}</span>`
+}
+
 function NAV_ITEMS_FULL() { return [
   {
     section: t('sidebar.sectionMonitor'),
@@ -104,6 +124,19 @@ function NAV_ITEMS_ENGINE_SELECT() { return [
   }
 ] }
 
+function COMMON_NAV_ITEMS() { return [{
+  section: t('sidebar.sectionCommon'),
+  items: [
+    { route: '/media', label: t('sidebar.media'), icon: 'media' },
+  ],
+}] }
+
+function withCommonNavItems(navItems) {
+  const items = Array.isArray(navItems) ? navItems : []
+  const hasMedia = items.some(section => section.items?.some(item => item.route === '/media'))
+  return hasMedia ? items : [...items, ...COMMON_NAV_ITEMS()]
+}
+
 const ICONS = {
   setup: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>',
   dashboard: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>',
@@ -112,7 +145,7 @@ const ICONS = {
   logs: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>',
   models: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><path d="M3.27 6.96L12 12.01l8.73-5.05M12 22.08V12"/></svg>',
   agents: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>',
-  gateway: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>',
+  media: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10.5" r="1.5"/><path d="M21 15l-5-5L5 21"/><path d="M15 5l4 4"/><path d="M19 5l-4 4"/></svg>',  gateway: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>',
   memory: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/></svg>',
   inbox: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11L2 12v6a2 2 0 002 2h16a2 2 0 002-2v-6l-3.45-6.89A2 2 0 0016.76 4H7.24a2 2 0 00-1.79 1.11z"/></svg>',
   folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>',
@@ -195,6 +228,7 @@ function _setDesktopSidebarCollapsed(collapsed) {
 
 export function renderSidebar(el) {
   const current = getCurrentRoute()
+  el.classList.remove('lang-menu-open')
 
   const collapsed = _isDesktopSidebarCollapsed()
   let html = `
@@ -206,15 +240,17 @@ export function renderSidebar(el) {
       <button class="sidebar-collapse-btn" id="btn-sidebar-collapse" title="${t('sidebar.collapse')}">${collapsed ? '»' : '«'}</button>
       <button class="sidebar-close-btn" id="btn-sidebar-close" title="${t('sidebar.closeMenu')}">&times;</button>
     </div>
+    <div id="sidebar-portable-badge">${_renderPortableBadge()}</div>
     ${_renderEngineSwitcher()}
     <nav class="sidebar-nav">
   `
 
   // 从当前引擎获取菜单（回退到原有逻辑）
   const engine = getActiveEngine()
-  const navItems = needsInitialEngineChoice() || isEngineSetupDeferred()
+  const navItemsBase = needsInitialEngineChoice() || isEngineSetupDeferred()
     ? NAV_ITEMS_ENGINE_SELECT()
     : (engine ? engine.getNavItems() : (isOpenclawReady() ? NAV_ITEMS_FULL() : NAV_ITEMS_SETUP()))
+  const navItems = withCommonNavItems(navItemsBase)
 
   for (const section of navItems) {
     html += `<div class="nav-section">
@@ -287,6 +323,10 @@ export function renderSidebar(el) {
   el.innerHTML = html
   window.dispatchEvent(new CustomEvent('clawpanel:site-message-launcher-mounted'))
   _ensureKernelPolicyInfo(el)
+  _ensurePortableStatusLoaded(() => {
+    const badgeEl = el.querySelector('#sidebar-portable-badge')
+    if (badgeEl) badgeEl.innerHTML = _renderPortableBadge()
+  })
 
   // 应用折叠态（桌面端）
   _setDesktopSidebarCollapsed(collapsed)
@@ -355,9 +395,13 @@ export function renderSidebar(el) {
       if (langOpt) {
         const code = langOpt.dataset.lang
         if (code !== getLang()) {
+          const shouldCloseMobile = window.matchMedia?.('(max-width: 768px)').matches
+            && document.getElementById('sidebar')?.classList.contains('sidebar-open')
+          _closeLangDropdown()
           setLang(code)
           renderSidebar(el)
           reloadCurrentRoute()
+          if (shouldCloseMobile) _closeMobileSidebar()
         } else {
           _closeLangDropdown()
         }
@@ -521,17 +565,26 @@ export function openMobileSidebar() {
 function _closeLangDropdown() {
   const sw = document.getElementById('lang-switcher')
   const dd = document.getElementById('lang-dropdown')
+  const sidebar = document.getElementById('sidebar')
   if (dd) dd.classList.remove('open')
   if (sw) sw.classList.remove('open')
+  if (sidebar) sidebar.classList.remove('lang-menu-open')
 }
 
 function _toggleLangDropdown(sidebarEl) {
   const sw = document.getElementById('lang-switcher')
   const dd = document.getElementById('lang-dropdown')
+  const sidebar = sidebarEl?.id === 'sidebar' ? sidebarEl : document.getElementById('sidebar')
   if (!dd) return
-  if (dd.classList.contains('open')) { dd.classList.remove('open'); if (sw) sw.classList.remove('open'); return }
+  if (dd.classList.contains('open')) {
+    dd.classList.remove('open')
+    if (sw) sw.classList.remove('open')
+    if (sidebar) sidebar.classList.remove('lang-menu-open')
+    return
+  }
   dd.classList.add('open')
   if (sw) sw.classList.add('open')
+  if (sidebar) sidebar.classList.add('lang-menu-open')
   const searchInput = dd.querySelector('#lang-search')
   if (searchInput) {
     searchInput.value = ''

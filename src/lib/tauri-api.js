@@ -372,6 +372,12 @@ export const api = {
 
   // 面板配置 (clawpanel.json)
   getOpenclawDir: () => invoke('get_openclaw_dir'),
+  // 便携模式状态（启动期固定不变，只读）
+  getPortableStatus: () => invoke('get_portable_status'),
+  migrateToPortable: (targetRoot) => {
+    invalidate('get_portable_status', 'read_panel_config', 'check_installation', 'get_version_info')
+    return invoke('migrate_to_portable', { targetRoot })
+  },
   // Tauri: 重启应用进程；Web: 没有应用进程概念，刷新浏览器即可拿到新状态
   relaunchApp: () => {
     if (!isTauriRuntime()) {
@@ -478,6 +484,39 @@ export const api = {
   saveImage: (id, data) => invoke('assistant_save_image', { id, data }),
   loadImage: (id) => invoke('assistant_load_image', { id }),
   deleteImage: (id) => invoke('assistant_delete_image', { id }),
+
+  // 云端媒体生成
+  readMediaConfig: () => cachedInvoke('read_media_config', {}, 10000),
+  writeMediaConfig: (config) => {
+    invalidate('read_media_config')
+    return invoke('write_media_config', { config })
+  },
+  testMediaProvider: (provider = 'volcengine') => invoke('test_media_provider', { provider }),
+  fetchMediaModels: (provider = 'volcengine') => invoke('fetch_media_models', { provider }),
+  generateImage: (request) => {
+    invalidate('list_media_jobs')
+    return invoke('generate_image', { request })
+  },
+  createVideoTask: (request) => {
+    invalidate('list_media_jobs')
+    return invoke('create_video_task', { request })
+  },
+  pollVideoTask: (jobId) => {
+    invalidate('list_media_jobs')
+    return invoke('poll_video_task', { jobId })
+  },
+  cancelMediaJob: (jobId) => {
+    invalidate('list_media_jobs')
+    return invoke('cancel_media_job', { jobId })
+  },
+  listMediaJobs: (filter = {}) => cachedInvoke('list_media_jobs', { filter }, 5000),
+  deleteMediaJob: (jobId, deleteAssets = true) => {
+    invalidate('list_media_jobs')
+    return invoke('delete_media_job', { jobId, deleteAssets })
+  },
+  revealMediaAsset: (path, root = '') => invoke('reveal_media_asset', { path, root }),
+  revealMediaOutputDir: () => invoke('reveal_media_output_dir', {}),
+  loadMediaAsset: (path, root = '') => invoke('load_media_asset', { path, root }),
 
   // Hermes Agent 管理
   checkPython: () => cachedInvoke('check_python', {}, 60000),

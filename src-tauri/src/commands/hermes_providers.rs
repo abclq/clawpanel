@@ -16,12 +16,14 @@ use serde::Serialize;
 /// - `oauth_device_code`: interactive device-code OAuth flow (Nous)
 /// - `oauth_external`: OAuth handled by external process (Codex, Qwen)
 /// - `external_process`: backing process handles auth (Copilot ACP)
+/// - `vertex`: Google Cloud ADC / service-account based OAuth tokens
 pub const AUTH_API_KEY: &str = "api_key";
 pub const AUTH_OAUTH_DEVICE: &str = "oauth_device_code";
 pub const AUTH_OAUTH_EXTERNAL: &str = "oauth_external";
 pub const AUTH_EXTERNAL_PROCESS: &str = "external_process";
 pub const AUTH_AWS_SDK: &str = "aws_sdk";
 pub const AUTH_OAUTH_MINIMAX: &str = "oauth_minimax";
+pub const AUTH_VERTEX: &str = "vertex";
 
 /// Transport negotiated with the provider.
 pub const TRANSPORT_OPENAI_CHAT: &str = "openai_chat";
@@ -334,6 +336,20 @@ const P_XIAOMI: HermesProvider = HermesProvider {
     cli_auth_hint: "",
 };
 
+const P_STEPFUN: HermesProvider = HermesProvider {
+    id: "stepfun",
+    name: "StepFun",
+    auth_type: AUTH_API_KEY,
+    base_url: "https://api.stepfun.ai/step_plan/v1",
+    base_url_env_var: "",
+    api_key_env_vars: &["STEPFUN_API_KEY"],
+    transport: TRANSPORT_OPENAI_CHAT,
+    models_probe: PROBE_OPENAI,
+    models: &["step-3.5-flash"],
+    is_aggregator: false,
+    cli_auth_hint: "",
+};
+
 const P_ARCEE: HermesProvider = HermesProvider {
     id: "arcee",
     name: "Arcee AI",
@@ -376,6 +392,25 @@ const P_BEDROCK: HermesProvider = HermesProvider {
     cli_auth_hint: "",
 };
 
+const P_VERTEX: HermesProvider = HermesProvider {
+    id: "vertex",
+    name: "Google Vertex AI",
+    auth_type: AUTH_VERTEX,
+    base_url: "https://aiplatform.googleapis.com",
+    base_url_env_var: "",
+    api_key_env_vars: &[],
+    transport: TRANSPORT_OPENAI_CHAT,
+    models_probe: PROBE_NONE,
+    models: &[
+        "google/gemini-3-pro-preview",
+        "google/gemini-3-flash-preview",
+        "google/gemini-2.5-pro",
+        "google/gemini-2.5-flash",
+    ],
+    is_aggregator: false,
+    cli_auth_hint: "使用 Google Cloud Application Default Credentials 或服务账号 JSON",
+};
+
 const P_GMI: HermesProvider = HermesProvider {
     id: "gmi",
     name: "GMI Cloud",
@@ -387,6 +422,27 @@ const P_GMI: HermesProvider = HermesProvider {
     models_probe: PROBE_OPENAI,
     models: &[],
     is_aggregator: false,
+    cli_auth_hint: "",
+};
+
+const P_NOVITA: HermesProvider = HermesProvider {
+    id: "novita",
+    name: "NovitaAI",
+    auth_type: AUTH_API_KEY,
+    base_url: "https://api.novita.ai/openai/v1",
+    base_url_env_var: "NOVITA_BASE_URL",
+    api_key_env_vars: &["NOVITA_API_KEY"],
+    transport: TRANSPORT_OPENAI_CHAT,
+    models_probe: PROBE_OPENAI,
+    models: &[
+        "moonshotai/kimi-k2.5",
+        "minimax/minimax-m2.7",
+        "zai-org/glm-5",
+        "deepseek/deepseek-v3-0324",
+        "deepseek/deepseek-r1-0528",
+        "qwen/qwen3-235b-a22b-fp8",
+    ],
+    is_aggregator: true,
     cli_auth_hint: "",
 };
 
@@ -627,20 +683,6 @@ const P_QWEN_OAUTH: HermesProvider = HermesProvider {
     cli_auth_hint: "hermes auth login qwen-oauth",
 };
 
-const P_GOOGLE_GEMINI_CLI: HermesProvider = HermesProvider {
-    id: "google-gemini-cli",
-    name: "Google Gemini (OAuth)",
-    auth_type: AUTH_OAUTH_EXTERNAL,
-    base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
-    base_url_env_var: "",
-    api_key_env_vars: &[],
-    transport: TRANSPORT_OPENAI_CHAT,
-    models_probe: PROBE_NONE,
-    models: &["gemini-2.5-pro", "gemini-2.5-flash"],
-    is_aggregator: false,
-    cli_auth_hint: "hermes auth login google-gemini-cli",
-};
-
 const P_COPILOT_ACP: HermesProvider = HermesProvider {
     id: "copilot-acp",
     name: "GitHub Copilot ACP",
@@ -688,6 +730,7 @@ pub const ALL_PROVIDERS: &[HermesProvider] = &[
     P_ARCEE,
     P_AZURE_FOUNDRY,
     P_GMI,
+    P_NOVITA,
     P_LMSTUDIO,
     P_NVIDIA,
     P_OLLAMA_CLOUD,
@@ -700,8 +743,10 @@ pub const ALL_PROVIDERS: &[HermesProvider] = &[
     P_ALIBABA_CODING_PLAN,
     P_MINIMAX_CN,
     P_XIAOMI,
+    P_STEPFUN,
     // SDK-backed providers
     P_BEDROCK,
+    P_VERTEX,
     // Aggregators / routers
     P_OPENROUTER,
     P_AI_GATEWAY,
@@ -712,7 +757,6 @@ pub const ALL_PROVIDERS: &[HermesProvider] = &[
     P_NOUS,
     P_OPENAI_CODEX,
     P_QWEN_OAUTH,
-    P_GOOGLE_GEMINI_CLI,
     P_MINIMAX_OAUTH,
     P_COPILOT_ACP,
     // Custom (frontend placeholder)
@@ -827,11 +871,15 @@ mod tests {
 
     #[test]
     fn registry_has_expected_providers() {
-        assert_eq!(ALL_PROVIDERS.len(), 33);
+        assert_eq!(ALL_PROVIDERS.len(), 35);
         assert!(get_provider("anthropic").is_some());
         assert!(get_provider("gemini").is_some());
         assert!(get_provider("alibaba-coding-plan").is_some());
         assert!(get_provider("bedrock").is_some());
+        assert!(get_provider("vertex").is_some());
+        assert!(get_provider("novita").is_some());
+        assert!(get_provider("stepfun").is_some());
+        assert!(get_provider("google-gemini-cli").is_none());
         assert!(get_provider("lmstudio").is_some());
         assert!(get_provider("nous").is_some());
         assert!(get_provider("custom").is_some());
@@ -843,7 +891,10 @@ mod tests {
         assert_eq!(primary_api_key_env("anthropic"), Some("ANTHROPIC_API_KEY"));
         assert_eq!(primary_api_key_env("gemini"), Some("GOOGLE_API_KEY"));
         assert_eq!(primary_api_key_env("zai"), Some("GLM_API_KEY"));
+        assert_eq!(primary_api_key_env("novita"), Some("NOVITA_API_KEY"));
+        assert_eq!(primary_api_key_env("stepfun"), Some("STEPFUN_API_KEY"));
         assert_eq!(primary_api_key_env("bedrock"), None);
+        assert_eq!(primary_api_key_env("vertex"), None);
         assert_eq!(primary_api_key_env("nous"), None);
     }
 
@@ -857,6 +908,9 @@ mod tests {
         assert!(keys.contains(&"GEMINI_BASE_URL"));
         assert!(keys.contains(&"ALIBABA_CODING_PLAN_API_KEY"));
         assert!(keys.contains(&"LM_API_KEY"));
+        assert!(keys.contains(&"NOVITA_API_KEY"));
+        assert!(keys.contains(&"NOVITA_BASE_URL"));
+        assert!(keys.contains(&"STEPFUN_API_KEY"));
         assert!(keys.contains(&"GATEWAY_ALLOW_ALL_USERS"));
         assert!(keys.contains(&"API_SERVER_KEY"));
         // No duplicates

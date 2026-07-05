@@ -5,10 +5,14 @@ mod utils;
 
 use commands::{
     agent, assistant, cli_conflict, config, device, diagnose, extensions, hermes, hermes_providers,
-    logs, memory, messaging, pairing, service, site_api, skills, update,
+    logs, media, memory, messaging, pairing, portable, service, site_api, skills, update,
 };
 
 pub fn run() {
+    // 便携模式检测必须最先执行：下一行 openclaw_dir() 已经依赖它，
+    // 且 portable context 需在 ENHANCED_PATH_CACHE 等缓存填充之前就绪
+    commands::portable::init();
+
     let hot_update_dir = commands::openclaw_dir()
         .join("clawpanel")
         .join("web-update");
@@ -109,6 +113,8 @@ pub fn run() {
             config::get_openclaw_dir,
             config::read_panel_config,
             config::write_panel_config,
+            portable::get_portable_status,
+            portable::migrate_to_portable,
             config::test_proxy,
             config::get_npm_registry,
             config::set_npm_registry,
@@ -194,6 +200,20 @@ pub fn run() {
             assistant::assistant_save_image,
             assistant::assistant_load_image,
             assistant::assistant_delete_image,
+            // 云端媒体生成
+            media::read_media_config,
+            media::write_media_config,
+            media::test_media_provider,
+            media::fetch_media_models,
+            media::generate_image,
+            media::create_video_task,
+            media::poll_video_task,
+            media::cancel_media_job,
+            media::list_media_jobs,
+            media::delete_media_job,
+            media::reveal_media_asset,
+            media::reveal_media_output_dir,
+            media::load_media_asset,
             // 消息渠道管理
             messaging::read_platform_config,
             messaging::save_messaging_platform,

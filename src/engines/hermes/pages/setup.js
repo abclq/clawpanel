@@ -716,6 +716,12 @@ function renderGroupedProviderButtons() {
   if (hermesGroups.aggregators.length) {
     parts.push(`<div style="${sectionStyle}"><div style="${titleStyle}">${t('engine.hermesProviderGroupAggregator')}</div><div style="${rowStyle}">${hermesGroups.aggregators.map(btn).join('')}</div></div>`)
   }
+  if (hermesGroups.externalProc.length) {
+    const externalItems = hermesGroups.externalProc.map(p =>
+      `<div style="font-size:11px;color:var(--text-tertiary);margin-right:10px"><code>${p.name}</code>：${p.cliAuthHint || t('engine.hermesProviderExternalHint')}</div>`
+    ).join('')
+    parts.push(`<div style="${sectionStyle}"><div style="${titleStyle}">${t('engine.hermesProviderGroupExternal')}</div><div style="display:flex;flex-wrap:wrap;gap:4px 0">${externalItems}</div></div>`)
+  }
   if (hermesGroups.oauth.length) {
     const oauthItems = hermesGroups.oauth.map(p =>
       `<div style="font-size:11px;color:var(--text-tertiary);margin-right:10px"><code>${p.name}</code>：${t('engine.hermesProviderOAuthRunHint') || '需运行'} <code>${p.cliAuthHint}</code></div>`

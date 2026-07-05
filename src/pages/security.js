@@ -246,6 +246,7 @@ function bindSecurityEvents(container, status) {
         sessionStorage.removeItem('clawpanel_must_change_pw')
         const banner = document.getElementById('pw-change-banner')
         if (banner) banner.remove()
+        document.body.classList.remove('has-password-change-banner')
         setTimeout(() => loadStatus(container.closest('.page')), 1000)
       } catch (err) {
         msgEl.textContent = err.message

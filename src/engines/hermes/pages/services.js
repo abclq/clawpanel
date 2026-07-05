@@ -179,7 +179,9 @@ export function render() {
     const gatewayUrl = info?.gatewayUrl || `http://127.0.0.1:${port}`
     const model = config?.model || info?.model || health?.model || t('engine.dashNoModel')
     const provider = config?.provider || t('engine.servicesUnknown')
-    const installType = info?.managed || (info?.installed ? 'uv-tool' : t('engine.servicesUnknown'))
+    const installType = info?.portable
+      ? t('engine.servicesInstallTypePortable')
+      : (info?.managed || (info?.installed ? 'uv-tool' : t('engine.servicesUnknown')))
     const installState = info?.installed ? t('engine.servicesInstalled') : t('engine.servicesMissing')
     const llmBaseUrl = config?.base_url || t('engine.servicesNotSet')
     const configModel = config?.model_raw || config?.model || info?.model || t('engine.dashNoModel')
@@ -245,6 +247,10 @@ export function render() {
               ${renderInfoRow(t('engine.servicesInstallType'), installType)}
               ${renderInfoRow(t('engine.servicesPath'), info?.path || t('engine.servicesNotSet'), true)}
               ${renderInfoRow(t('engine.servicesHome'), info?.hermesHome || t('engine.servicesNotSet'), true)}
+              ${info?.portable ? renderInfoRow(t('settings.portableMigrateRoot'), info?.portableRoot || t('engine.servicesNotSet'), true) : ''}
+              ${info?.portable ? renderInfoRow(t('settings.portableMigrateHermes'), info?.enginesHermesDir || t('engine.servicesNotSet'), true) : ''}
+              ${info?.portable ? renderInfoRow('uv', info?.uvBinPath || t('engine.servicesNotSet'), true) : ''}
+              ${info?.portable ? renderInfoRow('Git', info?.portableGitReady ? (info?.portableGitPath || t('engine.servicesInstalled')) : t('engine.servicesMissing'), true) : ''}
             </div>
             <div class="hm-field-label" style="margin:16px 0 10px">${esc(t('engine.servicesConfigFiles'))}</div>
             <div class="hm-pills">

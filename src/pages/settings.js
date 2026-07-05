@@ -111,6 +111,11 @@ export async function render() {
     <div class="config-section" id="cli-binding-section">
       <div class="config-section-title">${t('settings.openclawCli')}</div>
       <div id="cli-binding-bar"><div class="stat-card loading-placeholder" style="height:48px"></div></div>
+    </div>
+
+    <div class="config-section" id="portable-section">
+      <div class="config-section-title">${t('settings.portableMode')}</div>
+      <div id="portable-bar"><div class="stat-card loading-placeholder" style="height:64px"></div></div>
     </div>`}
 
     <div class="config-section" id="hermes-mirror-section">
@@ -139,7 +144,7 @@ async function loadAll(page) {
   const isHermes = getActiveEngineId() === 'hermes'
   const tasks = [loadProxyConfig(page), loadModelProxyConfig(page), loadHermesMirror(page)]
   if (!isHermes) {
-    tasks.push(loadOpenclawDir(page), loadOpenclawSearchPaths(page), loadDockerDefaults(page), loadGitPath(page), loadCliBinding(page), loadRegistry(page))
+    tasks.push(loadOpenclawDir(page), loadOpenclawSearchPaths(page), loadDockerDefaults(page), loadGitPath(page), loadCliBinding(page), loadPortableMigration(page), loadRegistry(page))
   }
   if (window.__TAURI_INTERNALS__) tasks.push(loadAutostart(page))
   await Promise.all(tasks)
@@ -501,6 +506,9 @@ function bindEvents(page) {
         case 'unbind-cli':
           await handleUnbindCli(page)
           break
+        case 'migrate-portable':
+          await handleMigrateToPortable(page)
+          break
       }
     } catch (e) {
       toast(e.toString(), 'error')
@@ -727,6 +735,7 @@ async function loadCliBinding(page) {
     const currentPath = version.cli_path || ''
 
     const sourceLabel = (src) => ({
+      portable: t('dashboard.cliSourcePortable'),
       standalone: t('dashboard.cliSourceStandalone'),
       'npm-zh': t('dashboard.cliSourceNpmZh'),
       'npm-official': t('dashboard.cliSourceNpmOfficial'),
@@ -791,6 +800,104 @@ async function handleUnbindCli(page) {
   toast(t('common.saveSuccess'), 'success')
   await loadCliBinding(page)
   await maybeRefreshGatewayServiceBinding()
+}
+
+// ===== 便携模式迁移 =====
+
+function portableTargetPlaceholder() {
+  const isWin = navigator.platform?.startsWith('Win') || navigator.userAgent?.includes('Windows')
+  return isWin ? 'E:\\ClawPanelPortable' : '/Volumes/USB/ClawPanelPortable'
+}
+
+async function loadPortableMigration(page) {
+  const bar = page.querySelector('#portable-bar')
+  if (!bar) return
+  if (!isTauri) {
+    bar.innerHTML = `<div style="color:var(--text-tertiary);font-size:var(--font-size-sm)">${t('settings.portableDesktopOnly')}</div>`
+    return
+  }
+  try {
+    const status = await api.getPortableStatus()
+    if (status?.enabled) {
+      bar.innerHTML = `
+        <div style="display:flex;align-items:center;gap:var(--space-sm);flex-wrap:wrap">
+          <span class="clawhub-badge" style="background:rgba(16,185,129,0.14);color:#059669">${t('settings.portableAlreadyEnabled')}</span>
+          <code style="font-size:var(--font-size-xs)">${escapeHtml(status.root || '')}</code>
+        </div>
+        <div class="form-hint" style="margin-top:var(--space-xs)">${t('settings.portableEnabledHint')}</div>
+      `
+      return
+    }
+    bar.innerHTML = `
+      <div style="display:flex;align-items:center;gap:var(--space-sm);flex-wrap:wrap">
+        <input class="form-input" data-name="portable-target-root" placeholder="${escapeHtml(portableTargetPlaceholder())}" style="max-width:420px;min-width:260px">
+        <button class="btn btn-primary btn-sm" data-action="migrate-portable">${t('settings.portableMigrateBtn')}</button>
+      </div>
+      <div class="form-hint" style="margin-top:var(--space-xs)">${t('settings.portableModeHint')}</div>
+      <div id="portable-migrate-result" style="margin-top:var(--space-sm);display:none"></div>
+    `
+  } catch (e) {
+    bar.innerHTML = `<div style="color:var(--error)">${t('common.loadFailed')}: ${escapeHtml(String(e))}</div>`
+  }
+}
+
+function renderPortableMigrationResult(report) {
+  const notes = []
+  if (report?.appCopied && report?.portableAppPath) {
+    notes.push(`${t('settings.portableMigrateAppCopied')}: <code>${escapeHtml(report.portableAppPath)}</code>`)
+  }
+  if (report?.copiedEngine) {
+    notes.push(t('settings.portableMigrateEngineCopied'))
+  }
+  if (report?.needsOpenclawInstall) {
+    notes.push(t('settings.portableMigrateNeedInstall'))
+  }
+  if (report?.copiedHermesHome) {
+    notes.push(t('settings.portableMigrateHermesCopied'))
+  }
+  if (report?.needsHermesInstall) {
+    notes.push(t('settings.portableMigrateNeedHermesInstall'))
+  }
+  return `
+    <div style="padding:10px 12px;border:1px solid var(--border-primary);border-radius:var(--radius-sm);background:var(--bg-secondary);font-size:var(--font-size-sm);line-height:1.6">
+      <div style="font-weight:600;color:var(--success);margin-bottom:4px">${t('settings.portableMigrateDone')}</div>
+      <div>${t('settings.portableMigrateRoot')}: <code>${escapeHtml(report?.root || '')}</code></div>
+      <div>${t('settings.portableMigrateConfig')}: <code>${escapeHtml(report?.panelConfigPath || '')}</code></div>
+      <div>${t('settings.portableMigrateOpenclaw')}: <code>${escapeHtml(report?.openclawDir || '')}</code></div>
+      <div>${t('settings.portableMigrateHermes')}: <code>${escapeHtml(report?.hermesHome || '')}</code></div>
+      ${notes.length ? `<ul style="margin:6px 0 0 18px;padding:0">${notes.map(n => `<li>${n}</li>`).join('')}</ul>` : ''}
+    </div>
+  `
+}
+
+async function handleMigrateToPortable(page) {
+  const input = page.querySelector('[data-name="portable-target-root"]')
+  const resultEl = page.querySelector('#portable-migrate-result')
+  const targetRoot = input?.value?.trim() || ''
+  if (!targetRoot) {
+    toast(t('settings.portableTargetRequired'), 'warning')
+    return
+  }
+  const ok = await showConfirm(t('settings.portableMigrateConfirm'))
+  if (!ok) return
+  if (resultEl) {
+    resultEl.style.display = 'block'
+    resultEl.innerHTML = `<div style="color:var(--text-tertiary);font-size:var(--font-size-sm)">${t('settings.portableMigrating')}</div>`
+  }
+  let report
+  try {
+    report = await api.migrateToPortable(targetRoot)
+  } catch (e) {
+    // 失败时必须把结果框从"正在迁移"切到错误态，否则用户会以为迁移仍在进行
+    if (resultEl) {
+      resultEl.innerHTML = `<div style="color:var(--error);font-size:var(--font-size-sm)">${escapeHtml(e?.message || String(e))}</div>`
+    }
+    throw e
+  }
+  if (resultEl) {
+    resultEl.innerHTML = renderPortableMigrationResult(report)
+  }
+  toast(t('settings.portableMigrateDone'), 'success')
 }
 
 // ===== 语言切换 =====

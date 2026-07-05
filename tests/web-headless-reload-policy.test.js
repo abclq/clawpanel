@@ -21,10 +21,11 @@ test('Web/headless 模式自动配对重连不能隐式 reload Gateway', () => {
     /import\s+\{\s*api\s*,\s*isTauriRuntime\s*\}\s+from\s+['"]\.\/tauri-api\.js['"]/,
     'ws-client 必须能判断当前是否为 Tauri 桌面端',
   )
-  assert.match(
+  // e16ff2b 起自动配对后不再隐式 reload（任何平台）：连接层不得触发 Gateway 重载
+  assert.doesNotMatch(
     wsClient,
-    /if\s*\(\s*isTauriRuntime\(\)\s*\)\s*\{[\s\S]*?await\s+api\.reloadGateway\(\)/,
-    '自动配对后的 reload 只能在 Tauri 桌面端执行',
+    /api\.reloadGateway\(/,
+    'ws-client 不得隐式 reload Gateway（自动配对重连由上层显式处理）',
   )
 })
 

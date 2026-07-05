@@ -22,6 +22,7 @@ function escapeHtml(str) {
 
 function openclawSourceLabel(src) {
   return ({
+    portable: t('dashboard.cliSourcePortable'),
     standalone: t('dashboard.cliSourceStandalone'),
     'npm-zh': t('dashboard.cliSourceNpmZh'),
     'npm-official': t('dashboard.cliSourceNpmOfficial'),
@@ -127,6 +128,7 @@ export async function render() {
                 <span class="setup-hero-site-value">claw.qt.cool</span>
               </a>
             </div>
+            <div id="setup-portable-badge" style="display:none;margin-top:8px"></div>
           </div>
         </div>
         <div class="setup-hero-actions">
@@ -142,6 +144,29 @@ export async function render() {
   `
 
   page.querySelector('#btn-recheck').addEventListener('click', () => runDetect(page))
+
+  // 便携模式徽标：enabled 才显示；状态在进程生命周期内固定，接口失败静默
+  api.getPortableStatus().then(st => {
+    if (!st?.enabled) return
+    const el = page.querySelector('#setup-portable-badge')
+    if (!el) return
+    const warnings = (st.warnings || []).map(w => {
+      if (w === 'node-missing') return t('setup.portableWarnNode')
+      if (w === 'cli-missing') return t('setup.portableWarnCli')
+      if (w === 'hermes-cli-missing') return t('setup.portableWarnHermesCli')
+      if (typeof w === 'string' && w.startsWith('absolute-path:')) {
+        return t('setup.portableWarnAbsPath', { field: w.slice('absolute-path:'.length) })
+      }
+      return String(w)
+    })
+    el.style.display = 'block'
+    el.innerHTML = `
+      <span style="display:inline-flex;align-items:center;gap:6px;padding:2px 10px;border-radius:999px;background:var(--accent-soft, rgba(99,102,241,.12));color:var(--accent, #6366f1);font-size:12px;font-weight:600" title="${escapeHtml(st.root || '')}">
+        💾 ${t('setup.portableBadge')} · ${escapeHtml(st.root || '')}
+      </span>
+      ${warnings.length ? `<div style="margin-top:4px;font-size:12px;color:var(--warning)">${warnings.map(escapeHtml).join('<br>')}</div>` : ''}
+    `
+  }).catch(() => {})
 
   // #Compat-4: 用户在浏览器里手动装完 Node.js 后切回 panel，或用户装完 Git/OpenClaw
   // 后 app 失焦又重新获得焦点时，自动重新检测，避免「装完不识别」。
@@ -164,7 +189,8 @@ export async function render() {
   document.addEventListener('visibilitychange', onVisibilityChange)
   window.addEventListener('focus', onVisibilityChange)
 
-  runDetect(page)
+  // 首次进入：跳过缓存清理，尽快出首屏
+  runDetect(page, { fresh: false })
   return page
 }
 
@@ -213,7 +239,11 @@ async function promptRestart(msg) {
   }
 }
 
-async function runDetect(page) {
+// 检测序号：并发触发（首次加载 / 重新检测 / 窗口聚焦）时，只允许最新一次的结果上屏
+let _detectSeq = 0
+
+async function runDetect(page, { fresh = true } = {}) {
+  const seq = ++_detectSeq
   const stepsEl = page.querySelector('#setup-steps')
   stepsEl.innerHTML = `
     <div class="stat-card loading-placeholder" style="height:48px"></div>
@@ -221,20 +251,28 @@ async function runDetect(page) {
     <div class="stat-card loading-placeholder" style="height:48px;margin-top:8px"></div>
     <div class="stat-card loading-placeholder" style="height:48px;margin-top:8px"></div>
   `
-  // 清除前端 invoke 缓存
-  invalidate('get_version_info', 'check_node', 'check_git', 'get_services_status', 'check_installation')
-  // #Compat-4: 同步刷新 Rust 端 PATH 缓存 + CLI 检测缓存
-  // 用户手动装完 Node.js/Git 后，Tauri 进程的 PATH 仍是启动时快照，且 enhanced_path 有缓存。
-  // 必须先调此命令扫描文件系统新装路径，才能让 where/which 找到新二进制。
-  try { await api.invalidatePathCache() } catch {}
+  // 首次进入页面（fresh=false）跳过缓存清理：进程刚启动时 PATH 缓存是新鲜的，
+  // 还能复用启动流程已缓存的检测结果，让首屏尽快出现；
+  // 手动「重新检测」、窗口聚焦重检和安装后的重试仍然完整清理（fresh=true）。
+  if (fresh) {
+    // 清除前端 invoke 缓存
+    invalidate('get_version_info', 'check_node', 'check_git', 'get_services_status', 'check_installation')
+    // #Compat-4: 同步刷新 Rust 端 PATH 缓存 + CLI 检测缓存
+    // 用户手动装完 Node.js/Git 后，Tauri 进程的 PATH 仍是启动时快照，且 enhanced_path 有缓存。
+    // 必须先调此命令扫描文件系统新装路径，才能让 where/which 找到新二进制。
+    try { await api.invalidatePathCache() } catch {}
+  }
+  // 版本信息包含 npm registry 网络查询与全盘安装扫描，是最慢的一项；
+  // 步骤卡片的通过/失败判定不依赖它，先用本地检测结果渲染，版本详情返回后再补充
+  const versionPromise = api.getVersionInfo().catch(() => null)
   // 并行检测 Node.js、Git、OpenClaw CLI、配置文件
-  const [nodeRes, gitRes, clawRes, configRes, versionRes] = await Promise.allSettled([
+  const [nodeRes, gitRes, clawRes, configRes] = await Promise.allSettled([
     api.checkNode(),
     api.checkGit(),
     api.getServicesStatus(),
     api.checkInstallation(),
-    api.getVersionInfo(),
   ])
+  if (seq !== _detectSeq || !page.isConnected) return
 
   const node = nodeRes.status === 'fulfilled' ? nodeRes.value : { installed: false }
   const git = gitRes.status === 'fulfilled' ? gitRes.value : { installed: false }
@@ -242,7 +280,6 @@ async function runDetect(page) {
     && clawRes.value?.length > 0
     && clawRes.value[0]?.cli_installed !== false
   let config = configRes.status === 'fulfilled' ? configRes.value : { installed: false }
-  const version = versionRes.status === 'fulfilled' ? versionRes.value : null
 
   // Git 已安装时，自动配置 HTTPS 替代 SSH（静默执行）
   if (git.installed) {
@@ -260,6 +297,10 @@ async function runDetect(page) {
     return
   }
 
+  renderSteps(page, { node, git, cliOk, config, version: null })
+
+  const version = await versionPromise
+  if (seq !== _detectSeq || !page.isConnected || !version) return
   renderSteps(page, { node, git, cliOk, config, version })
 }
 

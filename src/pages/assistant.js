@@ -560,6 +560,84 @@ const TOOL_DEFS = {
       },
     },
   ],
+  media: [
+    {
+      type: 'function',
+      function: {
+        name: 'get_media_config',
+        description: '读取媒体中心的脱敏配置摘要，包括默认服务商、输出目录、图片/视频模型是否已配置。不会返回 API Key 明文。',
+        parameters: { type: 'object', properties: {}, required: [] },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'generate_image',
+        description: '调用媒体中心生成图片。会使用媒体中心已保存的服务商配置和 API Key，生成结果保存到媒体中心产物目录。此操作可能产生服务商费用。',
+        parameters: {
+          type: 'object',
+          properties: {
+            prompt: { type: 'string', description: '图片提示词，描述主体、风格、构图、光线和细节' },
+            provider: { type: 'string', enum: ['volcengine', 'openai', 'newapi'], description: '服务商，可选；不填则使用媒体中心默认服务商' },
+            model: { type: 'string', description: '模型 ID，可选；不填则使用媒体中心默认图片模型' },
+            size: { type: 'string', description: '尺寸，可填 1024x1024、16:9 对应服务商尺寸、1K、2K、4K、auto 等' },
+            count: { type: 'integer', description: '生成数量，1-4，默认 1' },
+          },
+          required: ['prompt'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'create_video_task',
+        description: '调用媒体中心创建视频生成任务。会使用媒体中心已保存的服务商配置和 API Key，任务和产物保存到媒体中心。此操作可能产生服务商费用。',
+        parameters: {
+          type: 'object',
+          properties: {
+            prompt: { type: 'string', description: '视频提示词，描述镜头、主体动作、场景变化和节奏' },
+            provider: { type: 'string', enum: ['volcengine', 'openai', 'newapi'], description: '服务商，可选；不填则使用媒体中心默认服务商' },
+            model: { type: 'string', description: '模型 ID，可选；不填则使用媒体中心默认视频模型' },
+            ratio: { type: 'string', enum: ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9'], description: '视频比例，默认 16:9' },
+            resolution: { type: 'string', enum: ['480p', '720p', '1080p', '1440p'], description: '视频分辨率，默认 720p' },
+            duration: { type: 'integer', description: '视频时长，1-30 秒，默认 5' },
+            imageUrl: { type: 'string', description: '图生视频参考图片 URL，可选' },
+          },
+          required: ['prompt'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'poll_video_task',
+        description: '查询媒体中心中的视频任务状态。任务完成时会下载视频产物到媒体中心产物目录。',
+        parameters: {
+          type: 'object',
+          properties: {
+            jobId: { type: 'string', description: '媒体中心任务 ID' },
+          },
+          required: ['jobId'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'list_media_jobs',
+        description: '列出媒体中心历史任务，可按类型和状态筛选。用于查看之前生成的图片/视频产物。',
+        parameters: {
+          type: 'object',
+          properties: {
+            type: { type: 'string', enum: ['image', 'video'], description: '任务类型，可选' },
+            status: { type: 'string', enum: ['running', 'succeeded', 'failed', 'canceled'], description: '任务状态，可选' },
+            limit: { type: 'integer', description: '返回数量，默认 10，最多 50' },
+          },
+          required: [],
+        },
+      },
+    },
+  ],
   skills: [
     {
       type: 'function',
@@ -692,7 +770,8 @@ const TOOL_DEFS = {
 
 // 危险工具（需要用户确认）
 const INTERACTIVE_TOOLS = new Set(['ask_user']) // 交互式工具，不走 confirmToolCall
-const DANGEROUS_TOOLS = new Set(['run_command', 'write_file', 'skills_install_dep', 'skillhub_install'])
+const DANGEROUS_TOOLS = new Set(['run_command', 'write_file', 'skills_install_dep', 'skillhub_install', 'generate_image', 'create_video_task'])
+const MEDIA_READONLY_TOOLS = new Set(['get_media_config', 'list_media_jobs'])
 
 // 安全围栏：极端危险命令模式（任何模式都必须确认，包括无限模式）
 const CRITICAL_PATTERNS = [
@@ -1065,6 +1144,16 @@ function getEnabledTools() {
 
   // 联网搜索工具：受设置开关控制
   if (tc.webSearch !== false) tools.push(...TOOL_DEFS.webSearch)
+
+  // 媒体生成工具：复用媒体中心配置；规划模式只允许读取配置/历史。
+  // 会产生云端费用，必须用户在设置里显式开启（=== true，老配置缺省视为关闭）
+  if (tc.media === true) {
+    if (mode.readOnly) {
+      tools.push(...TOOL_DEFS.media.filter(td => MEDIA_READONLY_TOOLS.has(td.function.name)))
+    } else {
+      tools.push(...TOOL_DEFS.media)
+    }
+  }
 
   // 文件工具：受设置开关控制 + 规划模式排除写入
   if (tc.fileOps !== false) {
@@ -2405,11 +2494,11 @@ function loadConfig() {
     _config = raw ? JSON.parse(raw) : null
   } catch { _config = null }
   if (!_config) {
-    _config = { baseUrl: '', apiKey: '', model: '', temperature: 0.7, tools: { terminal: false, fileOps: false, webSearch: false }, assistantName: DEFAULT_NAME, assistantPersonality: DEFAULT_PERSONALITY }
+    _config = { baseUrl: '', apiKey: '', model: '', temperature: 0.7, tools: { terminal: false, fileOps: false, webSearch: false, media: false }, assistantName: DEFAULT_NAME, assistantPersonality: DEFAULT_PERSONALITY }
   }
   if (!_config.assistantName) _config.assistantName = DEFAULT_NAME
   if (!_config.assistantPersonality) _config.assistantPersonality = DEFAULT_PERSONALITY
-  if (!_config.tools) _config.tools = { terminal: false, fileOps: false, webSearch: false }
+  if (!_config.tools) _config.tools = { terminal: false, fileOps: false, webSearch: false, media: false }
   if (!_config.mode) _config.mode = DEFAULT_MODE
   _config.apiType = normalizeApiType(_config.apiType)
   if (_config.autoRounds === undefined) _config.autoRounds = 8
@@ -3033,7 +3122,69 @@ async function readSSEStream(resp, onEvent, signal) {
 
 // ── 工具执行 ──
 
-async function executeTool(name, args) {
+function compactMediaRequest(input = {}, allowed = []) {
+  const out = {}
+  for (const key of allowed) {
+    const value = input[key]
+    if (value === undefined || value === null || value === '') continue
+    out[key] = value
+  }
+  return out
+}
+
+async function resolveMediaProvider(args = {}) {
+  if (args.provider) return args.provider
+  try {
+    const config = await api.readMediaConfig()
+    return config?.defaults?.provider || 'volcengine'
+  } catch {
+    return 'volcengine'
+  }
+}
+
+function summarizeMediaConfig(config = {}) {
+  const providers = config.providers || {}
+  const rows = Object.entries(providers).map(([id, provider]) => {
+    const status = provider.apiKeySaved ? '已配置' : '未配置'
+    const imageModel = provider.imageModel || '-'
+    const videoModel = provider.videoModel || '-'
+    return `- ${id}: ${status}; image=${imageModel}; video=${videoModel}`
+  })
+  return [
+    '媒体中心配置',
+    `默认服务商: ${config.defaults?.provider || '-'}`,
+    `输出目录: ${config.resolvedOutputDir || config.outputDir || '默认目录'}`,
+    rows.length ? rows.join('\n') : '暂无服务商配置',
+  ].join('\n')
+}
+
+function summarizeMediaJob(job = {}) {
+  const assets = Array.isArray(job.assets) ? job.assets : []
+  const assetLines = assets.map((asset, index) => {
+    const root = asset.root ? ` (${asset.root})` : ''
+    const size = asset.bytes ? ` ${Math.round(asset.bytes / 1024)}KB` : ''
+    return `  ${index + 1}. ${asset.path || '-'}${size}${root}`
+  })
+  return [
+    `媒体任务: ${job.id || '-'}`,
+    `类型: ${job.type || '-'}; 状态: ${job.status || '-'}`,
+    `服务商: ${job.provider || '-'}; 模型: ${job.model || '-'}`,
+    `提示词: ${job.prompt || '-'}`,
+    assets.length ? `产物:\n${assetLines.join('\n')}` : '产物: 暂无',
+    job.error ? `错误: ${job.error}` : '',
+  ].filter(Boolean).join('\n')
+}
+
+function summarizeMediaJobs(response = {}) {
+  const jobs = Array.isArray(response.jobs) ? response.jobs : []
+  if (!jobs.length) return '媒体中心暂无匹配任务'
+  return [
+    `媒体任务列表: ${jobs.length}/${response.total ?? jobs.length}`,
+    ...jobs.map(job => `- ${job.id || '-'} ${job.type || '-'} ${job.status || '-'} ${job.model || '-'} ${job.prompt ? '— ' + job.prompt : ''}`),
+  ].join('\n')
+}
+
+async function executeTool(name, args = {}) {
   switch (name) {
     case 'run_command':
       return await api.assistantExec(args.command, args.cwd)
@@ -3063,6 +3214,40 @@ async function executeTool(name, args) {
       return await api.assistantWebSearch(args.query, args.max_results)
     case 'fetch_url':
       return await api.assistantFetchUrl(args.url)
+    case 'get_media_config':
+      return summarizeMediaConfig(await api.readMediaConfig())
+    case 'generate_image': {
+      const request = compactMediaRequest({
+        provider: await resolveMediaProvider(args),
+        prompt: args.prompt,
+        model: args.model,
+        size: args.size,
+        count: args.count,
+      }, ['provider', 'prompt', 'model', 'size', 'count'])
+      return summarizeMediaJob(await api.generateImage(request))
+    }
+    case 'create_video_task': {
+      const request = compactMediaRequest({
+        provider: await resolveMediaProvider(args),
+        prompt: args.prompt,
+        model: args.model,
+        ratio: args.ratio || '16:9',
+        resolution: args.resolution || '720p',
+        duration: args.duration || 5,
+        imageUrl: args.imageUrl,
+      }, ['provider', 'prompt', 'model', 'ratio', 'resolution', 'duration', 'imageUrl'])
+      return summarizeMediaJob(await api.createVideoTask(request))
+    }
+    case 'poll_video_task':
+      return summarizeMediaJob(await api.pollVideoTask(args.jobId))
+    case 'list_media_jobs': {
+      const filter = compactMediaRequest({
+        type: args.type,
+        status: args.status,
+        limit: Math.min(Math.max(Number(args.limit || 10), 1), 50),
+      }, ['type', 'status', 'limit'])
+      return summarizeMediaJobs(await api.listMediaJobs(filter))
+    }
     case 'skills_list': {
       const data = await api.skillsList()
       const skills = data?.skills || []
@@ -3198,6 +3383,10 @@ async function confirmToolCall(tc, critical = false) {
     desc = `${t('assistant.confirmWriteFile')}:\n${args.path}\n\n${t('assistant.confirmPreview')}:\n${preview}${(args.content || '').length > 200 ? '\n...(' + t('assistant.confirmTruncated') + ')' : ''}`
   } else if (name === 'browser_action') {
     desc = `浏览器动作: ${args.action || ''}\nURL: ${args.url || '-'}\n目标: ${args.ref || '-'}\n会话: ${args.session || 'clawpanel-assistant'}`
+  } else if (name === 'generate_image') {
+    desc = `${t('assistant.confirmGenerateImage')}:\n${args.prompt || '-'}\n\nprovider=${args.provider || 'default'} model=${args.model || 'default'} count=${args.count || 1}`
+  } else if (name === 'create_video_task') {
+    desc = `${t('assistant.confirmCreateVideo')}:\n${args.prompt || '-'}\n\nprovider=${args.provider || 'default'} model=${args.model || 'default'} duration=${args.duration || 5}s ratio=${args.ratio || '16:9'}`
   }
 
   const prefix = critical
@@ -3235,7 +3424,12 @@ async function executeToolWithSafety(toolName, args, tcForConfirm) {
   const mode = MODES[currentMode()]
   const isCritical = toolName === 'run_command' && isCriticalCommand(args.command)
   const isBrowserWrite = toolName === 'browser_action' && BROWSER_WRITE_ACTIONS.has(String(args.action || ''))
+  // 付费媒体生成消耗用户自己的云端额度：无论何种模式都必须确认，不受 confirmDanger 开关影响
+  const isPaidMedia = toolName === 'generate_image' || toolName === 'create_video_task'
   if (isCritical) {
+    approved = await confirmToolCall(tcForConfirm || { function: { name: toolName, arguments: JSON.stringify(args) } }, true)
+    if (!approved) result = t('assistant.toolRejectedDanger')
+  } else if (isPaidMedia) {
     approved = await confirmToolCall(tcForConfirm || { function: { name: toolName, arguments: JSON.stringify(args) } }, true)
     if (!approved) result = t('assistant.toolRejectedDanger')
   } else if (isBrowserWrite) {
@@ -3581,8 +3775,8 @@ function renderToolBlocks(toolHistory) {
     // ask_user 工具不显示在工具块中（它有自己的交互卡片）
     if (tc.name === 'ask_user') return ''
 
-    const tcIcon = { run_command: icon('terminal', 14), write_file: icon('edit', 14), read_file: icon('file', 14), list_directory: icon('folder', 14), get_system_info: icon('monitor', 14), list_processes: icon('list', 14), check_port: icon('plug', 14), get_openclaw_context: icon('info', 14), diagnose_openclaw: icon('shield', 14), get_openclaw_schema_graph: icon('hash', 14), browser_action: icon('globe', 14), skills_list: icon('box', 14), skills_info: icon('box', 14), skills_check: icon('box', 14), skills_install_dep: icon('download', 14), skillhub_search: icon('search', 14), skillhub_install: icon('download', 14) }[tc.name] || icon('wrench', 14)
-    const label = { run_command: t('assistant.toolRunCmd'), read_file: t('assistant.toolReadFile'), write_file: t('assistant.toolWriteFile'), list_directory: t('assistant.toolListDir'), get_system_info: t('assistant.toolSysInfo'), list_processes: t('assistant.toolProcessList'), check_port: t('assistant.toolCheckPort'), get_openclaw_context: '读取 OpenClaw 实况', diagnose_openclaw: '诊断 OpenClaw', get_openclaw_schema_graph: 'OpenClaw Schema 图谱', browser_action: '浏览器操作', skills_list: t('assistant.toolSkillsList'), skills_info: t('assistant.toolSkillInfo'), skills_check: t('assistant.toolSkillsCheck'), skills_install_dep: t('assistant.toolInstallDep'), skillhub_search: t('assistant.toolSkillHubSearch'), skillhub_install: t('assistant.toolSkillHubInstall') }[tc.name] || tc.name
+    const tcIcon = { run_command: icon('terminal', 14), write_file: icon('edit', 14), read_file: icon('file', 14), list_directory: icon('folder', 14), get_system_info: icon('monitor', 14), list_processes: icon('list', 14), check_port: icon('plug', 14), get_openclaw_context: icon('info', 14), diagnose_openclaw: icon('shield', 14), get_openclaw_schema_graph: icon('hash', 14), browser_action: icon('globe', 14), get_media_config: icon('gear', 14), generate_image: icon('image', 14), create_video_task: icon('film', 14), poll_video_task: icon('refresh-cw', 14), list_media_jobs: icon('folder', 14), skills_list: icon('box', 14), skills_info: icon('box', 14), skills_check: icon('box', 14), skills_install_dep: icon('download', 14), skillhub_search: icon('search', 14), skillhub_install: icon('download', 14) }[tc.name] || icon('wrench', 14)
+    const label = { run_command: t('assistant.toolRunCmd'), read_file: t('assistant.toolReadFile'), write_file: t('assistant.toolWriteFile'), list_directory: t('assistant.toolListDir'), get_system_info: t('assistant.toolSysInfo'), list_processes: t('assistant.toolProcessList'), check_port: t('assistant.toolCheckPort'), get_openclaw_context: '读取 OpenClaw 实况', diagnose_openclaw: '诊断 OpenClaw', get_openclaw_schema_graph: 'OpenClaw Schema 图谱', browser_action: '浏览器操作', get_media_config: t('assistant.toolMediaConfig'), generate_image: t('assistant.toolGenerateImage'), create_video_task: t('assistant.toolCreateVideo'), poll_video_task: t('assistant.toolPollVideo'), list_media_jobs: t('assistant.toolListMediaJobs'), skills_list: t('assistant.toolSkillsList'), skills_info: t('assistant.toolSkillInfo'), skills_check: t('assistant.toolSkillsCheck'), skills_install_dep: t('assistant.toolInstallDep'), skillhub_search: t('assistant.toolSkillHubSearch'), skillhub_install: t('assistant.toolSkillHubInstall') }[tc.name] || tc.name
     const argsStr = tc.name === 'run_command' ? escHtml(tc.args.command || '')
       : tc.name === 'read_file' ? escHtml(tc.args.path || '')
       : tc.name === 'write_file' ? escHtml(tc.args.path || '')
@@ -3592,6 +3786,11 @@ function renderToolBlocks(toolHistory) {
       : tc.name === 'diagnose_openclaw' ? escHtml(argsStrFromObject(tc.args, ['component', 'deep']))
       : tc.name === 'get_openclaw_schema_graph' ? escHtml(argsStrFromObject(tc.args, ['path', 'format', 'includeLiveContext']))
       : tc.name === 'browser_action' ? escHtml(argsStrFromObject(tc.args, ['action', 'url', 'ref', 'session']))
+      : tc.name === 'get_media_config' ? ''
+      : tc.name === 'generate_image' ? escHtml(argsStrFromObject(tc.args, ['provider', 'model', 'size', 'count']))
+      : tc.name === 'create_video_task' ? escHtml(argsStrFromObject(tc.args, ['provider', 'model', 'ratio', 'resolution', 'duration']))
+      : tc.name === 'poll_video_task' ? escHtml(tc.args.jobId || '')
+      : tc.name === 'list_media_jobs' ? escHtml(argsStrFromObject(tc.args, ['type', 'status', 'limit']))
       : tc.name === 'list_processes' ? escHtml(tc.args.filter || t('assistant.toolFilterAll'))
       : tc.name === 'check_port' ? escHtml(String(tc.args.port || ''))
       : tc.name === 'skills_info' ? escHtml(tc.args.name || '')
@@ -4018,6 +4217,11 @@ function showSettings() {
           <label class="ast-switch-row">
             <span>${t('assistant.toolWebSearch')} <span style="color:var(--text-tertiary);font-size:11px">— ${t('assistant.toolWebSearchDesc')}</span></span>
             <input type="checkbox" id="ast-tool-websearch" ${c.tools?.webSearch !== false ? 'checked' : ''}>
+            <span class="ast-switch-track"></span>
+          </label>
+          <label class="ast-switch-row">
+            <span>${t('assistant.toolMedia')} <span style="color:var(--text-tertiary);font-size:11px">— ${t('assistant.toolMediaDesc')}</span></span>
+            <input type="checkbox" id="ast-tool-media" ${c.tools?.media === true ? 'checked' : ''}>
             <span class="ast-switch-track"></span>
           </label>
           <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border-color)">
@@ -4995,6 +5199,7 @@ function showSettings() {
     _config.tools.terminal = overlay.querySelector('#ast-tool-terminal').checked
     _config.tools.fileOps = overlay.querySelector('#ast-tool-fileops').checked
     _config.tools.webSearch = overlay.querySelector('#ast-tool-websearch').checked
+    _config.tools.media = overlay.querySelector('#ast-tool-media').checked
     _config.autoRounds = parseInt(overlay.querySelector('#ast-auto-rounds').value, 10) || 0
     // 灵魂来源
     const soulRadio = overlay.querySelector('input[name="ast-soul-source"]:checked')

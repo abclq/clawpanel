@@ -13,6 +13,7 @@ function escapeHtml(str) {
 }
 
 function cliSourceLabel(source) {
+  if (source === 'portable') return t('dashboard.cliSourcePortable')
   if (source === 'standalone') return t('dashboard.cliSourceStandalone')
   if (source === 'npm-zh') return t('dashboard.cliSourceNpmZh')
   if (source === 'npm-official') return t('dashboard.cliSourceNpmOfficial')

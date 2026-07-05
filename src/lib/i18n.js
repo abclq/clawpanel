@@ -12,6 +12,12 @@ let _lang = FALLBACK
 let _dict = LANGS[FALLBACK]
 let _listeners = []
 
+function _syncDocumentLang(lang) {
+  if (typeof document !== 'undefined') {
+    document.documentElement.lang = lang
+  }
+}
+
 /**
  * 翻译函数
  * @param {string} key - 点分隔路径，如 'sidebar.dashboard'
@@ -68,6 +74,7 @@ export function setLang(lang) {
   if (!LANGS[lang]) return
   _lang = lang
   _dict = LANGS[lang]
+  _syncDocumentLang(lang)
   localStorage.setItem(LANG_KEY, lang)
   _listeners.forEach(fn => { try { fn(lang) } catch {} })
 }
@@ -84,6 +91,7 @@ export function initI18n() {
   if (saved && LANGS[saved]) {
     _lang = saved
     _dict = LANGS[saved]
+    _syncDocumentLang(_lang)
     return
   }
   // 自动检测浏览器语言
@@ -112,6 +120,7 @@ export function initI18n() {
     _lang = 'en'
   }
   _dict = LANGS[_lang] || LANGS[FALLBACK]
+  _syncDocumentLang(_lang)
 
   // 桥接 splash 启动屏的语言切换：splash 在 dispatch 'clawpanel-lang-change' 后，应用同步切换
   if (typeof window !== 'undefined') {

@@ -19,6 +19,7 @@ export const AUTH_OAUTH_EXTERNAL = 'oauth_external'
 export const AUTH_EXTERNAL_PROCESS = 'external_process'
 export const AUTH_AWS_SDK = 'aws_sdk'
 export const AUTH_OAUTH_MINIMAX = 'oauth_minimax'
+export const AUTH_VERTEX = 'vertex'
 
 // Transport constants
 export const TRANSPORT_OPENAI_CHAT = 'openai_chat'
@@ -119,7 +120,7 @@ export function groupProviders(list) {
       groups.custom.push(p)
       continue
     }
-    if (p.authType === AUTH_EXTERNAL_PROCESS || p.authType === AUTH_AWS_SDK) {
+    if (p.authType === AUTH_EXTERNAL_PROCESS || p.authType === AUTH_AWS_SDK || p.authType === AUTH_VERTEX) {
       groups.externalProc.push(p)
       continue
     }

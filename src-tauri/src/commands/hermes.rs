@@ -3,10 +3,10 @@
 //! 通过 uv 实现零依赖安装：
 //!   1. 下载 uv 单文件二进制
 //!   2. uv tool install hermes-agent --python 3.11
-//!   3. 写入 ~/.hermes/config.yaml + .env
+//!   3. 写入 Hermes Home 下的 config.yaml + .env
 
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::OnceLock;
@@ -598,13 +598,13 @@ async fn do_restart_gateway() -> Result<(), String> {
         .try_clone()
         .map_err(|e| format!("克隆日志句柄失败: {e}"))?;
 
-    let mut cmd = std::process::Command::new("hermes");
+    let mut cmd = std::process::Command::new(hermes_program_for_spawn()?);
     cmd.args(["gateway", "run"])
         .current_dir(&home)
-        .env("PATH", &enhanced)
         .stdin(std::process::Stdio::null())
         .stdout(log_file)
         .stderr(log_err);
+    apply_hermes_runtime_env(&mut cmd, &enhanced);
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
 
@@ -684,16 +684,26 @@ fn stop_guardian() {
 // 路径工具
 // ---------------------------------------------------------------------------
 
-/// Hermes 配置目录 (~/.hermes)
+/// Hermes 配置目录
 fn hermes_home() -> PathBuf {
+    if let Some(ctx) = crate::commands::portable::portable_context() {
+        return ctx.hermes_home.clone();
+    }
     if let Ok(h) = std::env::var("HERMES_HOME") {
         return PathBuf::from(h);
     }
     dirs::home_dir().unwrap_or_default().join(".hermes")
 }
 
+pub(crate) fn hermes_home_path() -> PathBuf {
+    hermes_home()
+}
+
 /// ClawPanel 管理的 uv 二进制存放路径
 fn uv_bin_dir() -> PathBuf {
+    if let Some(ctx) = crate::commands::portable::portable_context() {
+        return ctx.root.join("runtimes").join("uv").join("bin");
+    }
     #[cfg(target_os = "windows")]
     {
         let appdata = std::env::var("APPDATA").unwrap_or_default();
@@ -722,6 +732,268 @@ fn uv_bin_dir() -> PathBuf {
             .join("share")
             .join("clawpanel")
             .join("bin")
+    }
+}
+
+fn hermes_tool_dir() -> Option<PathBuf> {
+    crate::commands::portable::portable_context().map(|ctx| ctx.engines_hermes_dir.clone())
+}
+
+fn hermes_tool_bin_dir() -> Option<PathBuf> {
+    hermes_tool_dir().map(|dir| dir.join("bin"))
+}
+
+fn hermes_uv_cache_dir() -> Option<PathBuf> {
+    crate::commands::portable::portable_context()
+        .map(|ctx| ctx.root.join("runtimes").join("uv").join("cache"))
+}
+
+fn hermes_uv_python_dir() -> Option<PathBuf> {
+    crate::commands::portable::portable_context()
+        .map(|ctx| ctx.root.join("runtimes").join("uv").join("python"))
+}
+
+fn hermes_venv_dir() -> PathBuf {
+    if let Some(ctx) = crate::commands::portable::portable_context() {
+        return ctx.engines_hermes_dir.join("venv");
+    }
+    dirs::home_dir().unwrap_or_default().join(".hermes-venv")
+}
+
+fn ensure_hermes_portable_dirs() -> Result<(), String> {
+    let Some(ctx) = crate::commands::portable::portable_context() else {
+        return Ok(());
+    };
+    for dir in [
+        ctx.hermes_home.clone(),
+        ctx.engines_hermes_dir.clone(),
+        ctx.engines_hermes_dir.join("bin"),
+        ctx.root.join("runtimes").join("uv").join("bin"),
+        ctx.root.join("runtimes").join("uv").join("cache"),
+        ctx.root.join("runtimes").join("uv").join("python"),
+    ] {
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("创建便携目录 {} 失败: {e}", dir.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn portable_git_exe() -> Option<PathBuf> {
+    crate::commands::portable::portable_context().map(|ctx| {
+        ctx.root
+            .join("runtimes")
+            .join("git")
+            .join("cmd")
+            .join("git.exe")
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn zip_entry_safe_path(name: &str) -> Option<PathBuf> {
+    let normalized = name.replace('\\', "/");
+    if normalized.starts_with('/')
+        || normalized.contains(':')
+        || normalized
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return None;
+    }
+    Some(normalized.split('/').collect())
+}
+
+#[cfg(target_os = "windows")]
+fn extract_zip_archive(data: &[u8], dest: &Path) -> Result<(), String> {
+    let reader = std::io::Cursor::new(data);
+    let mut archive = zip::ZipArchive::new(reader).map_err(|e| format!("ZIP 解析失败: {e}"))?;
+    std::fs::create_dir_all(dest).map_err(|e| format!("创建目录 {} 失败: {e}", dest.display()))?;
+    for i in 0..archive.len() {
+        let mut file = archive
+            .by_index(i)
+            .map_err(|e| format!("ZIP 条目读取失败: {e}"))?;
+        let Some(rel_path) = zip_entry_safe_path(file.name()) else {
+            continue;
+        };
+        let out_path = dest.join(rel_path);
+        if file.is_dir() || file.name().ends_with('/') {
+            std::fs::create_dir_all(&out_path)
+                .map_err(|e| format!("创建目录 {} 失败: {e}", out_path.display()))?;
+            continue;
+        }
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("创建目录 {} 失败: {e}", parent.display()))?;
+        }
+        let mut out_file = std::fs::File::create(&out_path)
+            .map_err(|e| format!("创建文件 {} 失败: {e}", out_path.display()))?;
+        std::io::copy(&mut file, &mut out_file)
+            .map_err(|e| format!("写入文件 {} 失败: {e}", out_path.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn mingit_asset_url(release: &Value) -> Option<String> {
+    let assets = release.get("assets")?.as_array()?;
+    assets
+        .iter()
+        .filter_map(|asset| {
+            let name = asset.get("name")?.as_str()?;
+            let url = asset.get("browser_download_url")?.as_str()?;
+            Some((name, url))
+        })
+        .find(|(name, _)| {
+            name.starts_with("MinGit-")
+                && name.ends_with("-64-bit.zip")
+                && !name.to_ascii_lowercase().contains("busybox")
+        })
+        .map(|(_, url)| url.to_string())
+}
+
+#[cfg(target_os = "windows")]
+async fn ensure_portable_git(app: &tauri::AppHandle) -> Result<(), String> {
+    let Some(ctx) = crate::commands::portable::portable_context() else {
+        return Ok(());
+    };
+    let Some(git_exe) = portable_git_exe() else {
+        return Ok(());
+    };
+    if git_exe.is_file() {
+        let _ = app.emit(
+            "hermes-install-log",
+            format!("✓ 便携 Git 已就绪: {}", git_exe.display()),
+        );
+        return Ok(());
+    }
+
+    let _ = app.emit("hermes-install-log", "📦 便携模式：下载 MinGit 到 U 盘...");
+    let client = super::build_http_client(std::time::Duration::from_secs(300), Some("ClawPanel"))
+        .map_err(|e| format!("HTTP 客户端创建失败: {e}"))?;
+    let release: Value = client
+        .get("https://api.github.com/repos/git-for-windows/git/releases/latest")
+        .send()
+        .await
+        .map_err(|e| format!("查询 MinGit 最新版本失败: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("解析 MinGit 最新版本失败: {e}"))?;
+    let url =
+        mingit_asset_url(&release).ok_or("未在 Git for Windows 最新版本中找到 MinGit 64-bit 包")?;
+    let _ = app.emit("hermes-install-log", format!("下载: {url}"));
+    let bytes = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("MinGit 下载失败: {e}"))?
+        .bytes()
+        .await
+        .map_err(|e| format!("MinGit 下载读取失败: {e}"))?;
+
+    let git_root = ctx.root.join("runtimes").join("git");
+    if git_root.exists() {
+        std::fs::remove_dir_all(&git_root).map_err(|e| format!("清理旧便携 Git 目录失败: {e}"))?;
+    }
+    extract_zip_archive(&bytes, &git_root)?;
+    if !git_exe.is_file() {
+        return Err(format!("MinGit 解压后未找到 {}", git_exe.display()));
+    }
+    let _ = app.emit(
+        "hermes-install-log",
+        format!("✓ 便携 Git 已安装: {}", git_exe.display()),
+    );
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+async fn ensure_portable_git(_app: &tauri::AppHandle) -> Result<(), String> {
+    Ok(())
+}
+
+fn portable_hermes_cli_candidates() -> Vec<PathBuf> {
+    let Some(tool_dir) = hermes_tool_dir() else {
+        return Vec::new();
+    };
+    let bin_dir = tool_dir.join("bin");
+    let root = tool_dir.join("hermes-agent");
+    let mut paths = vec![
+        bin_dir.join("hermes.cmd"),
+        bin_dir.join("hermes.exe"),
+        bin_dir.join("hermes.bat"),
+        bin_dir.join("hermes"),
+    ];
+    if cfg!(target_os = "windows") {
+        paths.push(root.join("Scripts").join("hermes.exe"));
+        paths.push(root.join("Scripts").join("hermes.cmd"));
+    } else {
+        paths.push(root.join("bin").join("hermes"));
+    }
+    paths
+}
+
+fn portable_hermes_cli_path() -> Option<PathBuf> {
+    portable_hermes_cli_candidates()
+        .into_iter()
+        .find(|p| p.is_file())
+}
+
+fn hermes_program_for_spawn() -> Result<PathBuf, String> {
+    if crate::commands::portable::portable_context().is_some() {
+        return portable_hermes_cli_path().ok_or_else(|| {
+            "便携模式未找到 U 盘内 Hermes CLI，请先在 Hermes 服务页安装或修复 Hermes".to_string()
+        });
+    }
+    Ok(PathBuf::from("hermes"))
+}
+
+fn command_program(program: &str) -> Result<PathBuf, String> {
+    if program == "hermes" {
+        hermes_program_for_spawn()
+    } else {
+        Ok(PathBuf::from(program))
+    }
+}
+
+fn append_existing_path(extra: &mut Vec<String>, path: impl AsRef<Path>) {
+    let path = path.as_ref();
+    if path.exists() {
+        extra.push(path.to_string_lossy().to_string());
+    }
+}
+
+fn apply_hermes_runtime_env(cmd: &mut Command, path: &str) {
+    cmd.env("PATH", path);
+    if let Some(ctx) = crate::commands::portable::portable_context() {
+        let tool_bin_dir =
+            hermes_tool_bin_dir().unwrap_or_else(|| ctx.engines_hermes_dir.join("bin"));
+        let cache_dir = hermes_uv_cache_dir()
+            .unwrap_or_else(|| ctx.root.join("runtimes").join("uv").join("cache"));
+        let python_dir = hermes_uv_python_dir()
+            .unwrap_or_else(|| ctx.root.join("runtimes").join("uv").join("python"));
+        cmd.env("HERMES_HOME", &ctx.hermes_home);
+        cmd.env("UV_TOOL_DIR", &ctx.engines_hermes_dir);
+        cmd.env("UV_TOOL_BIN_DIR", tool_bin_dir);
+        cmd.env("UV_CACHE_DIR", cache_dir);
+        cmd.env("UV_PYTHON_INSTALL_DIR", python_dir);
+        cmd.env("UV_LINK_MODE", "copy");
+    }
+}
+
+fn apply_hermes_runtime_env_tokio(cmd: &mut tokio::process::Command, path: &str) {
+    cmd.env("PATH", path);
+    if let Some(ctx) = crate::commands::portable::portable_context() {
+        let tool_bin_dir =
+            hermes_tool_bin_dir().unwrap_or_else(|| ctx.engines_hermes_dir.join("bin"));
+        let cache_dir = hermes_uv_cache_dir()
+            .unwrap_or_else(|| ctx.root.join("runtimes").join("uv").join("cache"));
+        let python_dir = hermes_uv_python_dir()
+            .unwrap_or_else(|| ctx.root.join("runtimes").join("uv").join("python"));
+        cmd.env("HERMES_HOME", &ctx.hermes_home);
+        cmd.env("UV_TOOL_DIR", &ctx.engines_hermes_dir);
+        cmd.env("UV_TOOL_BIN_DIR", tool_bin_dir);
+        cmd.env("UV_CACHE_DIR", cache_dir);
+        cmd.env("UV_PYTHON_INSTALL_DIR", python_dir);
+        cmd.env("UV_LINK_MODE", "copy");
     }
 }
 
@@ -761,6 +1033,44 @@ fn hermes_enhanced_path() -> String {
 
     // ClawPanel 管理的 uv 二进制目录
     extra.push(uv_bin_dir().to_string_lossy().to_string());
+    if let Some(ctx) = crate::commands::portable::portable_context() {
+        extra.push(
+            ctx.engines_hermes_dir
+                .join("bin")
+                .to_string_lossy()
+                .to_string(),
+        );
+        let tool_root = ctx.engines_hermes_dir.join("hermes-agent");
+        if cfg!(target_os = "windows") {
+            extra.push(tool_root.join("Scripts").to_string_lossy().to_string());
+            append_existing_path(
+                &mut extra,
+                ctx.root.join("runtimes").join("git").join("cmd"),
+            );
+            append_existing_path(
+                &mut extra,
+                ctx.root
+                    .join("runtimes")
+                    .join("git")
+                    .join("usr")
+                    .join("bin"),
+            );
+        } else {
+            extra.push(tool_root.join("bin").to_string_lossy().to_string());
+            append_existing_path(
+                &mut extra,
+                ctx.root.join("runtimes").join("git").join("bin"),
+            );
+        }
+        if let Some(node_dir) = &ctx.node_dir {
+            extra.push(node_dir.to_string_lossy().to_string());
+        }
+        append_existing_path(
+            &mut extra,
+            ctx.root.join("runtimes").join("ffmpeg").join("bin"),
+        );
+        append_existing_path(&mut extra, ctx.root.join("runtimes").join("rg"));
+    }
 
     // uv tool 安装的可执行文件目录
     #[cfg(target_os = "windows")]
@@ -797,8 +1107,9 @@ fn hermes_enhanced_path() -> String {
 /// 执行命令并获取 stdout（静默，无窗口）
 fn run_silent(program: &str, args: &[&str]) -> Result<String, String> {
     let enhanced = hermes_enhanced_path();
-    let mut cmd = Command::new(program);
-    cmd.args(args).env("PATH", &enhanced);
+    let mut cmd = Command::new(command_program(program)?);
+    cmd.args(args);
+    apply_hermes_runtime_env(&mut cmd, &enhanced);
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
     let output = cmd.output().map_err(|e| format!("{program}: {e}"))?;
@@ -812,8 +1123,9 @@ fn run_silent(program: &str, args: &[&str]) -> Result<String, String> {
 
 /// 在指定路径上执行命令
 fn run_at_path(program: &str, args: &[&str], path: &str) -> Result<String, String> {
-    let mut cmd = Command::new(program);
-    cmd.args(args).env("PATH", path);
+    let mut cmd = Command::new(command_program(program)?);
+    cmd.args(args);
+    apply_hermes_runtime_env(&mut cmd, path);
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
     let output = cmd.output().map_err(|e| format!("{program}: {e}"))?;
@@ -1011,6 +1323,56 @@ pub fn check_hermes() -> Result<Value, String> {
     let enhanced = hermes_enhanced_path();
     let mut result = serde_json::Map::new();
     let home = hermes_home();
+    if let Some(ctx) = crate::commands::portable::portable_context() {
+        let hermes_cli_path = portable_hermes_cli_candidates()
+            .into_iter()
+            .find(|p| p.is_file());
+        result.insert("portable".into(), Value::Bool(true));
+        result.insert(
+            "portableRoot".into(),
+            Value::String(ctx.root.to_string_lossy().to_string()),
+        );
+        result.insert(
+            "enginesHermesDir".into(),
+            Value::String(ctx.engines_hermes_dir.to_string_lossy().to_string()),
+        );
+        result.insert(
+            "uvBinPath".into(),
+            Value::String(uv_bin_path().to_string_lossy().to_string()),
+        );
+        result.insert(
+            "uvToolBinDir".into(),
+            Value::String(
+                hermes_tool_bin_dir()
+                    .unwrap_or_else(|| ctx.engines_hermes_dir.join("bin"))
+                    .to_string_lossy()
+                    .to_string(),
+            ),
+        );
+        result.insert(
+            "portableHermesCliPath".into(),
+            hermes_cli_path
+                .map(|p| Value::String(p.to_string_lossy().to_string()))
+                .unwrap_or(Value::Null),
+        );
+        #[cfg(target_os = "windows")]
+        {
+            let git_path = portable_git_exe();
+            result.insert(
+                "portableGitPath".into(),
+                git_path
+                    .as_ref()
+                    .map(|p| Value::String(p.to_string_lossy().to_string()))
+                    .unwrap_or(Value::Null),
+            );
+            result.insert(
+                "portableGitReady".into(),
+                Value::Bool(git_path.as_ref().is_some_and(|p| p.is_file())),
+            );
+        }
+    } else {
+        result.insert("portable".into(), Value::Bool(false));
+    }
 
     // 1. 检测 hermes CLI
     let hermes_version = run_at_path("hermes", &["version"], &enhanced)
@@ -1312,13 +1674,13 @@ pub async fn hermes_dashboard_start(app: tauri::AppHandle) -> Result<Value, Stri
         .map_err(|e| format!("克隆日志句柄失败: {e}"))?;
 
     let enhanced = hermes_enhanced_path();
-    let mut cmd = std::process::Command::new("hermes");
+    let mut cmd = std::process::Command::new(hermes_program_for_spawn()?);
     cmd.args(["dashboard"])
         .current_dir(&home)
-        .env("PATH", &enhanced)
         .stdin(std::process::Stdio::null())
         .stdout(log_file)
         .stderr(log_err);
+    apply_hermes_runtime_env(&mut cmd, &enhanced);
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
 
@@ -1517,7 +1879,9 @@ pub async fn install_hermes(
 
 /// 确保 uv 二进制可用，不存在则下载
 async fn ensure_uv(app: &tauri::AppHandle) -> Result<String, String> {
+    ensure_hermes_portable_dirs()?;
     let uv_path = uv_bin_path();
+    let portable_mode = crate::commands::portable::portable_context().is_some();
 
     // 已有 uv
     if uv_path.exists() {
@@ -1528,14 +1892,21 @@ async fn ensure_uv(app: &tauri::AppHandle) -> Result<String, String> {
         }
     }
 
-    // 系统 PATH 中有 uv
-    let enhanced = hermes_enhanced_path();
-    if let Ok(ver) = run_at_path("uv", &["--version"], &enhanced) {
-        let _ = app.emit("hermes-install-log", format!("✓ 系统 uv 已就绪: {ver}"));
-        if let Some(path) = find_executable_path("uv", &enhanced) {
-            return Ok(path);
+    if portable_mode {
+        let _ = app.emit(
+            "hermes-install-log",
+            format!("💾 便携模式：uv 将安装到 {}", uv_path.display()),
+        );
+    } else {
+        // 系统 PATH 中有 uv
+        let enhanced = hermes_enhanced_path();
+        if let Ok(ver) = run_at_path("uv", &["--version"], &enhanced) {
+            let _ = app.emit("hermes-install-log", format!("✓ 系统 uv 已就绪: {ver}"));
+            if let Some(path) = find_executable_path("uv", &enhanced) {
+                return Ok(path);
+            }
+            return Ok("uv".into());
         }
-        return Ok("uv".into());
     }
 
     // 需要下载 uv
@@ -1658,7 +2029,9 @@ fn extract_uv_tar_gz(data: &[u8], dest: &std::path::Path) -> Result<(), String> 
     Err("tar.gz 中未找到 uv".into())
 }
 
-const HERMES_GIT_URL: &str = "git+https://github.com/NousResearch/hermes-agent.git";
+const HERMES_STABLE_VERSION: &str = "0.18.0";
+const HERMES_STABLE_TAG: &str = "v2026.7.1";
+const HERMES_GIT_REPO_URL: &str = "https://github.com/NousResearch/hermes-agent.git";
 
 /// Runtime Python deps that `hermes-agent` needs at runtime but are NOT declared as
 /// install-time dependencies in its `[project].dependencies` (e.g. lazy-loaded
@@ -1687,13 +2060,15 @@ fn hermes_runtime_extras_log_segment() -> String {
 // ---------------------------------------------------------------------------
 // Hermes Dashboard compat stubs
 //
-// hermes-agent 0.14.0 (both PyPI wheel and `git+...` source) ships
+// Older hermes-agent 0.14.x distributions shipped
 // `hermes_cli/web_server.py` with hard imports of `hermes_cli.dashboard_auth.*`
-// submodules whose source files are NOT included in the distribution. It also
-// omits the built dashboard SPA (`hermes_cli/web_dist/`). On Windows in
+// submodules whose source files were NOT included in the distribution. They also
+// omitted the built dashboard SPA (`hermes_cli/web_dist/`). On Windows in
 // particular, the missing dashboard_auth subpackage breaks `hermes dashboard`
 // completely, taking down every ClawPanel page that talks to port 9119
 // (Profile, Kanban, OAuth, Channels, Sessions detail).
+// Current stable Hermes v0.18.0 / v2026.7.1 ships these files; this remains a
+// no-op compatibility fallback for users upgrading from older broken installs.
 //
 // To stay self-sufficient (per project policy: do not patch upstream), we
 // inject a minimal pass-through stub into the installed venv:
@@ -1853,6 +2228,10 @@ const HERMES_DASHBOARD_WEB_DIST_INDEX_HTML: &str = r#"<!doctype html>
 /// creates. Returns `None` if `uv` is unavailable or hermes-agent isn't installed
 /// via the uv-tool path (e.g. user is on the legacy `~/.hermes-venv` uv-pip path).
 fn hermes_uv_tool_root() -> Option<std::path::PathBuf> {
+    if let Some(tool_dir) = hermes_tool_dir() {
+        let root = tool_dir.join("hermes-agent");
+        return root.exists().then_some(root);
+    }
     let uv_path = uv_bin_path();
     let uv_cmd = if uv_path.exists() {
         uv_path.to_string_lossy().to_string()
@@ -1861,7 +2240,8 @@ fn hermes_uv_tool_root() -> Option<std::path::PathBuf> {
     };
     let mut cmd = std::process::Command::new(&uv_cmd);
     cmd.args(["tool", "dir"]);
-    cmd.env("PATH", hermes_enhanced_path());
+    let enhanced = hermes_enhanced_path();
+    apply_hermes_runtime_env(&mut cmd, &enhanced);
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -2021,11 +2401,14 @@ fn inject_hermes_dashboard_compat_stub(app: &tauri::AppHandle) {
 }
 
 fn sanitize_hermes_install_output(text: &str) -> String {
-    let mut out = text.replace(HERMES_GIT_URL, "hermes-agent");
+    let hermes_git_url = hermes_git_url();
+    let mut out = text.replace(&hermes_git_url, "hermes-agent");
     out = out.replace(
-        "https://github.com/NousResearch/hermes-agent.git",
+        &format!("{HERMES_GIT_REPO_URL}@{HERMES_STABLE_TAG}"),
         "hermes-agent",
     );
+    out = out.replace(&format!("git+{HERMES_GIT_REPO_URL}"), "hermes-agent");
+    out = out.replace(HERMES_GIT_REPO_URL, "hermes-agent");
     out = out.replace(
         "https://github.com/NousResearch/hermes-agent",
         "hermes-agent",
@@ -2033,6 +2416,26 @@ fn sanitize_hermes_install_output(text: &str) -> String {
     out = out.replace("github.com/NousResearch/hermes-agent.git", "hermes-agent");
     out = out.replace("github.com/NousResearch/hermes-agent", "hermes-agent");
     out.replace("NousResearch/hermes-agent", "hermes-agent")
+}
+
+fn hermes_git_url() -> String {
+    format!("git+{HERMES_GIT_REPO_URL}@{HERMES_STABLE_TAG}")
+}
+
+fn hermes_package_spec(extras: &[String]) -> String {
+    let hermes_git_url = hermes_git_url();
+    if extras.is_empty() {
+        format!("hermes-agent @ {hermes_git_url}")
+    } else {
+        format!("hermes-agent[{}] @ {hermes_git_url}", extras.join(","))
+    }
+}
+
+fn emit_hermes_stable_version_log(app: &tauri::AppHandle) {
+    let _ = app.emit(
+        "hermes-install-log",
+        format!("📌 Hermes 稳定版: {HERMES_STABLE_VERSION} ({HERMES_STABLE_TAG})"),
+    );
 }
 
 /// 从 panelConfig.gitMirror 读取镜像前缀（如 "https://ghproxy.com/"）。
@@ -2100,14 +2503,18 @@ async fn install_via_uv_tool(
         "hermes-install-log",
         "📦 通过 uv tool install 安装 Hermes Agent...",
     );
+    emit_hermes_stable_version_log(app);
     let _ = app.emit("hermes-install-progress", 25u32);
+    ensure_hermes_portable_dirs()?;
+    ensure_portable_git(app).await?;
+    if let Some(tool_dir) = hermes_tool_dir() {
+        let _ = app.emit(
+            "hermes-install-log",
+            format!("💾 便携模式：Hermes 将安装到 {}", tool_dir.display()),
+        );
+    }
 
-    // 构造安装规格
-    let pkg = if extras.is_empty() {
-        format!("hermes-agent @ {}", HERMES_GIT_URL)
-    } else {
-        format!("hermes-agent[{}] @ {}", extras.join(","), HERMES_GIT_URL)
-    };
+    let pkg = hermes_package_spec(extras);
 
     let mut cmd = tokio::process::Command::new(uv_path);
     cmd.args(["tool", "install", "--force", &pkg, "--python", "3.11"]);
@@ -2120,7 +2527,8 @@ async fn install_via_uv_tool(
 
     // 代理
     super::apply_proxy_env_tokio(&mut cmd);
-    cmd.env("PATH", hermes_enhanced_path());
+    let enhanced = hermes_enhanced_path();
+    apply_hermes_runtime_env_tokio(&mut cmd, &enhanced);
     // uv 需要 git 来克隆仓库
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     // 用户配置了 Git 镜像（如 ghproxy）→ 进程级注入 insteadOf 重写
@@ -2136,7 +2544,7 @@ async fn install_via_uv_tool(
     let _ = app.emit(
         "hermes-install-log",
         format!(
-            "uv tool install hermes-agent --python 3.11 {}",
+            "uv tool install hermes-agent@{HERMES_STABLE_TAG} --python 3.11 {}",
             hermes_runtime_extras_log_segment()
         ),
     );
@@ -2162,12 +2570,21 @@ async fn install_via_uv_tool(
 
     if output.status.success() {
         let _ = app.emit("hermes-install-log", "✓ uv tool install 完成");
-        // 更新 shell PATH
-        let mut update_cmd = tokio::process::Command::new(uv_path);
-        update_cmd.args(["tool", "update-shell"]);
-        #[cfg(target_os = "windows")]
-        update_cmd.creation_flags(CREATE_NO_WINDOW);
-        let _ = update_cmd.output().await;
+        if crate::commands::portable::portable_context().is_some() {
+            let _ = app.emit(
+                "hermes-install-log",
+                "💾 便携模式：已跳过写入用户 Shell PATH",
+            );
+        } else {
+            // 更新 shell PATH
+            let mut update_cmd = tokio::process::Command::new(uv_path);
+            update_cmd.args(["tool", "update-shell"]);
+            let enhanced = hermes_enhanced_path();
+            apply_hermes_runtime_env_tokio(&mut update_cmd, &enhanced);
+            #[cfg(target_os = "windows")]
+            update_cmd.creation_flags(CREATE_NO_WINDOW);
+            let _ = update_cmd.output().await;
+        }
         Ok(())
     } else {
         let cleaned = sanitize_hermes_install_output(stderr.trim());
@@ -2199,10 +2616,12 @@ async fn install_via_uv_pip(
         "hermes-install-log",
         "📦 通过 uv venv + pip install 安装...",
     );
+    emit_hermes_stable_version_log(app);
     let _ = app.emit("hermes-install-progress", 25u32);
 
-    let home = dirs::home_dir().unwrap_or_default();
-    let venv_dir = home.join(".hermes-venv");
+    ensure_hermes_portable_dirs()?;
+    ensure_portable_git(app).await?;
+    let venv_dir = hermes_venv_dir();
     let venv_str = venv_dir.to_string_lossy().to_string();
 
     // 创建 venv
@@ -2212,6 +2631,8 @@ async fn install_via_uv_pip(
     );
     let mut venv_cmd = tokio::process::Command::new(uv_path);
     venv_cmd.args(["venv", &venv_str, "--python", "3.11"]);
+    let enhanced = hermes_enhanced_path();
+    apply_hermes_runtime_env_tokio(&mut venv_cmd, &enhanced);
     super::apply_proxy_env_tokio(&mut venv_cmd);
     #[cfg(target_os = "windows")]
     venv_cmd.creation_flags(CREATE_NO_WINDOW);
@@ -2227,17 +2648,17 @@ async fn install_via_uv_pip(
     let _ = app.emit("hermes-install-progress", 40u32);
 
     // pip install
-    let pkg = if extras.is_empty() {
-        format!("hermes-agent @ {}", HERMES_GIT_URL)
-    } else {
-        format!("hermes-agent[{}] @ {}", extras.join(","), HERMES_GIT_URL)
-    };
-    let _ = app.emit("hermes-install-log", "> uv pip install hermes-agent");
+    let pkg = hermes_package_spec(extras);
+    let _ = app.emit(
+        "hermes-install-log",
+        format!("> uv pip install hermes-agent@{HERMES_STABLE_TAG}"),
+    );
 
     let mut pip_cmd = tokio::process::Command::new(uv_path);
     pip_cmd.args(["pip", "install", &pkg]);
     pip_cmd.env("GIT_TERMINAL_PROMPT", "0");
     pip_cmd.env("VIRTUAL_ENV", &venv_str);
+    apply_hermes_runtime_env_tokio(&mut pip_cmd, &enhanced);
     if let Some(mirror) = pypi_mirror_url() {
         pip_cmd.args(["--index-url", &mirror]);
     }
@@ -2271,9 +2692,18 @@ async fn install_via_uv_pip(
 
     let _ = app.emit("hermes-install-log", "✓ pip install 完成");
 
+    if crate::commands::portable::portable_context().is_some() {
+        let _ = app.emit(
+            "hermes-install-log",
+            "💾 便携模式：已跳过写入用户 PATH / 全局链接",
+        );
+        return Ok(());
+    }
+
     // 创建全局命令链接
     #[cfg(not(target_os = "windows"))]
     {
+        let home = dirs::home_dir().unwrap_or_default();
         let hermes_bin = venv_dir.join("bin").join("hermes");
         let link_dir = home.join(".local").join("bin");
         let _ = std::fs::create_dir_all(&link_dir);
@@ -13362,14 +13792,14 @@ pub async fn hermes_gateway_action(
                     .try_clone()
                     .map_err(|e| format!("克隆日志句柄失败: {e}"))?;
 
-                let mut cmd = std::process::Command::new("hermes");
+                let mut cmd = std::process::Command::new(hermes_program_for_spawn()?);
                 cmd.args(["gateway", "run"])
                     .current_dir(&home)
-                    .env("PATH", &enhanced)
                     .stdin(std::process::Stdio::null())
                     .stdout(log_file)
                     .stderr(log_err)
                     .creation_flags(CREATE_NO_WINDOW);
+                apply_hermes_runtime_env(&mut cmd, &enhanced);
                 // 注入 .env 环境变量
                 let env_path = home.join(".env");
                 if let Ok(env_content) = std::fs::read_to_string(&env_path) {
@@ -13447,13 +13877,13 @@ pub async fn hermes_gateway_action(
                 // 先精准杀掉之前我们 spawn 的进程
                 kill_gateway_pid();
 
-                let mut cmd = std::process::Command::new("hermes");
+                let mut cmd = std::process::Command::new(hermes_program_for_spawn()?);
                 cmd.args(["gateway", "run"])
                     .current_dir(&home)
-                    .env("PATH", &enhanced)
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null());
+                apply_hermes_runtime_env(&mut cmd, &enhanced);
 
                 // 注入 .env 环境变量
                 let env_path = home.join(".env");
@@ -13499,8 +13929,10 @@ pub async fn hermes_gateway_action(
                     }
                     Err(e) => {
                         // fallback: hermes gateway start
-                        let mut fallback = tokio::process::Command::new("hermes");
-                        fallback.args(["gateway", "start"]).env("PATH", &enhanced);
+                        let mut fallback =
+                            tokio::process::Command::new(hermes_program_for_spawn()?);
+                        fallback.args(["gateway", "start"]);
+                        apply_hermes_runtime_env_tokio(&mut fallback, &enhanced);
                         let out = fallback
                             .output()
                             .await
@@ -13532,8 +13964,9 @@ pub async fn hermes_gateway_action(
             let killed = kill_gateway_pid();
 
             // 2. 尝试 hermes gateway stop（作为补充）
-            let mut cmd = tokio::process::Command::new("hermes");
-            cmd.args(["gateway", "stop"]).env("PATH", &enhanced);
+            let mut cmd = tokio::process::Command::new(hermes_program_for_spawn()?);
+            cmd.args(["gateway", "stop"]);
+            apply_hermes_runtime_env_tokio(&mut cmd, &enhanced);
             #[cfg(target_os = "windows")]
             cmd.creation_flags(CREATE_NO_WINDOW);
             let stop_result = cmd.output().await;
@@ -13575,8 +14008,9 @@ pub async fn hermes_gateway_action(
             }
         }
         "status" => {
-            let mut cmd = tokio::process::Command::new("hermes");
-            cmd.args(["gateway", "status"]).env("PATH", &enhanced);
+            let mut cmd = tokio::process::Command::new(hermes_program_for_spawn()?);
+            cmd.args(["gateway", "status"]);
+            apply_hermes_runtime_env_tokio(&mut cmd, &enhanced);
             #[cfg(target_os = "windows")]
             cmd.creation_flags(CREATE_NO_WINDOW);
             let out = cmd.output().await.map_err(|e| format!("查询失败: {e}"))?;
@@ -13584,8 +14018,9 @@ pub async fn hermes_gateway_action(
             Ok(stdout)
         }
         "install" => {
-            let mut cmd = tokio::process::Command::new("hermes");
-            cmd.args(["gateway", "install"]).env("PATH", &enhanced);
+            let mut cmd = tokio::process::Command::new(hermes_program_for_spawn()?);
+            cmd.args(["gateway", "install"]);
+            apply_hermes_runtime_env_tokio(&mut cmd, &enhanced);
             #[cfg(target_os = "windows")]
             cmd.creation_flags(CREATE_NO_WINDOW);
             let out = cmd.output().await.map_err(|e| format!("安装失败: {e}"))?;
@@ -13596,8 +14031,9 @@ pub async fn hermes_gateway_action(
             }
         }
         "uninstall" => {
-            let mut cmd = tokio::process::Command::new("hermes");
-            cmd.args(["gateway", "uninstall"]).env("PATH", &enhanced);
+            let mut cmd = tokio::process::Command::new(hermes_program_for_spawn()?);
+            cmd.args(["gateway", "uninstall"]);
+            apply_hermes_runtime_env_tokio(&mut cmd, &enhanced);
             #[cfg(target_os = "windows")]
             cmd.creation_flags(CREATE_NO_WINDOW);
             let out = cmd.output().await.map_err(|e| format!("卸载失败: {e}"))?;
@@ -13862,16 +14298,14 @@ pub async fn hermes_set_gateway_url(url: Option<String>) -> Result<String, Strin
 #[tauri::command]
 pub async fn update_hermes(app: tauri::AppHandle) -> Result<String, String> {
     let _ = app.emit("hermes-install-log", "📦 升级 Hermes Agent...");
+    emit_hermes_stable_version_log(&app);
     let _ = app.emit("hermes-install-progress", 0u32);
+    ensure_hermes_portable_dirs()?;
+    ensure_portable_git(&app).await?;
 
-    let uv_path = uv_bin_path();
-    let uv = if uv_path.exists() {
-        uv_path.to_string_lossy().to_string()
-    } else {
-        "uv".into()
-    };
+    let uv = ensure_uv(&app).await?;
 
-    let pkg = format!("hermes-agent[web] @ {}", HERMES_GIT_URL);
+    let pkg = hermes_package_spec(&["web".to_string()]);
     let mut cmd = tokio::process::Command::new(&uv);
     cmd.args(["tool", "install", "--reinstall", &pkg, "--python", "3.11"]);
     append_hermes_runtime_extras(&mut cmd);
@@ -13879,7 +14313,7 @@ pub async fn update_hermes(app: tauri::AppHandle) -> Result<String, String> {
     let _ = app.emit(
         "hermes-install-log",
         format!(
-            "uv tool install --reinstall hermes-agent --python 3.11 {}",
+            "uv tool install --reinstall hermes-agent@{HERMES_STABLE_TAG} --python 3.11 {}",
             hermes_runtime_extras_log_segment()
         ),
     );
@@ -13889,7 +14323,8 @@ pub async fn update_hermes(app: tauri::AppHandle) -> Result<String, String> {
     }
     apply_git_mirror_env(&mut cmd);
     super::apply_proxy_env_tokio(&mut cmd);
-    cmd.env("PATH", hermes_enhanced_path());
+    let enhanced = hermes_enhanced_path();
+    apply_hermes_runtime_env_tokio(&mut cmd, &enhanced);
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
 
@@ -13911,7 +14346,9 @@ pub async fn update_hermes(app: tauri::AppHandle) -> Result<String, String> {
         inject_hermes_dashboard_compat_stub(&app);
         let _ = app.emit("hermes-install-log", "✅ 升级完成");
         let _ = app.emit("hermes-install-progress", 100u32);
-        Ok("升级完成".into())
+        Ok(format!(
+            "升级完成，当前稳定版: Hermes Agent {HERMES_STABLE_VERSION} ({HERMES_STABLE_TAG})"
+        ))
     } else {
         let cleaned = sanitize_hermes_install_output(stderr.trim());
         if let Some(hint) = diagnose_install_network_error(&cleaned) {
@@ -13930,44 +14367,68 @@ pub async fn update_hermes(app: tauri::AppHandle) -> Result<String, String> {
 pub async fn uninstall_hermes(app: tauri::AppHandle, clean_config: bool) -> Result<String, String> {
     let _ = app.emit("hermes-install-log", "🗑️ 卸载 Hermes Agent...");
     let _ = app.emit("hermes-install-progress", 10u32);
+    let portable_mode = crate::commands::portable::portable_context().is_some();
 
     let uv_path = uv_bin_path();
-    let uv = if uv_path.exists() {
-        uv_path.to_string_lossy().to_string()
+    if portable_mode && !uv_path.exists() {
+        let _ = app.emit(
+            "hermes-install-log",
+            "💾 便携模式：未找到 U 盘 uv，跳过 uv tool uninstall",
+        );
     } else {
-        "uv".into()
-    };
+        let uv = if uv_path.exists() {
+            uv_path.to_string_lossy().to_string()
+        } else {
+            "uv".into()
+        };
 
-    // uv tool uninstall
-    let mut cmd = tokio::process::Command::new(&uv);
-    cmd.args(["tool", "uninstall", "hermes-agent"]);
-    let _ = app.emit("hermes-install-log", "> uv tool uninstall hermes-agent");
-    cmd.env("PATH", hermes_enhanced_path());
-    #[cfg(target_os = "windows")]
-    cmd.creation_flags(CREATE_NO_WINDOW);
+        // uv tool uninstall
+        let mut cmd = tokio::process::Command::new(&uv);
+        cmd.args(["tool", "uninstall", "hermes-agent"]);
+        let _ = app.emit("hermes-install-log", "> uv tool uninstall hermes-agent");
+        let enhanced = hermes_enhanced_path();
+        apply_hermes_runtime_env_tokio(&mut cmd, &enhanced);
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(CREATE_NO_WINDOW);
 
-    let output = cmd.output().await.map_err(|e| format!("卸载失败: {e}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    for line in stdout.lines().chain(stderr.lines()) {
-        if !line.trim().is_empty() {
-            let _ = app.emit("hermes-install-log", line.trim());
+        let output = cmd.output().await.map_err(|e| format!("卸载失败: {e}"))?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        for line in stdout.lines().chain(stderr.lines()) {
+            if !line.trim().is_empty() {
+                let _ = app.emit("hermes-install-log", line.trim());
+            }
         }
-    }
 
-    if !output.status.success() {
-        return Err(format!("卸载失败: {}", stderr.trim()));
+        if !output.status.success() && !portable_mode {
+            return Err(format!("卸载失败: {}", stderr.trim()));
+        }
     }
     let _ = app.emit("hermes-install-progress", 65u32);
 
     // 清理 venv（如果存在）
-    let venv_dir = dirs::home_dir().unwrap_or_default().join(".hermes-venv");
+    let venv_dir = hermes_venv_dir();
     if venv_dir.exists() {
         let _ = app.emit(
             "hermes-install-log",
             format!("清理虚拟环境: {}", venv_dir.display()),
         );
         let _ = std::fs::remove_dir_all(&venv_dir);
+    }
+
+    if let Some(ctx) = crate::commands::portable::portable_context() {
+        for dir in [
+            ctx.engines_hermes_dir.join("hermes-agent"),
+            ctx.engines_hermes_dir.join("bin"),
+        ] {
+            if dir.exists() {
+                let _ = app.emit(
+                    "hermes-install-log",
+                    format!("清理便携引擎目录: {}", dir.display()),
+                );
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+        }
     }
 
     // 可选：清理配置
@@ -17159,13 +17620,13 @@ pub async fn hermes_multi_gateway_start(
         .try_clone()
         .map_err(|e| format!("克隆日志句柄失败: {e}"))?;
 
-    let mut cmd = std::process::Command::new("hermes");
+    let mut cmd = std::process::Command::new(hermes_program_for_spawn()?);
     cmd.args(["--profile", &profile, "gateway", "run"])
         .current_dir(&home)
-        .env("PATH", &enhanced)
         .stdin(std::process::Stdio::null())
         .stdout(log_file)
         .stderr(log_err);
+    apply_hermes_runtime_env(&mut cmd, &enhanced);
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
 
@@ -19843,6 +20304,36 @@ streaming:
         let err = merge_hermes_x_search_config(&mut config, &json!({ "xSearchRetries": 21 }))
             .unwrap_err();
         assert!(err.contains("x_search.retries"));
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod hermes_portable_runtime_tests {
+    use super::{mingit_asset_url, zip_entry_safe_path};
+    use serde_json::json;
+
+    #[test]
+    fn mingit_asset_url_prefers_non_busybox_64_bit_zip() {
+        let release = json!({
+            "assets": [
+                { "name": "Git-2.50.1-64-bit.exe", "browser_download_url": "https://example.invalid/git.exe" },
+                { "name": "MinGit-2.50.1-busybox-64-bit.zip", "browser_download_url": "https://example.invalid/busybox.zip" },
+                { "name": "MinGit-2.50.1-64-bit.zip", "browser_download_url": "https://example.invalid/mingit.zip" }
+            ]
+        });
+        assert_eq!(
+            mingit_asset_url(&release).as_deref(),
+            Some("https://example.invalid/mingit.zip")
+        );
+    }
+
+    #[test]
+    fn zip_entry_safe_path_rejects_traversal_and_absolute_paths() {
+        assert!(zip_entry_safe_path("cmd/git.exe").is_some());
+        assert!(zip_entry_safe_path("../evil.exe").is_none());
+        assert!(zip_entry_safe_path("/evil.exe").is_none());
+        assert!(zip_entry_safe_path("C:/evil.exe").is_none());
+        assert!(zip_entry_safe_path("cmd//git.exe").is_none());
     }
 }
 

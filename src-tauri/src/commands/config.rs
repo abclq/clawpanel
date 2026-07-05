@@ -217,10 +217,14 @@ fn openclaw_version_requires_node_22_19(version: &str) -> bool {
     parse_version(&base_version(version)) >= parse_version(OPENCLAW_NODE_REQUIREMENT_VERSION_FLOOR)
 }
 
+fn cli_source_prefers_zh_package(cli_source: &str) -> bool {
+    matches!(cli_source, "npm-zh" | "standalone" | "portable")
+}
+
 fn find_openclaw_package_json(cli_path: &std::path::Path) -> Option<PathBuf> {
     let dir = cli_path.parent()?;
     let cli_source = crate::utils::classify_cli_source(&cli_path.to_string_lossy());
-    let pkg_names: &[&str] = if cli_source == "npm-zh" || cli_source == "standalone" {
+    let pkg_names: &[&str] = if cli_source_prefers_zh_package(&cli_source) {
         &["@qingchencloud/openclaw-zh", "openclaw"]
     } else {
         &["openclaw", "@qingchencloud/openclaw-zh"]
@@ -444,8 +448,52 @@ fn standalone_archive_ext() -> &'static str {
     }
 }
 
+fn promote_nested_standalone_dir(
+    install_dir: &std::path::Path,
+    node_bin: &str,
+) -> Result<(), String> {
+    let nested = install_dir.join("openclaw");
+    if !(nested.exists() && nested.join(node_bin).exists()) {
+        return Ok(());
+    }
+
+    for entry in std::fs::read_dir(&nested)
+        .map_err(|e| format!("读取目录 {} 失败: {e}", nested.display()))?
+    {
+        let entry = entry.map_err(|e| format!("读取目录项失败: {e}"))?;
+        let dest = install_dir.join(entry.file_name());
+        if dest.exists() {
+            let meta = std::fs::metadata(&dest)
+                .map_err(|e| format!("读取旧文件 {} 失败: {e}", dest.display()))?;
+            if meta.is_dir() {
+                std::fs::remove_dir_all(&dest)
+                    .map_err(|e| format!("删除旧目录 {} 失败: {e}", dest.display()))?;
+            } else {
+                std::fs::remove_file(&dest)
+                    .map_err(|e| format!("删除旧文件 {} 失败: {e}", dest.display()))?;
+            }
+        }
+        std::fs::rename(entry.path(), &dest)
+            .map_err(|e| format!("移动 {} 失败: {e}", dest.display()))?;
+    }
+    std::fs::remove_dir_all(&nested)
+        .map_err(|e| format!("删除临时目录 {} 失败: {e}", nested.display()))?;
+    Ok(())
+}
+
 /// standalone 安装目录
 pub(crate) fn standalone_install_dir() -> Option<PathBuf> {
+    standalone_install_dir_impl(crate::commands::portable::portable_context())
+}
+
+/// 实际逻辑拆出以便单测（portable context 是进程级 OnceLock，测试中无法控制）
+fn standalone_install_dir_impl(
+    portable: Option<&crate::commands::portable::PortableContext>,
+) -> Option<PathBuf> {
+    // 便携模式：standalone 安装/升级一律落 U 盘 engines/openclaw，不碰本机目录
+    if let Some(ctx) = portable {
+        return Some(ctx.engines_openclaw_dir.clone());
+    }
     #[cfg(target_os = "windows")]
     {
         // Inno Setup PrivilegesRequired=lowest 默认安装到 %LOCALAPPDATA%\Programs
@@ -1126,7 +1174,7 @@ pub fn write_openclaw_config(config: Value) -> Result<(), String> {
 
 const CALIBRATION_RESET_INHERIT_KEYS: &[&str] = &[
     "agents", "auth", "bindings", "browser", "channels", "commands", "env", "hooks", "memory",
-    "models", "plugins", "security", "session", "skills", "wizard",
+    "models", "plugins", "secrets", "security", "session", "skills", "tui", "wizard",
 ];
 
 fn calibration_required_origins() -> Vec<String> {
@@ -1350,15 +1398,13 @@ fn apply_reset_inheritance(mut config: Value, seed: &Value) -> (Value, Vec<Strin
         }
     }
 
-    if let Some(web) = seed.pointer("/tools/web").cloned() {
-        let tools = root.entry("tools").or_insert_with(|| json!({}));
-        if !tools.is_object() {
-            *tools = json!({});
-        }
-        if let Some(tools_obj) = tools.as_object_mut() {
-            tools_obj.insert("web".into(), web);
-            inherited.push("tools.web".into());
-        }
+    if let Some(seed_tools) = seed.get("tools") {
+        let baseline_tools = root.get("tools").cloned().unwrap_or_else(|| json!({}));
+        root.insert(
+            "tools".into(),
+            merge_configs_preserving_fields(&baseline_tools, seed_tools),
+        );
+        inherited.push("tools".into());
     }
 
     (config, inherited)
@@ -2022,14 +2068,6 @@ fn has_ui_fields(val: &Value) -> bool {
             }
         }
         if obj
-            .get("auth")
-            .and_then(|v| v.as_object())
-            .map(|auth| auth.contains_key("profiles"))
-            .unwrap_or(false)
-        {
-            return true;
-        }
-        if obj
             .get("agents")
             .and_then(|v| v.as_object())
             .map(|agents| agents.contains_key("profiles"))
@@ -2097,11 +2135,6 @@ fn strip_ui_fields(mut val: Value) -> Value {
             "profiles",
         ] {
             obj.remove(*key);
-        }
-        if let Some(auth_val) = obj.get_mut("auth") {
-            if let Some(auth_obj) = auth_val.as_object_mut() {
-                auth_obj.remove("profiles");
-            }
         }
         // 处理 models.providers.xxx.models 结构
         if let Some(models_val) = obj.get_mut("models") {
@@ -2474,7 +2507,7 @@ fn detect_installed_source() -> String {
                 .ok()
                 .unwrap_or_else(|| PathBuf::from(&cli_path));
             let source = crate::utils::classify_cli_source(&resolved.to_string_lossy());
-            if source == "standalone" {
+            if source == "standalone" || source == "portable" {
                 return detect_standalone_source_from_cli_path(&resolved)
                     .unwrap_or_else(|| "chinese".into());
             }
@@ -2512,7 +2545,7 @@ fn detect_installed_source() -> String {
         if let Some(cli_path) = crate::utils::resolve_openclaw_cli_path() {
             let source = crate::utils::classify_cli_source(&cli_path);
             // 路径本身能确定的情况（standalone 目录、npm-zh 路径含 openclaw-zh）
-            if source == "standalone" {
+            if source == "standalone" || source == "portable" {
                 return detect_standalone_source_from_cli_path(std::path::Path::new(&cli_path))
                     .unwrap_or_else(|| "chinese".into());
             }
@@ -2550,7 +2583,7 @@ fn detect_installed_source() -> String {
                 .ok()
                 .unwrap_or_else(|| PathBuf::from(&cli_path));
             let source = crate::utils::classify_cli_source(&resolved.to_string_lossy());
-            if source == "standalone" {
+            if source == "standalone" || source == "portable" {
                 return detect_standalone_source_from_cli_path(&resolved)
                     .unwrap_or_else(|| "chinese".into());
             }
@@ -2602,7 +2635,9 @@ fn detect_active_cli_install_mode() -> &'static str {
         .ok()
         .unwrap_or_else(|| PathBuf::from(&cli_path));
     let source = crate::utils::classify_cli_source(&resolved.to_string_lossy());
-    if source == "standalone" {
+    if source == "portable" {
+        "portable"
+    } else if source == "standalone" {
         "standalone"
     } else if source == "npm-zh" || source == "npm-official" || source == "npm-global" {
         "npm"
@@ -2611,8 +2646,35 @@ fn detect_active_cli_install_mode() -> &'static str {
     }
 }
 
-fn should_fallback_standalone_to_npm(current_install_mode: &str, method: &str) -> bool {
-    method == "auto" && current_install_mode != "standalone"
+/// auto 模式下 standalone 安装失败后是否允许降级到 npm 全局安装。
+/// 便携模式一律禁止（npm -g 会写宿主机，违背便携原则）；
+/// 当前已是 standalone / portable 模式的安装也禁止（避免静默切换安装方式）。
+fn should_fallback_standalone_to_npm(
+    current_install_mode: &str,
+    method: &str,
+    portable_mode: bool,
+) -> bool {
+    if portable_mode {
+        return false;
+    }
+    method == "auto" && current_install_mode != "standalone" && current_install_mode != "portable"
+}
+
+fn standalone_install_version(
+    requested_version: Option<&str>,
+    recommended_version: Option<&str>,
+    method: &str,
+    portable_mode: bool,
+) -> String {
+    if let Some(version) = requested_version {
+        return version.to_string();
+    }
+
+    if portable_mode || method == "standalone-r2" || method == "standalone-github" {
+        return "latest".to_string();
+    }
+
+    recommended_version.unwrap_or("latest").to_string()
 }
 
 #[tauri::command]
@@ -3106,7 +3168,7 @@ fn read_version_from_installation(cli_path: &std::path::Path) -> Option<String> 
         // 根据 CLI 路径判断来源，决定 package.json 检查顺序
         // 避免残留的另一来源包被优先读取
         let cli_source = crate::utils::classify_cli_source(&cli_path.to_string_lossy());
-        let pkg_names: &[&str] = if cli_source == "npm-zh" || cli_source == "standalone" {
+        let pkg_names: &[&str] = if cli_source_prefers_zh_package(&cli_source) {
             &["@qingchencloud/openclaw-zh", "openclaw"]
         } else {
             &["openclaw", "@qingchencloud/openclaw-zh"]
@@ -3410,6 +3472,12 @@ async fn try_standalone_install(
         return Err("当前平台不支持 standalone 安装包".into());
     }
     let install_dir = standalone_install_dir().ok_or("无法确定 standalone 安装目录")?;
+    if crate::commands::portable::portable_context().is_some() {
+        let _ = app.emit(
+            "upgrade-log",
+            format!("便携模式：将安装到 U 盘 {}", install_dir.display()),
+        );
+    }
 
     // 1. 动态查询最新版本
     let _ = app.emit(
@@ -3464,7 +3532,8 @@ async fn try_standalone_install(
     }
 
     let default_base = format!("{base_url}/{remote_version}");
-    let remote_base = if let Some(ovr) = override_base_url {
+    let override_base = override_base_url.map(|ovr| ovr.replace("{version}", remote_version));
+    let remote_base = if let Some(ovr) = override_base.as_deref() {
         ovr
     } else {
         manifest_base_url.unwrap_or(&default_base)
@@ -3545,7 +3614,8 @@ async fn try_standalone_install(
 
     // 4. 清理旧安装 & 创建目录
     if install_dir.exists() {
-        let _ = std::fs::remove_dir_all(&install_dir);
+        std::fs::remove_dir_all(&install_dir)
+            .map_err(|e| format!("清理旧 standalone 安装目录失败: {e}"))?;
     }
     std::fs::create_dir_all(&install_dir).map_err(|e| format!("创建安装目录失败: {e}"))?;
 
@@ -3561,17 +3631,7 @@ async fn try_standalone_install(
             .extract(&install_dir)
             .map_err(|e| format!("ZIP 解压失败: {e}"))?;
         // 归档内可能有 openclaw/ 子目录，需要提升一层
-        let nested = install_dir.join("openclaw");
-        if nested.exists() && nested.join("node.exe").exists() {
-            for entry in std::fs::read_dir(&nested)
-                .map_err(|e| format!("读取目录失败: {e}"))?
-                .flatten()
-            {
-                let dest = install_dir.join(entry.file_name());
-                let _ = std::fs::rename(entry.path(), &dest);
-            }
-            let _ = std::fs::remove_dir_all(&nested);
-        }
+        promote_nested_standalone_dir(&install_dir, "node.exe")?;
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -3620,9 +3680,18 @@ async fn try_standalone_install(
         ),
     );
 
-    // 7. 添加到 PATH（Windows 用户 PATH，Unix 创建 symlink）
+    // 7. 添加到 PATH（Windows 用户 PATH，Unix 创建 symlink）。
+    // 便携模式跳过：不写用户 PATH / 不建系统 symlink，避免在宿主机留下痕迹；
+    // 后续 bind_openclaw_cli_path 绑定的是 U 盘 clawpanel.json，解析链可直接命中
+    let portable_mode = crate::commands::portable::portable_context().is_some();
+    if portable_mode {
+        let _ = app.emit(
+            "upgrade-log",
+            "便携模式：跳过写入用户 PATH / 系统 symlink，仅绑定 U 盘内 CLI",
+        );
+    }
     #[cfg(target_os = "windows")]
-    {
+    if !portable_mode {
         let install_str = install_dir.to_string_lossy().to_string();
         // 检查是否已在 PATH 中
         let current_path = std::env::var("PATH").unwrap_or_default();
@@ -3655,7 +3724,7 @@ async fn try_standalone_install(
         }
     }
     #[cfg(not(target_os = "windows"))]
-    {
+    if !portable_mode {
         // Unix: 创建 /usr/local/bin/openclaw symlink 或 ~/bin/openclaw
         let link_targets = [
             PathBuf::from("/usr/local/bin/openclaw"),
@@ -4021,10 +4090,17 @@ async fn upgrade_openclaw_inner(
     let pkg_name = npm_package_name(&source);
     let requested_version = version.clone();
     let recommended_version = recommended_version_for(&source);
+    let portable_mode = crate::commands::portable::portable_context().is_some();
     let ver = requested_version
         .as_deref()
         .or(recommended_version.as_deref())
         .unwrap_or("latest");
+    let standalone_ver = standalone_install_version(
+        requested_version.as_deref(),
+        recommended_version.as_deref(),
+        &method,
+        portable_mode,
+    );
     let pkg = format!("{}@{}", pkg_name, ver);
     let active_cli_before = crate::utils::resolve_openclaw_cli_path();
     let current_version_before = get_local_version().await;
@@ -4058,14 +4134,12 @@ async fn upgrade_openclaw_inner(
         && (method == "auto" || method == "standalone-r2" || method == "standalone-github");
 
     if try_standalone {
-        let github_release_base = format!(
-            "https://github.com/qingchencloud/openclaw-standalone/releases/download/v{}",
-            ver
-        );
+        let github_release_base =
+            "https://github.com/qingchencloud/openclaw-standalone/releases/download/v{version}";
 
         if method == "standalone-github" {
             // standalone-github 模式：只走 GitHub
-            match try_standalone_install(&app, ver, Some(&github_release_base)).await {
+            match try_standalone_install(&app, &standalone_ver, Some(github_release_base)).await {
                 Ok(installed_ver) => {
                     let _ = app.emit("upgrade-progress", 100);
                     super::refresh_enhanced_path();
@@ -4084,7 +4158,7 @@ async fn upgrade_openclaw_inner(
             }
         } else {
             // auto / standalone-r2 模式：R2 CDN → GitHub Releases fallback
-            match try_standalone_install(&app, ver, None).await {
+            match try_standalone_install(&app, &standalone_ver, None).await {
                 Ok(installed_ver) => {
                     let _ = app.emit("upgrade-progress", 100);
                     super::refresh_enhanced_path();
@@ -4104,7 +4178,9 @@ async fn upgrade_openclaw_inner(
                     );
                     let _ = app.emit("upgrade-progress", 5);
                     // Fallback: GitHub Releases
-                    match try_standalone_install(&app, ver, Some(&github_release_base)).await {
+                    match try_standalone_install(&app, &standalone_ver, Some(github_release_base))
+                        .await
+                    {
                         Ok(installed_ver) => {
                             let _ = app.emit("upgrade-progress", 100);
                             super::refresh_enhanced_path();
@@ -4120,12 +4196,20 @@ async fn upgrade_openclaw_inner(
                             return Ok(msg);
                         }
                         Err(gh_reason) => {
-                            if should_fallback_standalone_to_npm(current_install_mode, &method) {
+                            if should_fallback_standalone_to_npm(
+                                current_install_mode,
+                                &method,
+                                portable_mode,
+                            ) {
                                 let _ = app.emit(
                                     "upgrade-log",
                                     format!("standalone 不可用（GitHub: {gh_reason}），降级到 npm 安装..."),
                                 );
                                 let _ = app.emit("upgrade-progress", 5);
+                            } else if method == "auto" && portable_mode {
+                                return Err(format!(
+                                    "当前处于便携模式，已阻止自动降级到 npm 全局安装（npm -g 会写入本机而非 U 盘）。请检查网络后重试独立包安装。standalone 安装失败: CDN={cdn_reason}, GitHub={gh_reason}"
+                                ));
                             } else if method == "auto" {
                                 return Err(format!(
                                     "当前 OpenClaw 使用 standalone 独立包模式，已阻止自动降级到 npm 全局安装。请稍后重试独立包升级，或在升级方式中手动选择 npm。standalone 安装失败: CDN={cdn_reason}, GitHub={gh_reason}"
@@ -4842,8 +4926,13 @@ pub fn check_node() -> Result<Value, String> {
 
     // standalone 安装会在 openclaw 启动脚本中优先使用同目录 Node.js。
     // 这里按实际运行时检测，避免被 PATH 中较旧的系统 Node.js 误判拦截。
+    // 便携模式下 standalone 包装进 U 盘 engines/openclaw（来源归类为 portable），
+    // 同样自带 node.exe，一并识别，避免误报"未安装 Node"
     if let Some(cli_path) = crate::utils::resolve_openclaw_cli_path() {
-        if crate::utils::classify_cli_source(&cli_path) == "standalone" {
+        if matches!(
+            crate::utils::classify_cli_source(&cli_path).as_str(),
+            "standalone" | "portable"
+        ) {
             if let Some(bundled) = standalone_bundled_node_bin(&cli_path) {
                 if let Some(ver) = node_version_from_bin(&bundled) {
                     populate_node_detection_result(
@@ -7016,6 +7105,14 @@ pub fn write_panel_config(config: Value) -> Result<(), String> {
     fs::write(&path, json).map_err(|e| format!("写入失败: {e}"))
 }
 
+fn path_without_curdir_string(path: &std::path::Path) -> String {
+    let cleaned: PathBuf = path
+        .components()
+        .filter(|component| !matches!(component, std::path::Component::CurDir))
+        .collect();
+    cleaned.to_string_lossy().to_string()
+}
+
 fn bind_openclaw_cli_path(cli_path: &std::path::Path) -> Result<(), String> {
     let mut config = read_panel_config().unwrap_or_else(|_| json!({}));
     if !config.is_object() {
@@ -7024,7 +7121,7 @@ fn bind_openclaw_cli_path(cli_path: &std::path::Path) -> Result<(), String> {
     if let Some(obj) = config.as_object_mut() {
         obj.insert(
             "openclawCliPath".into(),
-            Value::String(cli_path.to_string_lossy().to_string()),
+            Value::String(path_without_curdir_string(cli_path)),
         );
     }
     write_panel_config(config)?;
@@ -7606,12 +7703,18 @@ mod write_openclaw_config_merge_tests {
     use super::merge_configs_preserving_fields;
     use super::node_version_satisfies_requirement;
     use super::openclaw_version_requires_node_22_19;
+    use super::path_without_curdir_string;
+    use super::promote_nested_standalone_dir;
     #[cfg(target_os = "windows")]
     use super::resolve_openclaw_cli_input_path;
     use super::select_calibration_source;
+    use super::should_fallback_standalone_to_npm;
     use super::standalone_bundled_node_bin;
+    use super::standalone_install_dir_impl;
+    use super::standalone_install_version;
+    use super::strip_ui_fields;
     use serde_json::json;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn unique_temp_dir(name: &str) -> PathBuf {
         let suffix = std::time::SystemTime::now()
@@ -7659,7 +7762,12 @@ mod write_openclaw_config_merge_tests {
 
     #[test]
     fn calibration_reset_inherits_memory_and_security_extensions() {
-        let baseline = json!({});
+        let baseline = json!({
+            "tools": {
+                "profile": "full",
+                "sessions": { "visibility": "all" }
+            }
+        });
         let seed = json!({
             "memory": {
                 "qmd": { "rerank": false },
@@ -7669,6 +7777,22 @@ mod write_openclaw_config_merge_tests {
                     "enabled": true,
                     "targets": ["skill", "plugin"]
                 }
+            },
+            "secrets": {
+                "defaults": { "source": "env", "provider": "default" },
+                "providers": {
+                    "vaultfile": {
+                        "source": "file",
+                        "path": "/etc/openclaw/secrets.json"
+                    }
+                }
+            },
+            "tui": {
+                "footer": { "showRemoteHost": true }
+            },
+            "tools": {
+                "toolSearch": { "enabled": true, "mode": "directory" },
+                "web": { "search": { "backend": "parallel" } }
             }
         });
 
@@ -7676,11 +7800,53 @@ mod write_openclaw_config_merge_tests {
 
         assert!(inherited.contains(&"memory".to_string()));
         assert!(inherited.contains(&"security".to_string()));
+        assert!(inherited.contains(&"secrets".to_string()));
+        assert!(inherited.contains(&"tui".to_string()));
+        assert!(inherited.contains(&"tools".to_string()));
         assert_eq!(next["memory"]["qmd"]["rerank"], json!(false));
         assert_eq!(
             next["security"]["installPolicy"]["targets"][1],
             json!("plugin")
         );
+        assert_eq!(next["tui"]["footer"]["showRemoteHost"], json!(true));
+        assert_eq!(
+            next["secrets"]["providers"]["vaultfile"]["source"],
+            json!("file")
+        );
+        assert_eq!(next["tools"]["profile"], json!("full"));
+        assert_eq!(next["tools"]["toolSearch"]["mode"], json!("directory"));
+        assert_eq!(next["tools"]["web"]["search"]["backend"], json!("parallel"));
+    }
+
+    #[test]
+    fn strip_ui_fields_preserves_auth_profiles_metadata() {
+        let config = json!({
+            "current": "2026.6.11",
+            "auth": {
+                "profiles": {
+                    "bedrock:default": {
+                        "provider": "bedrock",
+                        "mode": "aws-sdk"
+                    }
+                },
+                "order": { "bedrock": ["bedrock:default"] }
+            },
+            "agents": {
+                "profiles": {
+                    "legacy-ui-field": {}
+                },
+                "list": []
+            }
+        });
+
+        let cleaned = strip_ui_fields(config);
+
+        assert!(cleaned.get("current").is_none());
+        assert_eq!(
+            cleaned["auth"]["profiles"]["bedrock:default"]["mode"],
+            json!("aws-sdk")
+        );
+        assert!(cleaned["agents"].get("profiles").is_none());
     }
 
     #[test]
@@ -7826,6 +7992,142 @@ mod write_openclaw_config_merge_tests {
             "v24.1.0",
             "^22.19.0 || >=24.0.0"
         ));
+    }
+
+    fn test_portable_ctx(root: &Path) -> crate::commands::portable::PortableContext {
+        crate::commands::portable::PortableContext {
+            root: root.to_path_buf(),
+            data_dir: root.join("data"),
+            panel_config_path: root.join("data").join("clawpanel").join("clawpanel.json"),
+            openclaw_dir: root.join("data").join("openclaw"),
+            hermes_home: root.join("data").join("hermes"),
+            node_dir: None,
+            engines_openclaw_dir: root.join("engines").join("openclaw"),
+            engines_hermes_dir: root.join("engines").join("hermes"),
+            openclaw_cli_path: None,
+            hermes_cli_path: None,
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn standalone_install_dir_portable_stays_inside_root() {
+        let root = unique_temp_dir("portable-install-root");
+        let ctx = test_portable_ctx(&root);
+        let dir = standalone_install_dir_impl(Some(&ctx)).unwrap();
+        assert!(dir.starts_with(&root), "安装目录必须在 portable root 内");
+        assert_eq!(dir, root.join("engines").join("openclaw"));
+    }
+
+    #[test]
+    fn standalone_install_dir_normal_mode_unchanged() {
+        let dir = standalone_install_dir_impl(None);
+        #[cfg(target_os = "windows")]
+        {
+            let expected = std::env::var("LOCALAPPDATA")
+                .ok()
+                .map(|d| PathBuf::from(d).join("Programs").join("OpenClaw"));
+            assert_eq!(dir, expected);
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let expected = dirs::home_dir().map(|h| h.join(".openclaw-bin"));
+            assert_eq!(dir, expected);
+        }
+    }
+
+    #[test]
+    fn npm_fallback_blocked_in_portable_mode() {
+        // 便携模式：无论当前安装模式如何，auto 均不得降级到 npm 全局安装
+        for mode in ["unknown", "npm", "standalone", "portable"] {
+            assert!(!should_fallback_standalone_to_npm(mode, "auto", true));
+        }
+        // 普通模式原行为不变
+        assert!(should_fallback_standalone_to_npm("npm", "auto", false));
+        assert!(should_fallback_standalone_to_npm("unknown", "auto", false));
+        assert!(!should_fallback_standalone_to_npm(
+            "standalone",
+            "auto",
+            false
+        ));
+        assert!(!should_fallback_standalone_to_npm(
+            "portable", "auto", false
+        ));
+        // 非 auto 方式从不触发降级分支
+        assert!(!should_fallback_standalone_to_npm(
+            "npm",
+            "standalone-r2",
+            false
+        ));
+    }
+
+    #[test]
+    fn standalone_version_uses_latest_for_portable_without_explicit_version() {
+        assert_eq!(
+            standalone_install_version(None, Some("2026.5.18-zh.1"), "auto", true),
+            "latest"
+        );
+    }
+
+    #[test]
+    fn standalone_version_uses_latest_for_explicit_standalone_method() {
+        assert_eq!(
+            standalone_install_version(None, Some("2026.5.18-zh.1"), "standalone-r2", false),
+            "latest"
+        );
+        assert_eq!(
+            standalone_install_version(None, Some("2026.5.18-zh.1"), "standalone-github", false),
+            "latest"
+        );
+    }
+
+    #[test]
+    fn standalone_version_keeps_recommended_for_auto_non_portable() {
+        assert_eq!(
+            standalone_install_version(None, Some("2026.5.18-zh.1"), "auto", false),
+            "2026.5.18-zh.1"
+        );
+    }
+
+    #[test]
+    fn standalone_version_keeps_explicit_requested_version() {
+        assert_eq!(
+            standalone_install_version(
+                Some("2026.6.1-zh.1"),
+                Some("2026.5.18-zh.1"),
+                "standalone-r2",
+                true
+            ),
+            "2026.6.1-zh.1"
+        );
+    }
+
+    #[test]
+    fn cli_binding_path_omits_curdir_components() {
+        let path = PathBuf::from(r"U:\ClawPanelPortable\.\engines\openclaw\openclaw.cmd");
+        assert_eq!(
+            path_without_curdir_string(&path),
+            r"U:\ClawPanelPortable\engines\openclaw\openclaw.cmd"
+        );
+    }
+
+    #[test]
+    fn standalone_extract_promotes_nested_dir_over_existing_files() {
+        let dir = unique_temp_dir("standalone-promote");
+        std::fs::create_dir_all(dir.join("openclaw")).unwrap();
+        std::fs::write(dir.join("openclaw.cmd"), b"old").unwrap();
+        std::fs::write(dir.join("VERSION"), b"old").unwrap();
+        let node_bin = if cfg!(windows) { "node.exe" } else { "node" };
+        std::fs::write(dir.join("openclaw").join(node_bin), b"node").unwrap();
+        std::fs::write(dir.join("openclaw").join("openclaw.cmd"), b"new").unwrap();
+        std::fs::write(dir.join("openclaw").join("VERSION"), b"new").unwrap();
+
+        promote_nested_standalone_dir(&dir, node_bin).unwrap();
+
+        assert!(!dir.join("openclaw").exists());
+        assert_eq!(std::fs::read(dir.join("openclaw.cmd")).unwrap(), b"new");
+        assert_eq!(std::fs::read(dir.join("VERSION")).unwrap(), b"new");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

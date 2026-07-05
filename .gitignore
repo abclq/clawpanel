@@ -75,3 +75,7 @@ src-tauri/gen/schemas/linux-schema.json
 CONTEXT_STATE.md
 PROJECT_CONTRACT.md
 project.yaml
+
+# 本地测试产物与工具缓存
+output/
+.playwright-cli/

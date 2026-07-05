@@ -21,9 +21,22 @@ const DOCKER_TASK_TIMEOUT_MS = 10 * 60 * 1000
 // ---------------------------------------------------------------------------
 const HERMES_HOME = path.join(homedir(), '.hermes')
 const HERMES_DEFAULT_PORT = 8642
+const HERMES_STABLE_VERSION = '0.18.0'
+const HERMES_STABLE_TAG = 'v2026.7.1'
+const HERMES_REPO_URL = 'https://github.com/NousResearch/hermes-agent.git'
+const HERMES_GIT_URL = `git+${HERMES_REPO_URL}@${HERMES_STABLE_TAG}`
 
 function hermesProvider(id, name, authType, baseUrl, baseUrlEnvVar, apiKeyEnvVars, transport, modelsProbe, models, isAggregator = false, cliAuthHint = '') {
   return { id, name, authType, baseUrl, baseUrlEnvVar, apiKeyEnvVars, transport, modelsProbe, models, isAggregator, cliAuthHint }
+}
+
+function hermesPackageSpec(extras = []) {
+  const normalized = Array.isArray(extras)
+    ? extras.map(v => String(v || '').trim()).filter(Boolean)
+    : []
+  return normalized.length
+    ? `hermes-agent[${normalized.join(',')}] @ ${HERMES_GIT_URL}`
+    : `hermes-agent @ ${HERMES_GIT_URL}`
 }
 
 const HERMES_PROVIDER_REGISTRY = [
@@ -36,6 +49,7 @@ const HERMES_PROVIDER_REGISTRY = [
   hermesProvider('arcee', 'Arcee AI', 'api_key', 'https://api.arcee.ai/api/v1', 'ARCEE_BASE_URL', ['ARCEEAI_API_KEY'], 'openai_chat', 'openai', []),
   hermesProvider('azure-foundry', 'Azure Foundry', 'api_key', '', 'AZURE_FOUNDRY_BASE_URL', ['AZURE_FOUNDRY_API_KEY'], 'openai_chat', 'openai', [], true),
   hermesProvider('gmi', 'GMI Cloud', 'api_key', 'https://api.gmi-serving.com/v1', 'GMI_BASE_URL', ['GMI_API_KEY'], 'openai_chat', 'openai', []),
+  hermesProvider('novita', 'NovitaAI', 'api_key', 'https://api.novita.ai/openai/v1', 'NOVITA_BASE_URL', ['NOVITA_API_KEY'], 'openai_chat', 'openai', ['moonshotai/kimi-k2.5', 'minimax/minimax-m2.7', 'zai-org/glm-5', 'deepseek/deepseek-v3-0324', 'deepseek/deepseek-r1-0528', 'qwen/qwen3-235b-a22b-fp8'], true),
   hermesProvider('lmstudio', 'LM Studio', 'api_key', 'http://127.0.0.1:1234/v1', 'LM_BASE_URL', ['LM_API_KEY'], 'openai_chat', 'openai', []),
   hermesProvider('nvidia', 'NVIDIA NIM', 'api_key', 'https://integrate.api.nvidia.com/v1', 'NVIDIA_BASE_URL', ['NVIDIA_API_KEY'], 'openai_chat', 'openai', []),
   hermesProvider('ollama-cloud', 'Ollama Cloud', 'api_key', 'https://ollama.com/v1', 'OLLAMA_BASE_URL', ['OLLAMA_API_KEY'], 'openai_chat', 'openai', []),
@@ -47,7 +61,9 @@ const HERMES_PROVIDER_REGISTRY = [
   hermesProvider('alibaba-coding-plan', 'Alibaba Cloud (Coding Plan)', 'api_key', 'https://coding-intl.dashscope.aliyuncs.com/v1', 'ALIBABA_CODING_PLAN_BASE_URL', ['ALIBABA_CODING_PLAN_API_KEY', 'DASHSCOPE_API_KEY'], 'openai_chat', 'openai', ['qwen3-coder-plus', 'qwen3-coder-next', 'qwen3.5-plus', 'qwen3.5-coder']),
   hermesProvider('minimax-cn', 'MiniMax (China)', 'api_key', 'https://api.minimaxi.com/v1', 'MINIMAX_CN_BASE_URL', ['MINIMAX_CN_API_KEY'], 'anthropic_messages', 'anthropic', ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed']),
   hermesProvider('xiaomi', 'Xiaomi MiMo', 'api_key', 'https://api.xiaomimimo.com/v1', 'XIAOMI_BASE_URL', ['XIAOMI_API_KEY'], 'openai_chat', 'openai', ['mimo-v2-pro', 'mimo-v2-omni', 'mimo-v2-flash']),
+  hermesProvider('stepfun', 'StepFun', 'api_key', 'https://api.stepfun.ai/step_plan/v1', '', ['STEPFUN_API_KEY'], 'openai_chat', 'openai', ['step-3.5-flash']),
   hermesProvider('bedrock', 'AWS Bedrock', 'aws_sdk', 'https://bedrock-runtime.us-east-1.amazonaws.com', 'BEDROCK_BASE_URL', [], 'anthropic_messages', 'none', []),
+  hermesProvider('vertex', 'Google Vertex AI', 'vertex', 'https://aiplatform.googleapis.com', '', [], 'openai_chat', 'none', ['google/gemini-3-pro-preview', 'google/gemini-3-flash-preview', 'google/gemini-2.5-pro', 'google/gemini-2.5-flash'], false, '使用 Google Cloud Application Default Credentials 或服务账号 JSON'),
   hermesProvider('openrouter', 'OpenRouter', 'api_key', 'https://openrouter.ai/api/v1', 'OPENAI_BASE_URL', ['OPENROUTER_API_KEY'], 'openai_chat', 'openai', [], true),
   hermesProvider('ai-gateway', 'Vercel AI Gateway', 'api_key', 'https://ai-gateway.vercel.sh/v1', 'AI_GATEWAY_BASE_URL', ['AI_GATEWAY_API_KEY'], 'openai_chat', 'openai', ['anthropic/claude-opus-4.6', 'anthropic/claude-sonnet-4.6', 'anthropic/claude-sonnet-4.5', 'anthropic/claude-haiku-4.5', 'openai/gpt-5', 'openai/gpt-4.1', 'openai/gpt-4.1-mini', 'google/gemini-3-pro-preview', 'google/gemini-3-flash', 'google/gemini-2.5-pro', 'google/gemini-2.5-flash', 'deepseek/deepseek-v3.2'], true),
   hermesProvider('opencode-zen', 'OpenCode Zen', 'api_key', 'https://opencode.ai/zen/v1', 'OPENCODE_ZEN_BASE_URL', ['OPENCODE_ZEN_API_KEY'], 'openai_chat', 'openai', ['gpt-5.4-pro', 'gpt-5.4', 'gpt-5.3-codex', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5', 'gemini-3.1-pro', 'gemini-3-pro', 'minimax-m2.7', 'glm-5.2', 'glm-5', 'kimi-k2.7-code', 'kimi-k2.5', 'qwen3-coder'], true),
@@ -56,7 +72,6 @@ const HERMES_PROVIDER_REGISTRY = [
   hermesProvider('nous', 'Nous Portal', 'oauth_device_code', 'https://inference-api.nousresearch.com/v1', '', [], 'openai_chat', 'none', ['moonshotai/kimi-k2.6', 'moonshotai/kimi-k2.7-code', 'anthropic/claude-opus-4.7', 'anthropic/claude-sonnet-4.6', 'openai/gpt-5.4', 'google/gemini-3-pro-preview', 'qwen/qwen3.5-plus-02-15', 'minimax/minimax-m2.7', 'z-ai/glm-5.1', 'x-ai/grok-4.20-beta'], true, 'hermes auth login nous'),
   hermesProvider('openai-codex', 'OpenAI Codex', 'oauth_external', 'https://chatgpt.com/backend-api/codex', '', [], 'codex_responses', 'none', ['gpt-5.5', 'gpt-5.4-mini', 'gpt-5.4', 'gpt-5.3-codex', 'gpt-5.2-codex', 'gpt-5.1-codex-max', 'gpt-5.1-codex-mini'], false, 'hermes auth login openai-codex'),
   hermesProvider('qwen-oauth', 'Qwen OAuth', 'oauth_external', 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', '', [], 'openai_chat', 'none', ['qwen3.5-plus', 'qwen3-coder-plus', 'qwen3-coder-next'], false, 'hermes auth login qwen-oauth'),
-  hermesProvider('google-gemini-cli', 'Google Gemini (OAuth)', 'oauth_external', 'https://generativelanguage.googleapis.com/v1beta/openai', '', [], 'openai_chat', 'none', ['gemini-2.5-pro', 'gemini-2.5-flash'], false, 'hermes auth login google-gemini-cli'),
   hermesProvider('minimax-oauth', 'MiniMax (OAuth)', 'oauth_minimax', 'https://api.minimax.io/anthropic', '', [], 'anthropic_messages', 'none', ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed'], false, 'hermes auth login minimax-oauth'),
   hermesProvider('copilot-acp', 'GitHub Copilot ACP', 'external_process', 'http://127.0.0.1:0', 'COPILOT_ACP_BASE_URL', [], 'openai_chat', 'none', ['gpt-4o', 'gpt-4.1', 'claude-3.5-sonnet', 'claude-3.7-sonnet'], false, 'hermes auth login copilot-acp'),
   hermesProvider('custom', 'Custom OpenAI-Compatible', 'api_key', '', 'OPENAI_BASE_URL', ['OPENAI_API_KEY', 'CUSTOM_API_KEY'], 'openai_chat', 'openai', [], true),
@@ -178,8 +193,10 @@ function runHermesSilent(program, args) {
 
 function sanitizeHermesInstallOutput(text = '') {
   return String(text || '')
-    .replaceAll('git+https://github.com/NousResearch/hermes-agent.git', 'hermes-agent')
-    .replaceAll('https://github.com/NousResearch/hermes-agent.git', 'hermes-agent')
+    .replaceAll(HERMES_GIT_URL, 'hermes-agent')
+    .replaceAll(`${HERMES_REPO_URL}@${HERMES_STABLE_TAG}`, 'hermes-agent')
+    .replaceAll(`git+${HERMES_REPO_URL}`, 'hermes-agent')
+    .replaceAll(HERMES_REPO_URL, 'hermes-agent')
     .replaceAll('https://github.com/NousResearch/hermes-agent', 'hermes-agent')
     .replaceAll('github.com/NousResearch/hermes-agent.git', 'hermes-agent')
     .replaceAll('github.com/NousResearch/hermes-agent', 'hermes-agent')
@@ -2273,9 +2290,6 @@ function stripUiFields(config) {
   for (const key of uiRootKeys) {
     delete config[key]
   }
-  if (config.auth && typeof config.auth === 'object' && !Array.isArray(config.auth)) {
-    delete config.auth.profiles
-  }
   if (config.agents && typeof config.agents === 'object' && !Array.isArray(config.agents)) {
     delete config.agents.profiles
     if (Array.isArray(config.agents.list)) {
@@ -2365,9 +2379,11 @@ const CALIBRATION_RESET_INHERIT_KEYS = [
   'memory',
   'models',
   'plugins',
+  'secrets',
   'security',
   'session',
   'skills',
+  'tui',
   'wizard',
 ]
 
@@ -2505,10 +2521,10 @@ function applyResetInheritance(baseConfig, seed) {
       inheritedKeys.push(key)
     }
   }
-  if (seed.tools?.web) {
+  if (seed.tools && typeof seed.tools === 'object' && !Array.isArray(seed.tools)) {
     config.tools = config.tools && typeof config.tools === 'object' && !Array.isArray(config.tools) ? config.tools : {}
-    config.tools.web = seed.tools.web
-    inheritedKeys.push('tools.web')
+    config.tools = mergeConfigsPreservingFields(config.tools, seed.tools)
+    inheritedKeys.push('tools')
   }
   return [config, inheritedKeys]
 }
@@ -8762,6 +8778,12 @@ const ALWAYS_LOCAL = new Set([
   'assistant_list_dir', 'assistant_system_info', 'assistant_list_processes',
   'assistant_check_port', 'assistant_web_search', 'assistant_fetch_url',
   'assistant_ensure_data_dir', 'assistant_save_image', 'assistant_load_image', 'assistant_delete_image',
+  'read_media_config', 'write_media_config', 'test_media_provider', 'fetch_media_models',
+  'generate_image', 'create_video_task', 'poll_video_task',
+  'cancel_media_job', 'list_media_jobs', 'delete_media_job',
+  'reveal_media_asset', 'reveal_media_output_dir', 'load_media_asset',
+  // 便携模式是本进程属性，不能代理到远程实例
+  'get_portable_status', 'migrate_to_portable',
 ])
 
 // === 工具函数 ===
@@ -9098,6 +9120,745 @@ function serverCached(key, ttlMs, fn) {
   // sync
   _serverCache.set(key, { val: result, ts: Date.now() })
   return result
+}
+
+// === 云端媒体生成（Web 模式） ===
+
+const MEDIA_PROVIDER_VOLCENGINE = 'volcengine'
+const MEDIA_PROVIDER_OPENAI = 'openai'
+const MEDIA_PROVIDER_NEWAPI = 'newapi'
+const MEDIA_DEFAULT_VOLCENGINE_BASE_URL = 'https://ark.cn-beijing.volces.com/api/v3'
+const MEDIA_DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1'
+const MEDIA_DEFAULT_NEWAPI_BASE_URL = 'https://your-newapi.example.com/v1'
+const MEDIA_CONFIG_FILE = 'media-config.json'
+const MEDIA_JOBS_FILE = 'media-jobs.json'
+const MEDIA_MAX_IMAGE_COUNT = 4
+const MEDIA_MAX_ASSET_BYTES = 512 * 1024 * 1024
+
+function mediaNowIso() {
+  return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')
+}
+
+function mediaRoot() {
+  return path.join(OPENCLAW_DIR, 'clawpanel', 'media')
+}
+
+function mediaOutputRoot(config = readMediaConfigPrivate()) {
+  const raw = String(config?.outputDir || '').trim()
+  if (!raw) return mediaRoot()
+  return path.isAbsolute(raw) ? raw : path.join(mediaRoot(), raw)
+}
+
+function mediaConfigPath() {
+  return path.join(mediaRoot(), MEDIA_CONFIG_FILE)
+}
+
+function mediaJobsPath() {
+  return path.join(mediaRoot(), MEDIA_JOBS_FILE)
+}
+
+function ensureMediaRoot() {
+  const root = mediaRoot()
+  fs.mkdirSync(path.join(root, 'assets'), { recursive: true })
+  return root
+}
+
+function ensureMediaOutputRoot(config = readMediaConfigPrivate()) {
+  ensureMediaRoot()
+  const root = mediaOutputRoot(config)
+  fs.mkdirSync(path.join(root, 'assets'), { recursive: true })
+  return root
+}
+
+function defaultMediaConfig() {
+  return {
+    version: 1,
+    outputDir: '',
+    providers: {
+      volcengine: {
+        enabled: false,
+        baseUrl: MEDIA_DEFAULT_VOLCENGINE_BASE_URL,
+        apiKey: '',
+        imageModel: '',
+        videoModel: '',
+        timeoutSeconds: 600,
+      },
+      openai: {
+        enabled: false,
+        baseUrl: MEDIA_DEFAULT_OPENAI_BASE_URL,
+        apiKey: '',
+        imageModel: 'gpt-image-1',
+        videoModel: 'sora-2',
+        timeoutSeconds: 600,
+      },
+      newapi: {
+        enabled: false,
+        baseUrl: MEDIA_DEFAULT_NEWAPI_BASE_URL,
+        apiKey: '',
+        imageModel: 'gpt-image-1',
+        videoModel: 'sora-2',
+        timeoutSeconds: 600,
+      },
+    },
+    defaults: {
+      provider: MEDIA_PROVIDER_VOLCENGINE,
+      image: { size: '2K', count: 1, watermark: true },
+      video: { ratio: '16:9', resolution: '720p', duration: 5, pollIntervalSeconds: 5 },
+    },
+  }
+}
+
+function defaultMediaJobs() {
+  return { version: 1, jobs: [] }
+}
+
+function readJsonOrDefault(file, fallback) {
+  try {
+    const raw = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '')
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? parsed : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function writeJsonAtomic(file, value) {
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  const tmp = `${file}.tmp`
+  fs.writeFileSync(tmp, JSON.stringify(value, null, 2))
+  if (fs.existsSync(file)) fs.rmSync(file, { force: true })
+  fs.renameSync(tmp, file)
+}
+
+function mediaApiKeyMask(key) {
+  const value = String(key || '').trim()
+  if (!value) return ''
+  if ([...value].length <= 8) return '已保存'
+  return `${value.slice(0, 3)}***${value.slice(-4)}`
+}
+
+function mediaProviderIds() {
+  return [MEDIA_PROVIDER_VOLCENGINE, MEDIA_PROVIDER_OPENAI, MEDIA_PROVIDER_NEWAPI]
+}
+
+function isSupportedMediaProvider(provider) {
+  return mediaProviderIds().includes(provider)
+}
+
+function isOpenAICompatibleMediaProvider(provider) {
+  return provider === MEDIA_PROVIDER_OPENAI || provider === MEDIA_PROVIDER_NEWAPI
+}
+
+function defaultMediaProviderBaseUrl(provider) {
+  if (provider === MEDIA_PROVIDER_OPENAI) return MEDIA_DEFAULT_OPENAI_BASE_URL
+  if (provider === MEDIA_PROVIDER_NEWAPI) return MEDIA_DEFAULT_NEWAPI_BASE_URL
+  return MEDIA_DEFAULT_VOLCENGINE_BASE_URL
+}
+
+function normalizeMediaProviderConfig(providerId, rawProvider = {}, currentProvider = {}) {
+  const incoming = rawProvider && typeof rawProvider === 'object' ? rawProvider : {}
+  const current = currentProvider && typeof currentProvider === 'object' ? currentProvider : {}
+  const incomingKey = String(incoming.apiKey || '').trim()
+  const oldKey = String(current.apiKey || '').trim()
+  const keepOld = !incomingKey || incomingKey === '__KEEP__' || incomingKey === '••••••••' || incomingKey === '********'
+  const timeout = Number(incoming.timeoutSeconds || 600)
+  return {
+    enabled: Boolean(incoming.enabled),
+    baseUrl: String(incoming.baseUrl || defaultMediaProviderBaseUrl(providerId)).trim().replace(/\/+$/, ''),
+    apiKey: keepOld ? oldKey : incomingKey,
+    imageModel: String(incoming.imageModel || '').trim(),
+    videoModel: String(incoming.videoModel || '').trim(),
+    timeoutSeconds: Math.min(1800, Math.max(30, Number.isFinite(timeout) ? timeout : 600)),
+  }
+}
+
+function normalizeMediaConfig(config = {}, current = null) {
+  const base = defaultMediaConfig()
+  const raw = config && typeof config === 'object' ? config : {}
+  const rawProviders = raw.providers && typeof raw.providers === 'object' ? raw.providers : {}
+  const providers = { ...base.providers, ...rawProviders }
+  for (const providerId of mediaProviderIds()) {
+    providers[providerId] = normalizeMediaProviderConfig(
+      providerId,
+      rawProviders?.[providerId],
+      current?.providers?.[providerId] || {},
+    )
+  }
+  const rawDefaults = raw.defaults && typeof raw.defaults === 'object' ? raw.defaults : {}
+  const defaultProvider = isSupportedMediaProvider(String(rawDefaults.provider || '').trim())
+    ? String(rawDefaults.provider).trim()
+    : MEDIA_PROVIDER_VOLCENGINE
+  return {
+    ...base,
+    ...raw,
+    version: 1,
+    outputDir: String(raw.outputDir || '').trim(),
+    providers,
+    defaults: {
+      ...base.defaults,
+      ...rawDefaults,
+      provider: defaultProvider,
+    },
+  }
+}
+
+function sanitizeMediaConfigForRead(config) {
+  const sanitized = normalizeMediaConfig(config)
+  sanitized.resolvedOutputDir = mediaOutputRoot(sanitized)
+  for (const providerId of mediaProviderIds()) {
+    const provider = sanitized.providers[providerId]
+    const apiKey = provider?.apiKey || ''
+    if (!provider) continue
+    provider.apiKey = ''
+    provider.apiKeySaved = !!apiKey.trim()
+    provider.apiKeyMask = mediaApiKeyMask(apiKey)
+  }
+  return sanitized
+}
+
+function readMediaConfigPrivate() {
+  return normalizeMediaConfig(readJsonOrDefault(mediaConfigPath(), defaultMediaConfig()))
+}
+
+function readMediaJobsPrivate() {
+  const doc = readJsonOrDefault(mediaJobsPath(), defaultMediaJobs())
+  return {
+    version: 1,
+    jobs: Array.isArray(doc.jobs) ? doc.jobs : [],
+  }
+}
+
+function writeMediaJobsPrivate(doc) {
+  writeJsonAtomic(mediaJobsPath(), {
+    version: 1,
+    jobs: Array.isArray(doc.jobs) ? doc.jobs : [],
+  })
+}
+
+function mediaStr(value, key) {
+  return String(value?.[key] || '').trim()
+}
+
+function mediaPageNumber(value, key, fallback, max) {
+  const n = Number(value?.[key])
+  if (!Number.isFinite(n) || n < 0) return Math.min(fallback, max)
+  return Math.min(Math.floor(n), max)
+}
+
+function buildMediaJobsResponse(doc, filter = {}) {
+  let jobs = Array.isArray(doc?.jobs) ? [...doc.jobs] : []
+  const type = mediaStr(filter, 'type')
+  const status = mediaStr(filter, 'status')
+  if (type) jobs = jobs.filter(job => job.type === type)
+  if (status) jobs = jobs.filter(job => job.status === status)
+  jobs.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
+  const total = jobs.length
+  const offset = mediaPageNumber(filter, 'offset', 0, total)
+  const limit = Math.max(1, mediaPageNumber(filter, 'limit', 24, 200))
+  const paged = jobs.slice(offset, offset + limit)
+  return {
+    version: 1,
+    jobs: paged,
+    total,
+    offset,
+    limit,
+    hasMore: offset + paged.length < total,
+  }
+}
+
+function mediaNum(value, key, fallback) {
+  const n = Number(value?.[key])
+  return Number.isFinite(n) ? n : fallback
+}
+
+function validateMediaProviderId(provider) {
+  if (!isSupportedMediaProvider(provider)) throw new Error(`暂不支持媒体服务商: ${provider}`)
+}
+
+function validateMediaPrompt(prompt) {
+  const value = String(prompt || '').trim()
+  if (!value) throw new Error('提示词不能为空')
+  if ([...value].length > 6000) throw new Error('提示词过长，请控制在 6000 字以内')
+}
+
+function isValidMediaSize(size) {
+  const value = String(size || '').trim()
+  if (!value) return true
+  if (['1K', '2K', '4K', 'adaptive', 'auto'].includes(value)) return true
+  const match = value.match(/^(\d{3,4})[xX](\d{3,4})$/)
+  if (!match) return false
+  const w = Number(match[1])
+  const h = Number(match[2])
+  return w >= 256 && w <= 8192 && h >= 256 && h <= 8192
+}
+
+function validateImageRequest(request) {
+  validateMediaProviderId(mediaStr(request, 'provider'))
+  validateMediaPrompt(mediaStr(request, 'prompt'))
+  const count = mediaNum(request, 'count', 1)
+  if (count < 1 || count > MEDIA_MAX_IMAGE_COUNT) throw new Error(`图片数量必须在 1-${MEDIA_MAX_IMAGE_COUNT} 之间`)
+  if (!isValidMediaSize(mediaStr(request, 'size'))) throw new Error('图片尺寸格式不正确，可填 2K、4K 或 1024x1024')
+}
+
+function validateVideoRequest(request) {
+  validateMediaProviderId(mediaStr(request, 'provider'))
+  validateMediaPrompt(mediaStr(request, 'prompt'))
+  const duration = mediaNum(request, 'duration', 5)
+  if (duration < 1 || duration > 30) throw new Error('视频时长必须在 1-30 秒之间')
+  const ratio = mediaStr(request, 'ratio')
+  if (ratio && !['16:9', '9:16', '1:1', '4:3', '3:4', '21:9'].includes(ratio)) {
+    throw new Error('视频比例暂只支持 16:9、9:16、1:1、4:3、3:4、21:9')
+  }
+  const resolution = mediaStr(request, 'resolution')
+  if (resolution && !['480p', '720p', '1080p', '1440p'].includes(resolution)) {
+    throw new Error('视频分辨率暂只支持 480p、720p、1080p、1440p')
+  }
+}
+
+function loadMediaProviderConfig(provider, kind, requestModel = '') {
+  validateMediaProviderId(provider)
+  const raw = readMediaConfigPrivate().providers?.[provider]
+  if (!raw) throw new Error(`媒体服务商未配置: ${provider}`)
+  const apiKey = String(raw.apiKey || '').trim()
+  if (!apiKey) throw new Error('请先在创作中心对接配置里填写 API Key')
+  const imageModel = String(raw.imageModel || '').trim()
+  const videoModel = String(raw.videoModel || '').trim()
+  const selectedModel = String(requestModel || '').trim() || (kind === 'image' ? imageModel : videoModel)
+  if (!selectedModel) throw new Error(kind === 'image' ? '请先填写图片模型 ID' : '请先填写视频模型 ID')
+  return {
+    provider,
+    baseUrl: String(raw.baseUrl || defaultMediaProviderBaseUrl(provider)).trim().replace(/\/+$/, ''),
+    apiKey,
+    imageModel: kind === 'image' ? selectedModel : imageModel,
+    videoModel: kind === 'video' ? selectedModel : videoModel,
+    timeoutSeconds: Math.min(1800, Math.max(30, Number(raw.timeoutSeconds || 600))),
+  }
+}
+
+function buildMediaApiUrl(baseUrl, suffix) {
+  return `${String(baseUrl || MEDIA_DEFAULT_VOLCENGINE_BASE_URL).replace(/\/+$/, '')}${suffix}`
+}
+
+function mediaProviderDocs(provider) {
+  if (provider === MEDIA_PROVIDER_OPENAI) {
+    return {
+      apiKey: 'https://platform.openai.com/api-keys',
+      modelList: 'https://developers.openai.com/api/docs/models',
+      image: 'https://developers.openai.com/api/docs/guides/image-generation',
+      video: 'https://developers.openai.com/api/docs/guides/video-generation',
+    }
+  }
+  if (provider === MEDIA_PROVIDER_NEWAPI) {
+    return {
+      apiKey: 'https://docs.newapi.pro/en/docs/api',
+      modelList: 'https://docs.newapi.pro/en/docs/api',
+      image: 'https://docs.newapi.pro/en/docs/api/ai-model/images/openai/post-v1-images-generations',
+      video: 'https://docs.newapi.pro/en/docs/api/ai-model/videos/sora/createvideo',
+    }
+  }
+  return {
+    apiKey: 'https://www.volcengine.com/docs/82379/1541594',
+    modelList: 'https://www.volcengine.com/docs/82379/1330310',
+  }
+}
+
+function inferMediaModelCapabilities(id, label = '') {
+  const text = `${id || ''} ${label || ''}`.toLowerCase()
+  const caps = []
+  if (text.includes('seedream') || text.includes('gpt-image') || text.includes('dall-e') || text.includes('text-to-image') || text.includes('image-generation') || text.includes('image_generation') || text.includes('t2i')) {
+    caps.push('image')
+  }
+  if (text.includes('seedance') || text.includes('sora') || text.includes('text-to-video') || text.includes('image-to-video') || text.includes('video-generation') || text.includes('video_generation') || text.includes('t2v') || text.includes('i2v')) {
+    caps.push('video')
+  }
+  return caps
+}
+
+function isGptImageModel(model = '') {
+  return String(model || '').trim().toLowerCase().startsWith('gpt-image')
+}
+
+function normalizeOpenAIImageSize(size = '') {
+  const value = String(size || '').trim()
+  if (!value) return ''
+  if (value.toLowerCase() === 'auto') return 'auto'
+  if (['1K', '2K', '4K', 'adaptive'].includes(value)) return '1024x1024'
+  return value
+}
+
+function buildMediaImagePayload(provider, request) {
+  const payload = {
+    model: provider.imageModel,
+    prompt: mediaStr(request, 'prompt'),
+    n: mediaNum(request, 'count', 1),
+  }
+  if (isOpenAICompatibleMediaProvider(provider.provider)) {
+    const size = normalizeOpenAIImageSize(mediaStr(request, 'size'))
+    if (size) payload.size = size
+    if (!isGptImageModel(provider.imageModel)) payload.response_format = 'b64_json'
+  } else {
+    const size = mediaStr(request, 'size')
+    if (size) payload.size = size
+    payload.response_format = 'url'
+    payload.watermark = request.watermark !== false
+  }
+  if (Array.isArray(request.images)) payload.images = request.images
+  return payload
+}
+
+function openAIVideoSeconds(duration) {
+  const value = Number(duration || 5)
+  const candidates = [4, 8, 12]
+  return String(candidates.reduce((best, item) => Math.abs(item - value) < Math.abs(best - value) ? item : best, 4))
+}
+
+function openAIVideoSize(ratio = '', resolution = '') {
+  const high = ['1080p', '1440p'].includes(String(resolution || '').trim())
+  if (['9:16', '3:4'].includes(String(ratio || '').trim())) {
+    return high ? '1024x1792' : '720x1280'
+  }
+  return high ? '1792x1024' : '1280x720'
+}
+
+function buildOpenAIVideoPayload(provider, request) {
+  const payload = {
+    model: provider.videoModel,
+    prompt: mediaStr(request, 'prompt'),
+    seconds: openAIVideoSeconds(mediaNum(request, 'duration', 5)),
+    size: openAIVideoSize(mediaStr(request, 'ratio'), mediaStr(request, 'resolution')),
+  }
+  const imageUrl = mediaStr(request, 'imageUrl')
+  if (imageUrl) {
+    if (provider.provider === MEDIA_PROVIDER_NEWAPI) payload.image = imageUrl
+    else payload.input_reference = { type: 'image_url', image_url: { url: imageUrl } }
+  }
+  return payload
+}
+
+function firstModelString(item, keys) {
+  if (!item || typeof item !== 'object') return ''
+  for (const key of keys) {
+    const value = item[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return ''
+}
+
+function collectMediaModelItems(value, out = []) {
+  if (Array.isArray(value)) {
+    out.push(...value)
+    return out
+  }
+  if (!value || typeof value !== 'object') return out
+  for (const key of ['data', 'models', 'items', 'Items', 'ModelList', 'model_list', 'foundationModels', 'FoundationModels']) {
+    if (Array.isArray(value[key])) out.push(...value[key])
+  }
+  for (const key of ['result', 'Result', 'response', 'Response']) {
+    collectMediaModelItems(value[key], out)
+  }
+  return out
+}
+
+function extractMediaModels(payload) {
+  const seen = new Set()
+  const models = []
+  for (const item of collectMediaModelItems(payload)) {
+    const id = firstModelString(item, ['id', 'model', 'model_id', 'modelId', 'ModelId', 'ModelID', 'ModelName', 'FoundationModelId', 'FoundationModelName', 'EndpointId', 'endpoint_id'])
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    const label = firstModelString(item, ['name', 'display_name', 'displayName', 'DisplayName', 'Description', 'description']) || id
+    models.push({ id, label, capabilities: inferMediaModelCapabilities(id, label) })
+  }
+  return models.sort((a, b) => a.id.localeCompare(b.id))
+}
+
+function providerStatusToJobStatus(status) {
+  const value = String(status || '').trim().toLowerCase()
+  if (['created', 'queued', 'pending', 'running', 'processing', 'in_progress'].includes(value)) return 'running'
+  if (['succeeded', 'success', 'completed', 'done'].includes(value)) return 'succeeded'
+  if (['cancelled', 'canceled'].includes(value)) return 'canceled'
+  if (['failed', 'error', 'expired'].includes(value)) return 'failed'
+  return 'running'
+}
+
+function extractNestedString(value, keys) {
+  if (!value || typeof value !== 'object') return ''
+  for (const key of keys) {
+    if (typeof value[key] === 'string' && value[key].trim()) return value[key].trim()
+  }
+  for (const key of ['data', 'task', 'result', 'output']) {
+    const nested = extractNestedString(value[key], keys)
+    if (nested) return nested
+  }
+  return ''
+}
+
+function extractProviderTaskId(value) {
+  return extractNestedString(value, ['id', 'task_id', 'taskId', 'providerTaskId'])
+}
+
+function extractProviderStatus(value) {
+  return extractNestedString(value, ['status', 'state', 'task_status', 'taskStatus']) || 'running'
+}
+
+function safeMediaRelativePath(relPath) {
+  const raw = String(relPath || '').trim()
+  if (!raw || path.isAbsolute(raw)) return false
+  const normalized = path.normalize(raw)
+  if (normalized.startsWith('..') || normalized.includes(`..${path.sep}`)) return false
+  return true
+}
+
+function validateMediaOutputDir(outputDir = '') {
+  const raw = String(outputDir || '').trim()
+  if (!raw || path.isAbsolute(raw)) return
+  const normalized = path.normalize(raw)
+  if (normalized.startsWith('..') || normalized.includes(`..${path.sep}`)) {
+    throw new Error('产出目录不能包含 .. 或非法路径片段')
+  }
+}
+
+function sameMediaPath(a, b) {
+  const left = path.resolve(String(a || ''))
+  const right = path.resolve(String(b || ''))
+  return process.platform === 'win32'
+    ? left.toLowerCase() === right.toLowerCase()
+    : left === right
+}
+
+function mediaJobsKnowAssetRoot(relPath, root) {
+  const doc = readMediaJobsPrivate()
+  return doc.jobs.some(job => Array.isArray(job.assets) && job.assets.some(asset => {
+    return String(asset?.path || '') === String(relPath || '') && asset?.root && sameMediaPath(asset.root, root)
+  }))
+}
+
+function resolveMediaPath(relPath, rootHint = '') {
+  if (!safeMediaRelativePath(relPath)) throw new Error('非法媒体文件路径')
+  const defaultRoot = path.resolve(mediaRoot())
+  const root = path.resolve(String(rootHint || '').trim() || defaultRoot)
+  if (
+    String(rootHint || '').trim() &&
+    !sameMediaPath(root, defaultRoot) &&
+    !sameMediaPath(root, mediaOutputRoot(readMediaConfigPrivate())) &&
+    !mediaJobsKnowAssetRoot(relPath, root)
+  ) {
+    throw new Error('媒体文件路径不在已知产出目录中')
+  }
+  const target = path.resolve(root, relPath)
+  if (target !== root && !target.startsWith(root + path.sep)) throw new Error('非法媒体文件路径')
+  return target
+}
+
+function contentTypeToExt(contentType, fallbackKind) {
+  const ct = String(contentType || '').toLowerCase()
+  if (ct.includes('image/png')) return 'png'
+  if (ct.includes('image/webp')) return 'webp'
+  if (ct.includes('image/gif')) return 'gif'
+  if (ct.includes('video/mp4')) return 'mp4'
+  if (ct.includes('video/webm')) return 'webm'
+  if (fallbackKind === 'video') return 'mp4'
+  return 'jpg'
+}
+
+function extToMime(ext, kind) {
+  const value = String(ext || '').toLowerCase()
+  if (value === 'png') return 'image/png'
+  if (value === 'webp') return 'image/webp'
+  if (value === 'gif') return 'image/gif'
+  if (value === 'mp4') return 'video/mp4'
+  if (value === 'webm') return 'video/webm'
+  if (value === 'mov') return 'video/quicktime'
+  return kind === 'video' ? 'video/mp4' : 'image/jpeg'
+}
+
+function mediaAssetRelativePath(jobId, index, ext) {
+  const now = new Date()
+  const yyyy = String(now.getFullYear())
+  const mm = String(now.getMonth() + 1).padStart(2, '0')
+  return path.join('assets', yyyy, mm, `${jobId}-${index}.${ext}`).replace(/\\/g, '/')
+}
+
+function writeMediaAssetBytes(kind, jobId, index, buffer, mime, sourceUrl = '') {
+  if (buffer.length > MEDIA_MAX_ASSET_BYTES) throw new Error('媒体文件超过 512MB，已停止保存')
+  const ext = contentTypeToExt(mime, kind)
+  const rel = mediaAssetRelativePath(jobId, index, ext)
+  const root = ensureMediaOutputRoot()
+  const target = resolveMediaPath(rel, root)
+  fs.mkdirSync(path.dirname(target), { recursive: true })
+  fs.writeFileSync(target, buffer)
+  return { kind, path: rel, root, mime, bytes: buffer.length, sourceUrl }
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutSeconds = 600) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutSeconds * 1000)
+  try {
+    return await fetch(url, { ...options, signal: controller.signal })
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function readProviderJson(resp) {
+  const text = await resp.text()
+  try {
+    return JSON.parse(text)
+  } catch {
+    return { raw: text }
+  }
+}
+
+function sanitizeProviderError(raw, apiKey) {
+  const value = String(raw || '')
+  return apiKey ? value.replaceAll(apiKey, '***') : value
+}
+
+// 仅当资产 URL 与服务商 Base URL 同主机同端口时才允许携带 API Key，
+// 防止服务商响应中混入第三方 URL 后把密钥发给任意主机
+function mediaAssetUrlSameHost(url, baseUrl) {
+  try {
+    return new URL(url).host.toLowerCase() === new URL(baseUrl).host.toLowerCase()
+  } catch {
+    return false
+  }
+}
+
+async function downloadMediaAsset(provider, url, kind, jobId, index) {
+  const sameHost = mediaAssetUrlSameHost(url, provider.baseUrl)
+  let resp = await fetchWithTimeout(url, sameHost ? {
+    headers: { Authorization: `Bearer ${provider.apiKey}` },
+  } : {}, provider.timeoutSeconds)
+  if (!resp.ok && sameHost && [401, 403].includes(resp.status)) {
+    resp = await fetchWithTimeout(url, {}, provider.timeoutSeconds)
+  }
+  if (!resp.ok) throw new Error(`下载媒体资产失败: HTTP ${resp.status}`)
+  const mime = resp.headers.get('content-type') || (kind === 'video' ? 'video/mp4' : 'image/jpeg')
+  const bytes = Buffer.from(await resp.arrayBuffer())
+  return writeMediaAssetBytes(kind, jobId, index, bytes, mime, url)
+}
+
+async function downloadOpenAIVideoContent(provider, providerTaskId, jobId, index) {
+  const resp = await fetchWithTimeout(buildMediaApiUrl(provider.baseUrl, `/videos/${providerTaskId}/content`), {
+    headers: { Authorization: `Bearer ${provider.apiKey}` },
+  }, provider.timeoutSeconds)
+  if (!resp.ok) throw new Error(`下载视频内容失败: HTTP ${resp.status}`)
+  const mime = resp.headers.get('content-type') || 'video/mp4'
+  const bytes = Buffer.from(await resp.arrayBuffer())
+  return writeMediaAssetBytes('video', jobId, index, bytes, mime)
+}
+
+function collectImageOutputs(value) {
+  if (Array.isArray(value?.data)) return value.data
+  if (Array.isArray(value?.images)) return value.images
+  if (value?.url || value?.b64_json || value?.image_url) return [value]
+  return []
+}
+
+async function saveImageOutputs(provider, jobId, response) {
+  const outputs = collectImageOutputs(response)
+  if (!outputs.length) throw new Error('服务商响应中没有图片结果')
+  const assets = []
+  for (let i = 0; i < outputs.length; i += 1) {
+    const item = outputs[i]
+    const rawUrl = typeof item?.url === 'string' ? item.url
+      : typeof item?.image_url === 'string' ? item.image_url
+      : typeof item?.image_url?.url === 'string' ? item.image_url.url
+      : ''
+    if (rawUrl) {
+      assets.push(await downloadMediaAsset(provider, rawUrl, 'image', jobId, i))
+      continue
+    }
+    if (typeof item?.b64_json === 'string') {
+      const pure = item.b64_json.includes(',') ? item.b64_json.split(',').pop() : item.b64_json
+      assets.push(writeMediaAssetBytes('image', jobId, i, Buffer.from(pure, 'base64'), 'image/png'))
+    }
+  }
+  if (!assets.length) throw new Error('服务商响应中没有可保存的图片 URL 或 base64')
+  return assets
+}
+
+function collectVideoUrls(value, keyHint = '', out = []) {
+  if (typeof value === 'string') {
+    const lower = value.toLowerCase()
+    if ((lower.startsWith('http://') || lower.startsWith('https://')) &&
+      (keyHint.includes('video') || lower.includes('.mp4') || lower.includes('.mov') || lower.includes('.webm') || lower.includes('video')) &&
+      !out.includes(value)) {
+      out.push(value)
+    }
+  } else if (Array.isArray(value)) {
+    for (const item of value) collectVideoUrls(item, keyHint, out)
+  } else if (value && typeof value === 'object') {
+    for (const [key, item] of Object.entries(value)) {
+      collectVideoUrls(item, `${keyHint} ${key.toLowerCase()}`.trim(), out)
+    }
+  }
+  return out
+}
+
+function newMediaJobId(prefix) {
+  const stamp = new Date().toISOString().replace(/\D/g, '').slice(0, 17)
+  return `${prefix}-${stamp}-${crypto.randomBytes(4).toString('hex')}`
+}
+
+function upsertMediaJob(job) {
+  if (!job?.id) throw new Error('媒体任务缺少 id')
+  const doc = readMediaJobsPrivate()
+  const index = doc.jobs.findIndex(item => item.id === job.id)
+  if (index >= 0) doc.jobs[index] = job
+  else doc.jobs.push(job)
+  writeMediaJobsPrivate(doc)
+  return job
+}
+
+function updateMediaJob(jobId, update) {
+  const doc = readMediaJobsPrivate()
+  const index = doc.jobs.findIndex(item => item.id === jobId)
+  if (index < 0) throw new Error(`媒体任务不存在: ${jobId}`)
+  const job = { ...doc.jobs[index] }
+  update(job)
+  job.updatedAt = mediaNowIso()
+  doc.jobs[index] = job
+  writeMediaJobsPrivate(doc)
+  return job
+}
+
+// 落盘前允许保留的最长字符串（字符数）。超过即视为 base64/data URL 等大负载，
+// 只保留开头片段，避免 media-jobs.json 随任务数量膨胀到 GB 级
+const MEDIA_MAX_PERSISTED_STRING = 2048
+
+// 递归裁剪 JSON 中的超长字符串（如 gpt-image 响应里的 b64_json），用于持久化前瘦身
+function truncateLargeStrings(value) {
+  if (typeof value === 'string') {
+    return value.length > MEDIA_MAX_PERSISTED_STRING
+      ? `${value.slice(0, 64)}…[已截断 ${value.length} 字符]`
+      : value
+  }
+  if (Array.isArray(value)) return value.map(truncateLargeStrings)
+  if (value && typeof value === 'object') {
+    const out = {}
+    for (const [key, item] of Object.entries(value)) out[key] = truncateLargeStrings(item)
+    return out
+  }
+  return value
+}
+
+function mediaErrorJob(id, kind, provider, prompt, model, error, rawProviderResponse = null) {
+  const now = mediaNowIso()
+  return {
+    id,
+    type: kind,
+    provider,
+    providerTaskId: null,
+    status: 'failed',
+    prompt,
+    model,
+    createdAt: now,
+    updatedAt: now,
+    assets: [],
+    error,
+    rawProviderResponse: rawProviderResponse == null ? null : truncateLargeStrings(rawProviderResponse),
+  }
 }
 
 // === API Handlers ===
@@ -12177,6 +12938,318 @@ const handlers = {
     return null
   },
 
+  // 云端媒体生成
+  read_media_config() {
+    ensureMediaRoot()
+    return sanitizeMediaConfigForRead(readMediaConfigPrivate())
+  },
+
+  write_media_config({ config }) {
+    ensureMediaRoot()
+    const current = readMediaConfigPrivate()
+    const normalized = normalizeMediaConfig(config, current)
+    validateMediaOutputDir(normalized.outputDir)
+    ensureMediaOutputRoot(normalized)
+    writeJsonAtomic(mediaConfigPath(), normalized)
+    return true
+  },
+
+  test_media_provider({ provider = MEDIA_PROVIDER_VOLCENGINE } = {}) {
+    validateMediaProviderId(provider)
+    const raw = readMediaConfigPrivate().providers?.[provider]
+    if (!raw?.apiKey) throw new Error('请先填写 API Key')
+    // 允许 http://：自建 NewAPI / 内网网关是合法场景，与实际生成请求的校验保持一致
+    if (!/^https?:\/\//.test(String(raw.baseUrl || ''))) throw new Error('Base URL 必须以 http:// 或 https:// 开头')
+    return {
+      ok: true,
+      provider,
+      baseUrl: raw.baseUrl,
+      message: '本地配置检查通过。生成图片或创建视频任务时才会调用服务商接口。',
+    }
+  },
+
+  async fetch_media_models({ provider = MEDIA_PROVIDER_VOLCENGINE } = {}) {
+    validateMediaProviderId(provider)
+    const raw = readMediaConfigPrivate().providers?.[provider]
+    const apiKey = String(raw?.apiKey || '').trim()
+    const baseUrl = String(raw?.baseUrl || MEDIA_DEFAULT_VOLCENGINE_BASE_URL).trim().replace(/\/+$/, '')
+    if (!apiKey) throw new Error('请先填写 API Key')
+    if (!/^https?:\/\//.test(baseUrl)) throw new Error('Base URL 必须以 http:// 或 https:// 开头')
+    const resp = await fetchWithTimeout(buildMediaApiUrl(baseUrl, '/models'), {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    }, Math.min(1800, Math.max(30, Number(raw?.timeoutSeconds || 600))))
+    const parsed = await readProviderJson(resp)
+    if (!resp.ok) {
+      if ([404, 405, 501].includes(resp.status)) {
+        return {
+          ok: false,
+          supported: false,
+          models: [],
+          message: '当前 Base URL 未开放 /models 列表接口，请按官方模型列表或控制台填写模型 ID。',
+          docs: mediaProviderDocs(provider),
+        }
+      }
+      throw new Error(sanitizeProviderError(`HTTP ${resp.status}: ${JSON.stringify(parsed)}`, apiKey))
+    }
+    const models = extractMediaModels(parsed)
+    return {
+      ok: true,
+      supported: models.length > 0,
+      models,
+      message: models.length ? '模型列表已获取。' : '服务商响应中没有可识别的模型 ID，请按官方模型列表或控制台填写。',
+      docs: mediaProviderDocs(provider),
+    }
+  },
+
+  async generate_image({ request }) {
+    request = request || {}
+    validateImageRequest(request)
+    const providerId = mediaStr(request, 'provider')
+    const prompt = mediaStr(request, 'prompt')
+    const provider = loadMediaProviderConfig(providerId, 'image', mediaStr(request, 'model'))
+    const jobId = newMediaJobId('img')
+    const payload = buildMediaImagePayload(provider, request)
+
+    const endpoint = buildMediaApiUrl(provider.baseUrl, '/images/generations')
+    const resp = await fetchWithTimeout(endpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${provider.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    }, provider.timeoutSeconds)
+    const parsed = await readProviderJson(resp)
+    if (!resp.ok) {
+      const error = sanitizeProviderError(`HTTP ${resp.status}: ${JSON.stringify(parsed)}`, provider.apiKey)
+      upsertMediaJob(mediaErrorJob(jobId, 'image', provider.provider, prompt, provider.imageModel, error, parsed))
+      throw new Error(error)
+    }
+    let assets
+    try {
+      assets = await saveImageOutputs(provider, jobId, parsed)
+    } catch (error) {
+      const message = error?.message || String(error)
+      upsertMediaJob(mediaErrorJob(jobId, 'image', provider.provider, prompt, provider.imageModel, message, parsed))
+      throw error
+    }
+    const now = mediaNowIso()
+    return upsertMediaJob({
+      id: jobId,
+      type: 'image',
+      provider: provider.provider,
+      providerTaskId: null,
+      status: 'succeeded',
+      prompt,
+      model: provider.imageModel,
+      createdAt: now,
+      updatedAt: now,
+      request: truncateLargeStrings(payload),
+      assets,
+      error: null,
+      rawProviderResponse: truncateLargeStrings(parsed),
+    })
+  },
+
+  async create_video_task({ request }) {
+    request = request || {}
+    validateVideoRequest(request)
+    const providerId = mediaStr(request, 'provider')
+    const prompt = mediaStr(request, 'prompt')
+    const provider = loadMediaProviderConfig(providerId, 'video', mediaStr(request, 'model'))
+    const jobId = newMediaJobId('vid')
+    let payload
+    let resp
+    if (isOpenAICompatibleMediaProvider(provider.provider)) {
+      payload = buildOpenAIVideoPayload(provider, request)
+      const form = new FormData()
+      form.set('model', payload.model)
+      form.set('prompt', payload.prompt)
+      form.set('seconds', payload.seconds)
+      form.set('size', payload.size)
+      if (provider.provider === MEDIA_PROVIDER_NEWAPI) {
+        form.set('duration', payload.seconds)
+        const [width, height] = String(payload.size || '').split('x')
+        if (width && height) {
+          form.set('width', width)
+          form.set('height', height)
+        }
+      }
+      if (payload.image) form.set('image', payload.image)
+      if (payload.input_reference) form.set('input_reference', JSON.stringify(payload.input_reference))
+      resp = await fetchWithTimeout(buildMediaApiUrl(provider.baseUrl, '/videos'), {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${provider.apiKey}` },
+        body: form,
+      }, provider.timeoutSeconds)
+    } else {
+      const content = [{ type: 'text', text: prompt }]
+      const imageUrl = mediaStr(request, 'imageUrl')
+      if (imageUrl) content.push({ type: 'image_url', image_url: { url: imageUrl } })
+      payload = {
+        model: provider.videoModel,
+        content,
+        duration: mediaNum(request, 'duration', 5),
+      }
+      const ratio = mediaStr(request, 'ratio')
+      const resolution = mediaStr(request, 'resolution')
+      if (ratio) payload.ratio = ratio
+      if (resolution) payload.resolution = resolution
+
+      resp = await fetchWithTimeout(buildMediaApiUrl(provider.baseUrl, '/contents/generations/tasks'), {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${provider.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      }, provider.timeoutSeconds)
+    }
+    const parsed = await readProviderJson(resp)
+    if (!resp.ok) {
+      const error = sanitizeProviderError(`HTTP ${resp.status}: ${JSON.stringify(parsed)}`, provider.apiKey)
+      upsertMediaJob(mediaErrorJob(jobId, 'video', provider.provider, prompt, provider.videoModel, error, parsed))
+      throw new Error(error)
+    }
+    const providerTaskId = extractProviderTaskId(parsed)
+    if (!providerTaskId) {
+      // 任务可能已在服务商侧创建并计费：即使无法识别任务 ID，也要落盘保留原始响应供恢复
+      const error = '服务商响应中没有视频任务 ID'
+      upsertMediaJob(mediaErrorJob(jobId, 'video', provider.provider, prompt, provider.videoModel, error, parsed))
+      throw new Error(error)
+    }
+    const providerStatus = extractProviderStatus(parsed)
+    const now = mediaNowIso()
+    return upsertMediaJob({
+      id: jobId,
+      type: 'video',
+      provider: provider.provider,
+      providerTaskId,
+      status: providerStatusToJobStatus(providerStatus),
+      providerStatus,
+      prompt,
+      model: provider.videoModel,
+      createdAt: now,
+      updatedAt: now,
+      request: truncateLargeStrings(payload),
+      assets: [],
+      error: null,
+      rawProviderResponse: truncateLargeStrings(parsed),
+    })
+  },
+
+  async poll_video_task({ jobId }) {
+    const doc = readMediaJobsPrivate()
+    const job = doc.jobs.find(item => item.id === jobId)
+    if (!job) throw new Error(`媒体任务不存在: ${jobId}`)
+    if (job.type !== 'video') throw new Error('只支持轮询视频任务')
+    if (!job.providerTaskId) throw new Error('视频任务缺少服务商任务 ID')
+    const provider = loadMediaProviderConfig(job.provider, 'video', job.model)
+    const endpoint = isOpenAICompatibleMediaProvider(provider.provider)
+      ? buildMediaApiUrl(provider.baseUrl, `/videos/${job.providerTaskId}`)
+      : buildMediaApiUrl(provider.baseUrl, `/contents/generations/tasks/${job.providerTaskId}`)
+    const resp = await fetchWithTimeout(endpoint, {
+      headers: { Authorization: `Bearer ${provider.apiKey}` },
+    }, provider.timeoutSeconds)
+    const parsed = await readProviderJson(resp)
+    if (!resp.ok) {
+      const error = sanitizeProviderError(`HTTP ${resp.status}: ${JSON.stringify(parsed)}`, provider.apiKey)
+      // 429 / 5xx 属于瞬时错误：保留原状态允许继续轮询，避免把服务商侧仍在运行的付费任务永久标记为失败
+      const transient = resp.status === 429 || resp.status >= 500
+      return updateMediaJob(jobId, entry => {
+        if (!transient) entry.status = 'failed'
+        entry.error = error
+        entry.rawProviderResponse = truncateLargeStrings(parsed)
+      })
+    }
+    const providerStatus = extractProviderStatus(parsed)
+    const status = providerStatusToJobStatus(providerStatus)
+    let assets = Array.isArray(job.assets) ? job.assets : []
+    let downloadError = ''
+    if (status === 'succeeded' && assets.length === 0) {
+      const urls = collectVideoUrls(parsed)
+      assets = []
+      for (let i = 0; i < urls.length; i += 1) {
+        try {
+          assets.push(await downloadMediaAsset(provider, urls[i], 'video', jobId, i))
+        } catch (error) {
+          downloadError = error?.message || String(error)
+        }
+      }
+      if (!assets.length && isOpenAICompatibleMediaProvider(provider.provider)) {
+        try {
+          assets.push(await downloadOpenAIVideoContent(provider, job.providerTaskId, jobId, assets.length))
+        } catch (error) {
+          downloadError = error?.message || String(error)
+        }
+      }
+    }
+    return updateMediaJob(jobId, entry => {
+      entry.status = status
+      entry.providerStatus = providerStatus
+      entry.assets = assets
+      entry.rawProviderResponse = truncateLargeStrings(parsed)
+      entry.error = downloadError || (status === 'failed' ? entry.error : null)
+    })
+  },
+
+  cancel_media_job({ jobId }) {
+    return updateMediaJob(jobId, entry => {
+      entry.status = 'canceled'
+      entry.providerStatus = 'local-canceled'
+    })
+  },
+
+  list_media_jobs({ filter } = {}) {
+    const doc = readMediaJobsPrivate()
+    return buildMediaJobsResponse(doc, filter || {})
+  },
+
+  delete_media_job({ jobId, deleteAssets = true }) {
+    const doc = readMediaJobsPrivate()
+    const index = doc.jobs.findIndex(item => item.id === jobId)
+    if (index < 0) throw new Error(`媒体任务不存在: ${jobId}`)
+    const [job] = doc.jobs.splice(index, 1)
+    if (deleteAssets && Array.isArray(job.assets)) {
+      for (const asset of job.assets) {
+        if (!asset?.path) continue
+        try {
+          fs.rmSync(resolveMediaPath(asset.path, asset.root), { force: true })
+        } catch {}
+      }
+    }
+    writeMediaJobsPrivate(doc)
+    return true
+  },
+
+  reveal_media_asset({ path: relPath, root = '' }) {
+    const full = resolveMediaPath(relPath, root)
+    return { path: full, parent: path.dirname(full), webMode: true }
+  },
+
+  reveal_media_output_dir() {
+    const full = ensureMediaOutputRoot()
+    return { path: full, webMode: true }
+  },
+
+  load_media_asset({ path: relPath, root = '' }) {
+    const full = resolveMediaPath(relPath, root)
+    if (!fs.existsSync(full)) throw new Error(`媒体文件不存在: ${relPath}`)
+    // 先 stat 后读：内嵌预览走 base64，上限 64MB，超限引导用户打开文件夹本地查看
+    if (fs.statSync(full).size > 64 * 1024 * 1024) {
+      throw new Error('媒体文件过大，无法内嵌预览，请使用「打开文件夹」在本地查看')
+    }
+    const ext = path.extname(full).slice(1).toLowerCase()
+    const kind = ['mp4', 'mov', 'webm'].includes(ext) ? 'video' : 'image'
+    const bytes = fs.readFileSync(full)
+    return {
+      path: relPath,
+      mime: extToMime(ext, kind),
+      bytes: bytes.length,
+      dataUrl: `data:${extToMime(ext, kind)};base64,${bytes.toString('base64')}`,
+    }
+  },
+
   // === AI 助手工具（Web 模式真实执行） ===
 
   assistant_exec({ command, cwd }) {
@@ -12390,6 +13463,15 @@ const handlers = {
   },
 
   // === 面板配置（Web 模式） ===
+
+  // 便携模式一期仅支持桌面端（Tauri）；Web 模式固定返回未启用，防止前端 404
+  get_portable_status() {
+    return { enabled: false }
+  },
+
+  migrate_to_portable() {
+    throw new Error('Web 模式不支持迁移为便携式，请使用桌面客户端执行')
+  },
 
   get_openclaw_dir() {
     const panelConfig = readPanelConfig()
@@ -12773,9 +13855,7 @@ const handlers = {
     if (!uv && runHermesSilent('uv', ['--version']).ok) uv = 'uv'
     if (!uv) throw new Error('uv 未安装。请先安装 uv 或使用 Tauri 桌面版自动下载')
     // 2. 安装
-    const pkg = extras.length
-      ? `hermes-agent[${extras.join(',')}] @ git+https://github.com/NousResearch/hermes-agent.git`
-      : 'hermes-agent @ git+https://github.com/NousResearch/hermes-agent.git'
+    const pkg = hermesPackageSpec(extras)
     const installArgs = method === 'uv-pip'
       ? ['pip', 'install', pkg]
       : ['tool', 'install', '--force', pkg, '--python', '3.11', '--with', 'croniter', '--with', 'httpx', '--with', 'openai', '--with', 'aiohttp', '--with', 'websockets']
@@ -15335,7 +16415,7 @@ const handlers = {
   async update_hermes() {
     const uvPath = path.join(uvBinDir(), isWindows ? 'uv.exe' : 'uv')
     const uv = fs.existsSync(uvPath) ? uvPath : 'uv'
-    const pkg = 'hermes-agent[web] @ git+https://github.com/NousResearch/hermes-agent.git'
+    const pkg = hermesPackageSpec(['web'])
     const result = spawnSync(uv, ['tool', 'install', '--reinstall', pkg, '--python', '3.11', '--with', 'croniter'], {
       env: { ...process.env, PATH: hermesEnhancedPath(), GIT_TERMINAL_PROMPT: '0', ...gitMirrorEnv() },
       timeout: 600000, windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
@@ -15346,7 +16426,7 @@ const handlers = {
       if (hint) throw new Error(`升级失败: ${cleaned}\n\n${hint}`)
       throw new Error(`升级失败: ${cleaned}`)
     }
-    return '升级完成'
+    return `升级完成，当前稳定版: Hermes Agent ${HERMES_STABLE_VERSION} (${HERMES_STABLE_TAG})`
   },
 
   async uninstall_hermes({ cleanConfig = false } = {}) {

@@ -50,6 +50,7 @@ export default {
   cliPath: _('CLI 路径', 'CLI Path', 'CLI 路徑', 'CLI パス', 'CLI 경로', 'Đường dẫn CLI', 'Ruta CLI', 'Caminho CLI', 'Путь CLI', 'Chemin CLI', 'CLI-Pfad'),
   cliSource: _('安装来源', 'Install Source', '安裝來源', 'インストール元', '설치 출처'),
   cliSourceStandalone: _('独立安装版', 'Standalone', '獨立安裝版', 'スタンドアロン版', '독립 설치판'),
+  cliSourcePortable: _('U 盘便携版', 'Portable (USB)', 'USB 便攜版', 'ポータブル版（USB）', '휴대용 (USB)', 'Di động (USB)', 'Portátil (USB)', 'Portátil (USB)', 'Портативная (USB)', 'Portable (USB)', 'Portabel (USB)'),
   cliSourceNpmZh: _('npm 汉化版', 'npm (Chinese)', 'npm 漢化版', 'npm 中国語版', 'npm 중국어판'),
   cliSourceNpmOfficial: _('npm 官方版', 'npm (Official)', '', 'npm 公式版', 'npm 공식판'),
   cliSourceNpmGlobal: _('npm 全局', 'npm (Global)', 'npm 全域', 'npm グローバル', 'npm 전역'),

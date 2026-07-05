@@ -20,7 +20,8 @@
 #sidebar.sidebar-collapsed .nav-item span,
 #sidebar.sidebar-collapsed .sidebar-meta,
 #sidebar.sidebar-collapsed .instance-switcher,
-#sidebar.sidebar-collapsed .engine-switcher {
+#sidebar.sidebar-collapsed .engine-switcher,
+#sidebar.sidebar-collapsed #sidebar-portable-badge {
   display: none;
 }
 #sidebar.sidebar-collapsed .sidebar-header {
@@ -75,6 +76,38 @@
   font-weight: 600;
   color: var(--text-primary);
   white-space: nowrap;
+}
+
+/* 便携模式持续可见标识：设置向导之外的所有页面（一旦 OpenClaw 已配置，向导会被跳过）
+   同样需要能一眼看出当前是从 U 盘启动的，避免和本机安装混淆。
+   侧栏仅 200px 宽，塞不进 header 那一行，所以单独一行；做成克制的低调小标签
+   （小圆点 + 小字，不用饱和大胶囊），左对齐 logo，上下留呼吸间距 */
+#sidebar-portable-badge {
+  padding: 6px var(--space-lg) 2px;
+}
+#sidebar-portable-badge:empty {
+  display: none;
+}
+
+.sidebar-portable-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.sidebar-portable-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent, #6366f1);
+  flex-shrink: 0;
 }
 
 /* === Engine Switcher === */
@@ -192,6 +225,8 @@
 }
 
 .sidebar-nav {
+  position: relative;
+  z-index: 1;
   flex: 1;
   padding: var(--space-sm) var(--space-sm);
   overflow-y: auto;
@@ -199,8 +234,17 @@
 
 .sidebar-footer {
   position: relative;
+  z-index: 2;
   padding: 10px 12px 8px;
   border-top: 1px solid var(--border-secondary);
+}
+
+#sidebar.lang-menu-open .sidebar-nav {
+  pointer-events: none;
+}
+
+#sidebar.lang-menu-open .sidebar-footer {
+  z-index: 160;
 }
 
 .sidebar-tools {
@@ -451,14 +495,18 @@
   max-height: 0;
   overflow: hidden;
   opacity: 0;
+  visibility: hidden;
   transition: max-height 0.25s ease, opacity 0.2s ease;
-  z-index: 100;
+  z-index: 300;
   margin-bottom: 4px;
+  pointer-events: none;
 }
 .lang-dropdown.open {
   max-height: 280px;
   opacity: 1;
+  visibility: visible;
   overflow-y: auto;
+  pointer-events: auto;
 }
 .lang-search-wrap {
   padding: 8px;
@@ -553,7 +601,7 @@
 /* Mobile: ensure dropdown doesn't overflow viewport */
 @media (max-width: 768px) {
   .lang-dropdown {
-    max-height: 240px;
+    max-height: 0;
   }
   .lang-dropdown.open {
     max-height: 240px;
@@ -621,6 +669,10 @@
   flex: 1;
   overflow-y: auto;
   background: var(--bg-primary);
+}
+
+body.has-password-change-banner #content {
+  padding-top: 56px;
 }
 
 .page {
@@ -1041,9 +1093,9 @@
 .password-change-banner {
   position: fixed;
   top: 8px;
-  left: 50%;
+  left: calc(var(--sidebar-width) + ((100vw - var(--sidebar-width)) / 2));
   z-index: 999;
-  width: min(620px, calc(100vw - 24px));
+  width: min(620px, calc(100vw - var(--sidebar-width) - 24px));
   min-height: 38px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
@@ -1057,6 +1109,12 @@
   box-shadow: 0 10px 30px rgba(15, 23, 42, 0.14);
   transform: translateX(-50%);
   pointer-events: none;
+}
+
+#sidebar.sidebar-collapsed ~ #main-col .password-change-banner,
+body:has(#sidebar.sidebar-collapsed) .password-change-banner {
+  left: calc(var(--sidebar-collapsed) + ((100vw - var(--sidebar-collapsed)) / 2));
+  width: min(620px, calc(100vw - var(--sidebar-collapsed) - 24px));
 }
 .password-change-text {
   min-width: 0;
@@ -1197,8 +1255,12 @@
 
 /* === 移动端响应式 (≤768px) === */
 @media (max-width: 768px) {
+  body.has-password-change-banner #content {
+    padding-top: 52px;
+  }
   .password-change-banner {
     top: 8px;
+    left: 50%;
     width: calc(100vw - 16px);
     min-height: 36px;
     gap: 6px;

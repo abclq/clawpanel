@@ -23,9 +23,11 @@ pub mod extensions;
 pub mod hermes;
 pub mod hermes_providers;
 pub mod logs;
+pub mod media;
 pub mod memory;
 pub mod messaging;
 pub mod pairing;
+pub mod portable;
 pub mod service;
 pub mod site_api;
 pub mod skillhub;
@@ -107,6 +109,11 @@ fn push_unique_panel_config_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
 }
 
 fn panel_config_candidate_paths() -> Vec<PathBuf> {
+    // 便携模式：只认 U 盘上的唯一候选，绝不回退主目录，
+    // 防止本机 clawpanel.json 里的绝对路径（nodePath/openclawCliPath 等）污染便携会话
+    if let Some(ctx) = portable::portable_context() {
+        return vec![ctx.panel_config_path.clone()];
+    }
     let mut paths = Vec::new();
     push_unique_panel_config_path(&mut paths, default_openclaw_dir().join("clawpanel.json"));
 
@@ -184,6 +191,10 @@ fn normalize_custom_openclaw_dir(raw: &str) -> Option<PathBuf> {
 
     if expanded.is_absolute() {
         Some(expanded)
+    } else if let Some(ctx) = portable::portable_context() {
+        // 便携模式：相对路径以 portable root 为基准（cwd 在 U 盘双击启动时不可靠），
+        // 这样 U 盘配置里可以写 "./data/openclaw" 而不怕盘符变化
+        Some(ctx.root.join(expanded))
     } else {
         std::env::current_dir().ok().map(|cwd| cwd.join(expanded))
     }
@@ -211,11 +222,17 @@ pub fn openclaw_search_paths() -> Vec<PathBuf> {
 /// 获取 OpenClaw 配置目录
 /// 优先使用 clawpanel.json 中的 openclawDir 自定义路径，不存在则回退默认 ~/.openclaw
 pub fn openclaw_dir() -> PathBuf {
+    // 便携模式下 read_panel_config_value 读的已经是 U 盘上的 clawpanel.json
+    // （见 panel_config_candidate_paths），因此自定义 openclawDir 放在便携默认值之前是安全的，
+    // 还允许高级用户在 U 盘配置里进一步自定义
     if let Some(custom) = read_panel_config_value()
         .and_then(|v| v.get("openclawDir")?.as_str().map(String::from))
         .and_then(|v| normalize_custom_openclaw_dir(&v))
     {
         return custom;
+    }
+    if let Some(ctx) = portable::portable_context() {
+        return ctx.openclaw_dir.clone();
     }
     default_openclaw_dir()
 }
@@ -454,6 +471,11 @@ fn build_enhanced_path() -> String {
     let custom_path =
         read_panel_config_value().and_then(|v| v.get("nodePath")?.as_str().map(String::from));
 
+    // 便携模式：U 盘 Node 运行时优先级最高（排在自定义 nodePath 之前）
+    let portable_node_dir = portable::portable_context()
+        .and_then(|ctx| ctx.node_dir.as_ref())
+        .map(|p| p.to_string_lossy().to_string());
+
     #[cfg(target_os = "macos")]
     {
         // 版本管理器路径优先于系统路径，确保 nvm/volta/fnm 管理的 Node.js 版本被优先检测到
@@ -532,6 +554,9 @@ fn build_enhanced_path() -> String {
         extra.push("/usr/local/bin".into());
         extra.push("/opt/homebrew/bin".into());
         let mut parts: Vec<&str> = vec![];
+        if let Some(ref pn) = portable_node_dir {
+            parts.push(pn.as_str());
+        }
         if let Some(ref cp) = custom_path {
             parts.push(cp.as_str());
         }
@@ -638,6 +663,9 @@ fn build_enhanced_path() -> String {
             }
         }
         let mut parts: Vec<&str> = vec![];
+        if let Some(ref pn) = portable_node_dir {
+            parts.push(pn.as_str());
+        }
         if let Some(ref cp) = custom_path {
             parts.push(cp.as_str());
         }
@@ -845,7 +873,10 @@ fn build_enhanced_path() -> String {
         }
 
         let mut parts: Vec<&str> = vec![];
-        // 用户自定义路径优先级最高
+        // 便携 Node 优先，其次用户自定义路径
+        if let Some(ref pn) = portable_node_dir {
+            parts.push(pn.as_str());
+        }
         if let Some(ref cp) = custom_path {
             parts.push(cp.as_str());
         }

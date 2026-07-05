@@ -56,6 +56,8 @@ export default {
   hermesProviderGroupIntl: _('国际 · API Key', 'International · API Key', '國際 · API Key', '海外 · API Key', '국제 · API Key', 'Quốc tế · API Key', 'Internacional · API Key', 'Internacional · API Key', 'Международные · API Key', 'International · API Key', 'International · API Key'),
   hermesProviderGroupCn: _('国内 · API Key', 'Mainland · API Key', '中國大陸 · API Key', '中国大陸 · API Key', '중국 본토 · API Key', 'Trung Quốc · API Key', 'China · API Key', 'China · API Key', 'Китай · API Key', 'Chine continentale · API Key', 'China · API Key'),
   hermesProviderGroupAggregator: _('聚合 / 路由', 'Aggregator / Router', '聚合 / 路由', 'アグリゲーター / ルーター', '집계 / 라우터', 'Tổng hợp / Định tuyến', 'Agregador / Enrutador', 'Agregador / Roteador', 'Агрегатор / Маршрутизатор', 'Agrégateur / Routeur', 'Aggregator / Router'),
+  hermesProviderGroupExternal: _('外部凭据 / SDK', 'External Credentials / SDK', '外部憑證 / SDK', '外部認証情報 / SDK', '외부 자격 증명 / SDK', 'Thông tin xác thực ngoài / SDK', 'Credenciales externas / SDK', 'Credenciais externas / SDK', 'Внешние учетные данные / SDK', 'Identifiants externes / SDK', 'Externe Zugangsdaten / SDK'),
+  hermesProviderExternalHint: _('由 Hermes 运行时读取本机凭据', 'Hermes reads local runtime credentials', '由 Hermes 執行時讀取本機憑證', 'Hermes 実行時がローカル認証情報を読み取ります', 'Hermes 런타임이 로컬 자격 증명을 읽습니다', 'Hermes đọc thông tin xác thực cục bộ khi chạy', 'Hermes lee credenciales locales en tiempo de ejecución', 'Hermes lê credenciais locais em tempo de execução', 'Hermes читает локальные учетные данные во время выполнения', 'Hermes lit les identifiants locaux à l exécution', 'Hermes liest lokale Laufzeit-Zugangsdaten'),
   hermesProviderGroupOAuth: _('OAuth 登录（需终端）', 'OAuth Login (Terminal needed)', 'OAuth 登入（需終端）', 'OAuth ログイン（ターミナルが必要）', 'OAuth 로그인 (터미널 필요)', 'Đăng nhập OAuth (cần Terminal)', 'OAuth Login (requiere Terminal)', 'Login OAuth (requer Terminal)', 'OAuth вход (требуется терминал)', 'Connexion OAuth (Terminal requis)', 'OAuth-Login (Terminal erforderlich)'),
   hermesProviderOAuthRunHint: _('需运行', 'run', '需執行', '実行', '실행 필요', 'cần chạy', 'ejecuta', 'execute', 'требуется', 'exécuter', 'ausführen'),
   hermesProvidersLoadFallback: _(
@@ -1654,6 +1656,7 @@ export default {
   servicesDesc: _('集中查看 Gateway 运行状态、连接目标、健康检查与维护操作。', 'Inspect gateway status, connection target, health checks, and maintenance actions in one place.', '集中查看 Gateway 運行狀態、連接目標、健康檢查與維護操作。'),
   servicesInstallState: _('安装状态', 'Install State', '安裝狀態'),
   servicesInstallType: _('安装方式', 'Install Method', '安裝方式'),
+  servicesInstallTypePortable: _('U 盘便携版', 'Portable USB', 'U 盤便攜版', 'ポータブル USB', '휴대용 USB', 'USB di động', 'USB portátil', 'USB portátil', 'Портативный USB', 'USB portable', 'Portable USB'),
   servicesInstalled: _('已安装', 'Installed', '已安裝'),
   servicesMissing: _('未安装', 'Not Installed', '未安裝'),
   servicesUnknown: _('未知', 'Unknown', '未知'),

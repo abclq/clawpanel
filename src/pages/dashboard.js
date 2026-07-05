@@ -405,7 +405,7 @@ function renderStatCards(page, services, version, agents, config, panelConfig) {
     : (version.latest_update_available && version.latest ? t('dashboard.versionLatest', { version: version.latest }) : t('dashboard.versionUnknown'))
 
   // CLI 路径信息
-  const cliSourceLabel = { standalone: t('dashboard.cliSourceStandalone'), 'npm-zh': t('dashboard.cliSourceNpmZh'), 'npm-official': t('dashboard.cliSourceNpmOfficial'), 'npm-global': t('dashboard.cliSourceNpmGlobal') }[version.cli_source] || t('dashboard.cliSourceUnknown')
+  const cliSourceLabel = { portable: t('dashboard.cliSourcePortable'), standalone: t('dashboard.cliSourceStandalone'), 'npm-zh': t('dashboard.cliSourceNpmZh'), 'npm-official': t('dashboard.cliSourceNpmOfficial'), 'npm-global': t('dashboard.cliSourceNpmGlobal') }[version.cli_source] || t('dashboard.cliSourceUnknown')
   const installCount = dedupeOpenclawInstallations(version.all_installations).length
   const multiInstall = installCount > 1
   const cliBound = !!(panelConfig?.openclawCliPath && String(panelConfig.openclawCliPath).trim())

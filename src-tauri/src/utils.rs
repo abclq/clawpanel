@@ -190,6 +190,14 @@ pub fn is_rejected_cli_path(cli_path: &str) -> bool {
     lower.contains("/.cherrystudio/") || lower.contains("cherry-studio")
 }
 
+/// 便携模式下 U 盘 engines/openclaw 里的 CLI（存在才返回），优先级最高；
+/// 缺失时正常回退本机链路，支持"数据便携 + 本机引擎"混合形态
+fn portable_cli_path() -> Option<std::path::PathBuf> {
+    crate::commands::portable::portable_context()?
+        .openclaw_cli_path
+        .clone()
+}
+
 /// 读取 clawpanel.json 中用户绑定的 CLI 路径
 fn bound_cli_path() -> Option<std::path::PathBuf> {
     let config = crate::commands::read_panel_config_value()?;
@@ -230,6 +238,10 @@ fn configured_cli_candidates() -> Vec<std::path::PathBuf> {
 /// "\"node\"" is not recognized 错误
 #[cfg(target_os = "windows")]
 fn find_openclaw_cmd() -> Option<std::path::PathBuf> {
+    // 便携模式：U 盘引擎优先
+    if let Some(portable) = portable_cli_path() {
+        return Some(portable);
+    }
     // 优先使用用户绑定的路径
     if let Some(bound) = bound_cli_path() {
         return Some(bound);
@@ -263,6 +275,10 @@ fn common_non_windows_cli_candidates() -> Vec<std::path::PathBuf> {
 
 /// 解析当前实际使用的 openclaw CLI 完整路径（跨平台）
 pub fn resolve_openclaw_cli_path() -> Option<String> {
+    // 便携模式：U 盘引擎优先
+    if let Some(portable) = portable_cli_path() {
+        return Some(portable.to_string_lossy().to_string());
+    }
     // 优先使用用户绑定的路径
     if let Some(bound) = bound_cli_path() {
         return Some(bound.to_string_lossy().to_string());
@@ -298,9 +314,33 @@ pub fn resolve_openclaw_cli_path() -> Option<String> {
     }
 }
 
+/// 跨平台路径比较 key：统一分隔符；Windows / macOS 文件系统默认大小写不敏感，
+/// 故仅在这两个平台小写化（Linux 大小写敏感，不能小写化，否则不同目录会被误判相等）
+pub fn path_compare_key(path: &std::path::Path) -> String {
+    let raw = path.to_string_lossy().replace('\\', "/");
+    if cfg!(any(windows, target_os = "macos")) {
+        raw.to_ascii_lowercase()
+    } else {
+        raw
+    }
+}
+
+/// path 是否等于 base 或位于 base 之下（带路径分隔符边界，media 不会误匹配 media-evil）
+pub fn path_is_inside_or_same(path: &std::path::Path, base: &std::path::Path) -> bool {
+    let path_key = path_compare_key(path);
+    let base_key = path_compare_key(base).trim_end_matches('/').to_string();
+    !base_key.is_empty() && (path_key == base_key || path_key.starts_with(&format!("{base_key}/")))
+}
+
 /// 根据 CLI 路径判断安装来源
 pub fn classify_cli_source(cli_path: &str) -> String {
     let lower = cli_path.replace('\\', "/").to_lowercase();
+    // 便携模式：CLI 位于 U 盘 portable root 之下
+    if let Some(ctx) = crate::commands::portable::portable_context() {
+        if path_is_inside_or_same(std::path::Path::new(cli_path), &ctx.root) {
+            return "portable".into();
+        }
+    }
     // standalone 安装
     if lower.contains("/programs/openclaw/")
         || lower.contains("/openclaw-bin/")

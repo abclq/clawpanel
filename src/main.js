@@ -630,6 +630,7 @@ async function boot() {
   registerEngine(hermesEngine)
   registerEngine(xintianEngine)
   registerRoute('/engine-select', () => import('./pages/engine-select.js'))
+  registerRoute('/media', () => import('./pages/media.js'))
 
   // 初始化引擎管理器：读取 clawpanel.json 的 engineMode，注册对应路由
   await initEngineManager()
@@ -713,11 +714,16 @@ async function boot() {
       <a class="password-change-action" href="#/security" data-pw-banner-action>${t('common.goSecurity')}</a>
       <button class="password-change-close" type="button" aria-label="${t('common.close')}" title="${t('common.close')}" data-pw-banner-close>✕</button>
     `
-    banner.querySelector('[data-pw-banner-action]')?.addEventListener('click', () => {
+    document.body.classList.add('has-password-change-banner')
+    const removePasswordBanner = () => {
       banner.remove()
+      document.body.classList.remove('has-password-change-banner')
+    }
+    banner.querySelector('[data-pw-banner-action]')?.addEventListener('click', () => {
       sessionStorage.removeItem('clawpanel_must_change_pw')
+      removePasswordBanner()
     })
-    banner.querySelector('[data-pw-banner-close]')?.addEventListener('click', () => banner.remove())
+    banner.querySelector('[data-pw-banner-close]')?.addEventListener('click', removePasswordBanner)
     document.body.prepend(banner)
   }
 
