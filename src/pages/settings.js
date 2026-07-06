@@ -9,6 +9,7 @@ import { t, getLang, setLang, getAvailableLangs, onLangChange } from '../lib/i18
 import { isMacPlatform } from '../lib/app-state.js'
 import { renderSidebar } from '../components/sidebar.js'
 import { getActiveEngineId } from '../lib/engine-manager.js'
+import { icon } from '../lib/icons.js'
 
 const isTauri = !!window.__TAURI_INTERNALS__
 
@@ -812,6 +813,22 @@ function portableTargetPlaceholder() {
   return isWin ? 'E:\\ClawPanelPortable' : '/Volumes/USB/ClawPanelPortable'
 }
 
+// 迁移方向示意：高亮当前迁移方向（本机 ⇄ U 盘），一眼看懂数据往哪走
+function renderPortableDirection(toPortable) {
+  const node = (label, iconName, active) => `
+    <span style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:var(--radius-md,8px);border:1px solid ${active ? 'color-mix(in srgb,var(--primary) 45%,var(--border-primary))' : 'var(--border-primary)'};background:${active ? 'color-mix(in srgb,var(--primary) 8%,var(--bg-primary))' : 'var(--bg-primary)'};font-size:var(--font-size-sm);font-weight:600;color:var(--text-primary)">
+      ${icon(iconName, 14)} ${label}
+    </span>`
+  const arrow = `<span style="display:inline-flex;align-items:center;color:var(--primary)">
+    <svg width="34" height="14" viewBox="0 0 34 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="2" y1="7" x2="28" y2="7"/><polyline points="23 2 28 7 23 12"/></svg>
+  </span>`
+  const host = node(t('settings.portableThisPc'), 'monitor', !toPortable)
+  const usb = node(t('settings.portableUsb'), 'inbox', toPortable)
+  return `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:10px 0 14px">
+    ${toPortable ? host + arrow + usb : usb + arrow + host}
+  </div>`
+}
+
 async function loadPortableMigration(page) {
   const bar = page.querySelector('#portable-bar')
   if (!bar) return
@@ -821,29 +838,42 @@ async function loadPortableMigration(page) {
   }
   try {
     const status = await api.getPortableStatus()
+    const card = (inner) => `
+      <div style="border:1px solid var(--border-primary);border-radius:var(--radius-md,10px);background:var(--bg-secondary);padding:14px 16px">${inner}</div>`
+
     if (status?.enabled) {
-      bar.innerHTML = `
+      // 便携模式：U 盘 → 本机
+      bar.innerHTML = card(`
         <div style="display:flex;align-items:center;gap:var(--space-sm);flex-wrap:wrap">
-          <span class="clawhub-badge" style="background:rgba(16,185,129,0.14);color:#059669">${t('settings.portableAlreadyEnabled')}</span>
-          <code style="font-size:var(--font-size-xs)">${escapeHtml(status.root || '')}</code>
+          <span style="width:8px;height:8px;border-radius:999px;background:var(--success);flex:0 0 auto"></span>
+          <span style="font-weight:600;color:var(--text-primary)">${t('settings.portableAlreadyEnabled')}</span>
+          <code style="font-size:var(--font-size-xs);color:var(--text-secondary)">${escapeHtml(status.root || '')}</code>
         </div>
         <div class="form-hint" style="margin-top:var(--space-xs)">${t('settings.portableEnabledHint')}</div>
-        <div style="display:flex;align-items:center;gap:var(--space-sm);margin-top:var(--space-sm)">
-          <button class="btn btn-secondary btn-sm" data-action="migrate-local">${t('settings.portableRestoreBtn')}</button>
+        ${renderPortableDirection(false)}
+        <div style="display:flex;align-items:center;gap:var(--space-sm);flex-wrap:wrap">
+          <button class="btn btn-primary btn-sm" data-action="migrate-local">${icon('download', 13)} ${t('settings.portableRestoreBtn')}</button>
+          <span class="form-hint" style="margin:0">${t('settings.portableRestoreHint')}</span>
         </div>
-        <div class="form-hint" style="margin-top:var(--space-xs)">${t('settings.portableRestoreHint')}</div>
         <div id="portable-restore-result" style="margin-top:var(--space-sm);display:none"></div>
-      `
+      `)
       return
     }
-    bar.innerHTML = `
+
+    // 本机模式：本机 → U 盘
+    bar.innerHTML = card(`
+      <div style="display:flex;align-items:center;gap:var(--space-sm);flex-wrap:wrap">
+        <span style="width:8px;height:8px;border-radius:999px;background:var(--text-tertiary);flex:0 0 auto"></span>
+        <span style="font-weight:600;color:var(--text-primary)">${t('settings.portableStatusLocal')}</span>
+      </div>
+      ${renderPortableDirection(true)}
       <div style="display:flex;align-items:center;gap:var(--space-sm);flex-wrap:wrap">
         <input class="form-input" data-name="portable-target-root" placeholder="${escapeHtml(portableTargetPlaceholder())}" style="max-width:420px;min-width:260px">
-        <button class="btn btn-primary btn-sm" data-action="migrate-portable">${t('settings.portableMigrateBtn')}</button>
+        <button class="btn btn-primary btn-sm" data-action="migrate-portable">${icon('upload', 13)} ${t('settings.portableMigrateBtn')}</button>
       </div>
       <div class="form-hint" style="margin-top:var(--space-xs)">${t('settings.portableModeHint')}</div>
       <div id="portable-migrate-result" style="margin-top:var(--space-sm);display:none"></div>
-    `
+    `)
   } catch (e) {
     bar.innerHTML = `<div style="color:var(--error)">${t('common.loadFailed')}: ${escapeHtml(String(e))}</div>`
   }
@@ -890,6 +920,9 @@ async function handleMigrateToLocal(page) {
     ],
   })
   if (!ok) return
+  const btn = page.querySelector('[data-action="migrate-local"]')
+  const originalLabel = btn?.innerHTML
+  if (btn) btn.innerHTML = t('settings.portableRestoring')
   if (resultEl) {
     resultEl.style.display = 'block'
     resultEl.innerHTML = `<div style="color:var(--text-tertiary);font-size:var(--font-size-sm)">${t('settings.portableRestoring')}</div>`
@@ -903,6 +936,8 @@ async function handleMigrateToLocal(page) {
       resultEl.innerHTML = `<div style="color:var(--error);font-size:var(--font-size-sm)">${escapeHtml(e?.message || String(e))}</div>`
     }
     throw e
+  } finally {
+    if (btn && originalLabel) btn.innerHTML = originalLabel
   }
   if (resultEl) {
     const backups = Array.isArray(report?.backups) ? report.backups : []
@@ -929,6 +964,9 @@ async function handleMigrateToPortable(page) {
   }
   const ok = await showConfirm(t('settings.portableMigrateConfirm'))
   if (!ok) return
+  const btn = page.querySelector('[data-action="migrate-portable"]')
+  const originalLabel = btn?.innerHTML
+  if (btn) btn.innerHTML = t('settings.portableMigrating')
   if (resultEl) {
     resultEl.style.display = 'block'
     resultEl.innerHTML = `<div style="color:var(--text-tertiary);font-size:var(--font-size-sm)">${t('settings.portableMigrating')}</div>`
@@ -942,6 +980,8 @@ async function handleMigrateToPortable(page) {
       resultEl.innerHTML = `<div style="color:var(--error);font-size:var(--font-size-sm)">${escapeHtml(e?.message || String(e))}</div>`
     }
     throw e
+  } finally {
+    if (btn && originalLabel) btn.innerHTML = originalLabel
   }
   if (resultEl) {
     resultEl.innerHTML = renderPortableMigrationResult(report)
