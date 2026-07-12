@@ -147,27 +147,20 @@ export async function syncChannelToHermes(channel, { setDefault = false } = {}) 
   const apiKey = await api.revealModelChannelKey(channel.id)
   if (!apiKey) throw new Error('no-key')
 
-  await api.hermesEnvSet(target.apiKeyEnvVars[0], apiKey)
-
   // 仅 OpenAI 兼容渠道写自定义端点：anthropic / gemini 在 Hermes 侧走各自的
-  // transport 专用端点，渠道里的原生 API 地址格式不一定一致，误写会破坏请求
+  // transport 专用端点，渠道里的原生 API 地址格式不一定一致，误写会破坏请求。
+  // Provider Key/Base URL/默认模型由后端单个事务命令更新，避免通用 env
+  // 编辑器拒绝受管 Key，也避免多步写入留下半同步状态。
   const targetBase = String(target.baseUrl || '').replace(/\/+$/, '')
   const baseUrlDiffers = channel.apiType === 'openai-completions'
     && Boolean(channel.baseUrl) && channel.baseUrl !== targetBase
-  if (baseUrlDiffers && target.baseUrlEnvVar) {
-    await api.hermesEnvSet(target.baseUrlEnvVar, channel.baseUrl)
-  }
-
-  if (setDefault && channel.defaultModel) {
-    // 内核核对结论：model.default 是纯模型 ID（含斜杠的聚合器模型 ID 原样保留），
-    // provider 由 model.provider 单独指定，内核不解析 "provider/model" 前缀
-    await api.hermesModelConfigSave({
-      modelDefault: channel.defaultModel,
-      modelProvider: target.id,
-      modelBaseUrl: baseUrlDiffers && !target.baseUrlEnvVar ? channel.baseUrl : '',
-    })
-  }
-  return { providerId: target.id, envKey: target.apiKeyEnvVars[0] }
+  return api.hermesSyncProvider({
+    provider: target.id,
+    apiKey,
+    baseUrl: baseUrlDiffers ? channel.baseUrl : '',
+    model: channel.defaultModel || '',
+    setDefault: Boolean(setDefault && channel.defaultModel),
+  })
 }
 
 /**

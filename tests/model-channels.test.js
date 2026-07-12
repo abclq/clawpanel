@@ -39,7 +39,7 @@ test('Hermes 同步契约与内核注册表一致（已按内核源码核对）'
   assert.match(lib, /'google-generative-ai':\s*\{\s*fallbackProvider:\s*'gemini'/, 'Gemini 渠道应回退到 gemini provider（内核经 OpenAI 兼容端点接入）')
   assert.match(lib, /authType === 'api_key'/, 'OAuth/SDK 型 provider 必须被排除在渠道同步之外')
   // 内核不解析 "provider/model" 前缀：model.default 必须写纯模型 ID
-  assert.match(lib, /modelDefault:\s*channel\.defaultModel,/, 'model.default 必须是纯模型 ID，不得拼接 provider 前缀')
+  assert.match(lib, /model:\s*channel\.defaultModel\s*\|\|\s*''/, 'model.default 必须是纯模型 ID，不得拼接 provider 前缀')
   // 自定义端点只对 OpenAI 兼容渠道生效，避免破坏 anthropic/gemini 的专用端点
   assert.match(lib, /channel\.apiType === 'openai-completions'\s*&&\s*Boolean\(channel\.baseUrl\)/, '自定义 Base URL 仅限 OpenAI 兼容渠道')
 })

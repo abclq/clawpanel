@@ -366,7 +366,7 @@ pub fn build_http_client(
     timeout: Duration,
     user_agent: Option<&str>,
 ) -> Result<reqwest::Client, String> {
-    build_http_client_opt(timeout, user_agent, true)
+    build_http_client_opt(timeout, user_agent, true, true)
 }
 
 /// 构建模型请求用的 HTTP 客户端
@@ -378,19 +378,33 @@ pub fn build_http_client_no_proxy(
     let use_proxy = read_panel_config_value()
         .and_then(|v| v.get("networkProxy")?.get("proxyModelRequests")?.as_bool())
         .unwrap_or(false);
-    build_http_client_opt(timeout, user_agent, use_proxy)
+    build_http_client_opt(timeout, user_agent, use_proxy, true)
+}
+
+pub fn build_http_client_no_proxy_no_redirect(
+    timeout: Duration,
+    user_agent: Option<&str>,
+) -> Result<reqwest::Client, String> {
+    let use_proxy = read_panel_config_value()
+        .and_then(|v| v.get("networkProxy")?.get("proxyModelRequests")?.as_bool())
+        .unwrap_or(false);
+    build_http_client_opt(timeout, user_agent, use_proxy, false)
 }
 
 fn build_http_client_opt(
     timeout: Duration,
     user_agent: Option<&str>,
     use_proxy: bool,
+    follow_redirects: bool,
 ) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
         .timeout(timeout)
         .gzip(true)
         .brotli(true)
         .deflate(true);
+    if !follow_redirects {
+        builder = builder.redirect(reqwest::redirect::Policy::none());
+    }
     if let Some(ua) = user_agent {
         builder = builder.user_agent(ua);
     }

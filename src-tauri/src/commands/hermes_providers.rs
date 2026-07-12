@@ -147,6 +147,7 @@ const P_ZAI: HermesProvider = HermesProvider {
     transport: TRANSPORT_OPENAI_CHAT,
     models_probe: PROBE_OPENAI,
     models: &[
+        "glm-5.2",
         "glm-5.1",
         "glm-5",
         "glm-5v-turbo",
@@ -169,6 +170,7 @@ const P_KIMI_CODING: HermesProvider = HermesProvider {
     transport: TRANSPORT_OPENAI_CHAT,
     models_probe: PROBE_OPENAI,
     models: &[
+        "kimi-k2.7-code",
         "kimi-for-coding",
         "kimi-k2.6",
         "kimi-k2.5",
@@ -190,6 +192,7 @@ const P_KIMI_CODING_CN: HermesProvider = HermesProvider {
     transport: TRANSPORT_OPENAI_CHAT,
     models_probe: PROBE_OPENAI,
     models: &[
+        "kimi-k2.7-code",
         "kimi-for-coding",
         "kimi-k2.6",
         "kimi-k2.5",
@@ -271,8 +274,10 @@ const P_ALIBABA: HermesProvider = HermesProvider {
         "qwen3.5-plus",
         "qwen3-coder-plus",
         "qwen3-coder-next",
+        "glm-5.2",
         "glm-5",
         "glm-4.7",
+        "kimi-k2.7-code",
         "kimi-k2.5",
         "MiniMax-M2.5",
     ],

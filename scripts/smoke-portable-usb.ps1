@@ -5,9 +5,8 @@
 param(
   # 模拟模式：用 subst 虚拟盘符 + 桩 CLI（默认，无副作用，用于 CI/本机快速验证布局约定）
   [string]$DriveLetter = "",
-  # 真实模式：指定真实 U 盘路径（如 F:\），只做无损校验——
-  # 补建缺失目录、portable.json 缺失时补种，绝不覆盖任何已有文件、绝不写桩 CLI；
-  # 对盘上真实存在的组件（openclaw/hermes/uv/git/node）逐一实测版本
+  # 真实模式：指定真实 U 盘路径（如 F:\），严格只读校验，不创建目录、不补配置、不写桩。
+  # openclaw/hermes/uv/git/node 任一缺失或执行失败都会令 ok=false 且退出码非零。
   [string]$UsbPath = "",
   [string]$RootName = "ClawPanelPortable",
   [switch]$Keep
@@ -69,6 +68,60 @@ try {
   $uvBin = Join-Path $usbRoot "runtimes\uv\bin"
   $gitCmd = Join-Path $usbRoot "runtimes\git\cmd"
 
+  if ($realMode) {
+    # ===== 真实模式：严格只读，逐组件实测 =====
+    function Test-Component {
+      param([string]$Path, [string[]]$CmdArgs)
+      if (-not (Test-Path -LiteralPath $Path)) {
+        return [pscustomobject]@{ ok = $false; status = "missing"; output = $null }
+      }
+      try {
+        $out = & $Path @CmdArgs 2>&1 | Select-Object -First 1
+        if ($LASTEXITCODE -ne 0) {
+          return [pscustomobject]@{ ok = $false; status = "error"; output = ($out -join " ") }
+        }
+        return [pscustomobject]@{ ok = $true; status = "ok"; output = ($out -join " ") }
+      } catch {
+        return [pscustomobject]@{ ok = $false; status = "error"; output = $_.Exception.Message }
+      }
+    }
+
+    $manifest = $null
+    $manifestOk = $false
+    try {
+      $raw = Get-Content -LiteralPath (Join-Path $usbRoot "portable.json") -Raw
+      $manifest = $raw -replace "^﻿", "" | ConvertFrom-Json
+      $manifestOk = ($manifest.mode -eq "portable")
+    } catch {}
+
+    $fsName = "unknown"
+    try { $fsName = (Get-Volume -FilePath $usbRoot -ErrorAction Stop).FileSystem } catch {}
+
+    $components = [ordered]@{
+      openclaw = Test-Component -Path (Join-Path $openclawEngine "openclaw.cmd") -CmdArgs @("--version")
+      hermes = Test-Component -Path (Join-Path $hermesBin "hermes.cmd") -CmdArgs @("version")
+      node = Test-Component -Path (Join-Path $openclawEngine "node.exe") -CmdArgs @("--version")
+      uv = Test-Component -Path (Join-Path $uvBin "uv.exe") -CmdArgs @("--version")
+      git = Test-Component -Path (Join-Path $gitCmd "git.exe") -CmdArgs @("--version")
+    }
+    $componentsOk = -not ($components.Values | Where-Object { -not $_.ok } | Select-Object -First 1)
+    $result = [pscustomobject]@{
+      ok = ($manifestOk -and $componentsOk)
+      mode = "real-usb"
+      fileSystem = $fsName
+      usbRoot = $usbRoot
+      manifestMode = $manifest.mode
+      openclaw = $components.openclaw
+      hermes = $components.hermes
+      node = $components.node
+      uv = $components.uv
+      git = $components.git
+    }
+    $result | ConvertTo-Json -Depth 4
+    if (-not $result.ok) { exit 1 }
+    return
+  }
+
   foreach ($dir in @($panelDir, $openclawDir, $hermesHome, $openclawEngine, $hermesBin, $uvBin, $gitCmd)) {
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
   }
@@ -87,45 +140,6 @@ try {
 
   $null = Set-ContentIfAbsent -Path (Join-Path $openclawDir "openclaw.json") -Value '{ "gateway": { "port": 18789 }, "agents": { "main": { "name": "main" } } }'
   $null = Set-ContentIfAbsent -Path (Join-Path $hermesHome "config.yaml") -Value "model: smoke"
-
-  if ($realMode) {
-    # ===== 真实模式：无损校验，逐组件实测（存在才测，不存在报 missing）=====
-    function Test-Component {
-      param([string]$Path, [string[]]$CmdArgs)
-      if (-not (Test-Path -LiteralPath $Path)) { return "(missing)" }
-      try {
-        $out = & $Path @CmdArgs 2>&1 | Select-Object -First 1
-        return ($out -join " ")
-      } catch {
-        return "(error) $($_.Exception.Message)"
-      }
-    }
-
-    $manifest = $null
-    $manifestOk = $false
-    try {
-      $raw = Get-Content -LiteralPath (Join-Path $usbRoot "portable.json") -Raw
-      $manifest = $raw -replace "^﻿", "" | ConvertFrom-Json
-      $manifestOk = ($manifest.mode -eq "portable")
-    } catch {}
-
-    $fsName = "unknown"
-    try { $fsName = (Get-Volume -FilePath $usbRoot -ErrorAction Stop).FileSystem } catch {}
-
-    [pscustomobject]@{
-      ok = $manifestOk
-      mode = "real-usb"
-      fileSystem = $fsName
-      usbRoot = $usbRoot
-      manifestMode = $manifest.mode
-      openclaw = Test-Component -Path (Join-Path $openclawEngine "openclaw.cmd") -CmdArgs @("--version")
-      hermes = Test-Component -Path (Join-Path $hermesBin "hermes.cmd") -CmdArgs @("version")
-      node = Test-Component -Path (Join-Path $openclawEngine "node.exe") -CmdArgs @("--version")
-      uv = Test-Component -Path (Join-Path $uvBin "uv.exe") -CmdArgs @("--version")
-      git = Test-Component -Path (Join-Path $gitCmd "git.exe") -CmdArgs @("--version")
-    } | ConvertTo-Json -Depth 4
-    return
-  }
 
   # ===== 模拟模式：写桩 CLI，验证布局与 PATH 约定 =====
   @(

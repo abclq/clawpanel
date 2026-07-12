@@ -80,12 +80,21 @@ jobs:
       # Rust 编译检查
       - name: Rust 编译检查
         working-directory: src-tauri
-        run: cargo check
+        run: cargo check --locked
 
       # Rust Lint（警告视为错误）
       - name: Rust Clippy
         working-directory: src-tauri
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      # Node 单元测试
+      - name: Node 单元测试
+        run: node --test tests/*.test.js
+
+      # Rust 单元测试
+      - name: Rust 单元测试
+        working-directory: src-tauri
+        run: cargo test --locked
 
       # 前端构建验证
       - name: 前端构建验证

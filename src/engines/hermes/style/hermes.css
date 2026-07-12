@@ -1017,7 +1017,7 @@
 }
 @media (max-width: 480px) {
   [data-engine="hermes"].page {
-    padding: 20px 16px 32px;
+    padding: 20px 16px 96px;
   }
 }
 

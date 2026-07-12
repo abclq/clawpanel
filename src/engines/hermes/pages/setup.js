@@ -30,6 +30,22 @@ const ICONS = {
 let hermesProviders = []
 let hermesGroups = { apiKeyIntl: [], apiKeyCn: [], aggregators: [], oauth: [], externalProc: [], custom: [] }
 
+const HERMES_SETUP_PHASES = ['detect', 'install', 'configure', 'gateway', 'complete']
+
+export function resolveHermesSetupPhase(target, stored, installed) {
+  if (!HERMES_SETUP_PHASES.includes(target) || !HERMES_SETUP_PHASES.includes(stored) || stored === 'complete') return target
+  if (HERMES_SETUP_PHASES.indexOf(stored) <= HERMES_SETUP_PHASES.indexOf(target)) return target
+  if (stored !== 'install' && !installed) return target
+  return stored
+}
+
+export async function probeAndCommitHermesGateway(apiClient, url) {
+  const health = await apiClient.hermesProbeGateway(url)
+  if (!health || health.ok === false) throw new Error('Gateway health check failed')
+  await apiClient.hermesSetGatewayUrl(url)
+  return health
+}
+
 export function render() {
   const el = document.createElement('div')
   el.className = 'page'
@@ -53,8 +69,9 @@ export function render() {
   let mirrorPrefs = null
   let mirrorOpen = false
 
-  const PHASE_ORDER = ['detect', 'install', 'configure', 'gateway', 'complete']
   const PHASE_STORE_KEY = 'hermes-setup-phase'
+  let storedPhase = null
+  try { storedPhase = sessionStorage.getItem(PHASE_STORE_KEY) } catch (_) {}
 
   function draw() {
     // 记录进行到的阶段：中途关闭后重开可从这里继续（检测结果允许时）
@@ -495,14 +512,7 @@ export function render() {
 
       // 恢复上次进行到的阶段：中途关闭后重开不必从头再走
       // （仅在前提一致时生效：configure/gateway 需要已安装）
-      try {
-        const stored = sessionStorage.getItem(PHASE_STORE_KEY)
-        if (stored && stored !== 'complete'
-          && PHASE_ORDER.indexOf(stored) > PHASE_ORDER.indexOf(target)
-          && (stored === 'install' || hm.installed)) {
-          target = stored
-        }
-      } catch (_) {}
+      target = resolveHermesSetupPhase(target, storedPhase, hm.installed)
 
       // 环境有警告（Python 版本、Git 缺失等）且尚未安装 → 停在检测页
       // 展示结果，等用户确认后再继续，避免 800ms 后自动跳走看不清问题
@@ -540,12 +550,7 @@ export function render() {
     draw()
 
     try {
-      // 保存 Gateway URL
-      await api.hermesSetGatewayUrl(url)
-
-      // 测试连接（health 可能返回对象，ok === false 也视为失败）
-      const health = await api.hermesHealthCheck()
-      if (!health || health.ok === false) throw new Error(t('engine.installCustomNoResponse'))
+      await probeAndCommitHermesGateway(api, url)
 
       installing = false
       customGatewayUrl = url
@@ -561,14 +566,21 @@ export function render() {
 
   // --- 安装流程 ---
   async function doInstall() {
+    if (installing) return
+    const pypiSel = el.querySelector('#hm-pypi-mirror')
+    const pypiMirror = pypiSel?.value === 'custom'
+      ? (el.querySelector('#hm-pypi-custom')?.value?.trim() || '')
+      : (pypiSel?.value || '')
+    const gitMirror = el.querySelector('#hm-git-mirror')?.value?.trim() || ''
+    installing = true
+    installError = null
+    progress = 0
+    logs = []
+    draw()
+
     // 持久化镜像偏好（后端安装命令读取 panelConfig.pypiMirror / gitMirror）
     try {
-      const pypiSel = el.querySelector('#hm-pypi-mirror')
       if (pypiSel) {
-        const pypiMirror = pypiSel.value === 'custom'
-          ? (el.querySelector('#hm-pypi-custom')?.value?.trim() || '')
-          : pypiSel.value
-        const gitMirror = el.querySelector('#hm-git-mirror')?.value?.trim() || ''
         if (pypiMirror !== (mirrorPrefs?.pypiMirror || '') || gitMirror !== (mirrorPrefs?.gitMirror || '')) {
           const cfg = (await api.readPanelConfig()) || {}
           cfg.pypiMirror = pypiMirror
@@ -580,12 +592,6 @@ export function render() {
     } catch (e) {
       console.warn('[hermes/setup] 保存镜像偏好失败（不阻塞安装）:', e)
     }
-
-    installing = true
-    installError = null
-    progress = 0
-    logs = []
-    draw()
 
     // 监听安装事件；Web 模式跳过桌面事件监听。
     try {

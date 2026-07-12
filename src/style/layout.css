@@ -1317,6 +1317,7 @@ body:has(#sidebar.sidebar-collapsed) .password-change-banner {
   }
   .page {
     padding: var(--space-lg) var(--space-lg);
+    padding-bottom: 96px;
   }
   .page-title {
     font-size: var(--font-size-xl);
@@ -1380,5 +1381,6 @@ body:has(#sidebar.sidebar-collapsed) .password-change-banner {
 @media (max-width: 480px) {
   .page {
     padding: var(--space-md) var(--space-md);
+    padding-bottom: 96px;
   }
 }

@@ -34,7 +34,7 @@
   - 渠道文件存放在 OpenClaw 数据目录下（便携迁移自动带走）；密钥读取只返回掩码，写入支持保留旧 Key
   - Hermes 同步覆盖 OpenAI / Anthropic / Gemini 兼容接口（API Key 型）；OAuth / 云 SDK 型服务商仍走 Hermes 安装向导
 
-## [0.18.6] - 2026-07-04
+## [0.18.6 候选] - 尚未发布
 
 ### 新功能 (Features)
 

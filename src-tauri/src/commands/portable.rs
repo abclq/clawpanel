@@ -369,8 +369,43 @@ fn path_is_inside_or_same(path: &Path, base: &Path) -> bool {
     crate::utils::path_is_inside_or_same(path, base)
 }
 
+fn normalize_migration_path(path: &Path, label: &str) -> Result<PathBuf, String> {
+    crate::utils::canonicalize_path_for_safety(path, label)
+}
+
+fn metadata_is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    false
+}
+
+fn reject_link_or_reparse_root(path: &Path, label: &str) -> Result<(), String> {
+    if let Ok(metadata) = std::fs::symlink_metadata(path) {
+        if metadata_is_link_or_reparse(&metadata) {
+            return Err(format!(
+                "{label}不能是链接或 reparse point: {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
-    if !src.is_dir() {
+    let source_metadata = std::fs::symlink_metadata(src)
+        .map_err(|e| format!("读取源目录元数据 {} 失败: {e}", src.display()))?;
+    if metadata_is_link_or_reparse(&source_metadata) {
+        return Err(format!("拒绝复制链接或 reparse point: {}", src.display()));
+    }
+    if !source_metadata.is_dir() {
         return Err(format!("源目录不存在: {}", src.display()));
     }
     std::fs::create_dir_all(dst).map_err(|e| format!("创建目录 {} 失败: {e}", dst.display()))?;
@@ -380,9 +415,14 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
         let entry = entry.map_err(|e| format!("读取目录项失败: {e}"))?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
-        let meta = entry
-            .metadata()
+        let meta = std::fs::symlink_metadata(&src_path)
             .map_err(|e| format!("读取元数据 {} 失败: {e}", src_path.display()))?;
+        if metadata_is_link_or_reparse(&meta) {
+            return Err(format!(
+                "拒绝复制链接或 reparse point: {}",
+                src_path.display()
+            ));
+        }
         if meta.is_dir() {
             copy_dir_recursive(&src_path, &dst_path)?;
         } else if meta.is_file() {
@@ -402,16 +442,192 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
+struct StagingDir {
+    path: PathBuf,
+    active: bool,
+}
+
+impl StagingDir {
+    fn create_for(target: &Path) -> Result<Self, String> {
+        let parent = target
+            .parent()
+            .ok_or_else(|| format!("目标目录缺少父目录: {}", target.display()))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("创建目标父目录 {} 失败: {e}", parent.display()))?;
+        let name = target
+            .file_name()
+            .map(|value| value.to_string_lossy().to_string())
+            .unwrap_or_else(|| "portable".into());
+        for attempt in 0..100_u32 {
+            let candidate = parent.join(format!("{name}.staging-{}-{attempt}", std::process::id()));
+            if !candidate.exists() {
+                std::fs::create_dir(&candidate)
+                    .map_err(|e| format!("创建 staging 目录 {} 失败: {e}", candidate.display()))?;
+                return Ok(Self {
+                    path: candidate,
+                    active: true,
+                });
+            }
+        }
+        Err(format!("无法为 {} 分配 staging 目录", target.display()))
+    }
+
+    fn disarm(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for StagingDir {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+fn path_looks_absolute(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    Path::new(value).is_absolute()
+        || value.starts_with('/')
+        || value.starts_with("\\\\")
+        || (bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && matches!(bytes[2], b'\\' | b'/'))
+}
+
+fn collect_external_paths_from_value(
+    value: &Value,
+    root: &Path,
+    file_label: &str,
+    field_path: &str,
+    warnings: &mut Vec<String>,
+) {
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map {
+                let child_path = if field_path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{field_path}.{key}")
+                };
+                let lower = key.to_ascii_lowercase();
+                if (lower == "workspace" || lower == "path" || lower.ends_with("path"))
+                    && child.as_str().is_some_and(path_looks_absolute)
+                {
+                    let raw = child.as_str().unwrap_or_default();
+                    let candidate = Path::new(raw);
+                    let is_inside = candidate.is_absolute()
+                        && normalize_migration_path(candidate, "配置绝对路径")
+                            .map(|resolved| path_is_inside_or_same(&resolved, root))
+                            .unwrap_or(false);
+                    if !is_inside {
+                        warnings.push(format!("external-absolute-path:{file_label}:{child_path}"));
+                    }
+                }
+                collect_external_paths_from_value(child, root, file_label, &child_path, warnings);
+            }
+        }
+        Value::Array(items) => {
+            for (index, child) in items.iter().enumerate() {
+                collect_external_paths_from_value(
+                    child,
+                    root,
+                    file_label,
+                    &format!("{field_path}[{index}]"),
+                    warnings,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_external_path_warnings(root: &Path, warnings: &mut Vec<String>) {
+    fn visit(dir: &Path, root: &Path, warnings: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if metadata_is_link_or_reparse(&metadata) {
+                continue;
+            }
+            if metadata.is_dir() {
+                visit(&path, root, warnings);
+                continue;
+            }
+            let extension = path
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            let parsed = match extension.as_str() {
+                "json" => std::fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|text| serde_json::from_str::<Value>(&text).ok()),
+                "yaml" | "yml" => std::fs::read_to_string(&path).ok().and_then(|text| {
+                    serde_yaml::from_str::<serde_yaml::Value>(&text)
+                        .ok()
+                        .and_then(|yaml| serde_json::to_value(yaml).ok())
+                }),
+                _ => None,
+            };
+            if let Some(value) = parsed {
+                let label = path
+                    .strip_prefix(root)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                collect_external_paths_from_value(&value, root, &label, "", warnings);
+            }
+        }
+    }
+
+    if root.is_dir() {
+        visit(root, root, warnings);
+        warnings.sort();
+        warnings.dedup();
+    }
+}
+
+fn reject_overlapping_roots(target: &Path, sources: &[(&Path, &str)]) -> Result<(), String> {
+    for (source, label) in sources {
+        if source.exists()
+            && (path_is_inside_or_same(target, source) || path_is_inside_or_same(source, target))
+        {
+            return Err(format!("目标目录与{label}重叠，无法迁移"));
+        }
+    }
+    Ok(())
+}
+
 fn migrate_to_portable_impl(
     target_root: &Path,
     panel_config: Option<Value>,
     source_openclaw_dir: &Path,
     source_engine_dir: Option<&Path>,
     source_hermes_home: Option<&Path>,
+    include_current_app: bool,
 ) -> Result<Value, String> {
-    if target_root.as_os_str().is_empty() {
-        return Err("请选择便携模式目标目录".into());
+    reject_link_or_reparse_root(source_openclaw_dir, "OpenClaw 源目录")?;
+    if let Some(path) = source_engine_dir {
+        reject_link_or_reparse_root(path, "OpenClaw 引擎源目录")?;
     }
+    if let Some(path) = source_hermes_home {
+        reject_link_or_reparse_root(path, "Hermes 源目录")?;
+    }
+    let target_root = normalize_migration_path(target_root, "便携模式目标目录")?;
+    let source_openclaw_dir = normalize_migration_path(source_openclaw_dir, "OpenClaw 源目录")?;
+    let source_engine_dir = source_engine_dir
+        .map(|path| normalize_migration_path(path, "OpenClaw 引擎源目录"))
+        .transpose()?;
+    let source_hermes_home = source_hermes_home
+        .map(|path| normalize_migration_path(path, "Hermes 源目录"))
+        .transpose()?;
     if target_root.is_file() {
         return Err("目标路径是文件，请选择目录".into());
     }
@@ -420,35 +636,35 @@ fn migrate_to_portable_impl(
     if portable_json.exists() {
         return Err("目标目录已存在 portable.json，请选择空目录或新的便携目录".into());
     }
+    if target_root.exists() && needs_backup(&target_root) {
+        return Err("目标目录不是空目录，请选择空目录或新的便携目录".into());
+    }
 
-    let data_dir = target_root.join("data");
+    let mut sources = vec![(source_openclaw_dir.as_path(), "当前 OpenClaw 配置目录")];
+    if let Some(path) = source_engine_dir.as_deref() {
+        sources.push((path, "当前 OpenClaw 引擎目录"));
+    }
+    if let Some(path) = source_hermes_home.as_deref() {
+        sources.push((path, "当前 Hermes 数据目录"));
+    }
+    reject_overlapping_roots(&target_root, &sources)?;
+
+    let target_existed_empty = target_root.is_dir();
+    let mut staging = StagingDir::create_for(&target_root)?;
+    let staging_root = staging.path.clone();
+
+    let data_dir = staging_root.join("data");
     let panel_dir = data_dir.join("clawpanel");
     let portable_panel_config = panel_dir.join("clawpanel.json");
     let portable_openclaw_dir = data_dir.join("openclaw");
     let portable_hermes_home = data_dir.join("hermes");
-    let engines_openclaw_dir = target_root.join("engines").join("openclaw");
-    let engines_hermes_dir = target_root.join("engines").join("hermes");
-    let runtimes_node_dir = target_root.join("runtimes").join("node");
-    let runtimes_uv_dir = target_root.join("runtimes").join("uv");
-
-    if source_openclaw_dir.is_dir()
-        && path_is_inside_or_same(&portable_openclaw_dir, source_openclaw_dir)
-    {
-        return Err("目标目录不能放在当前 OpenClaw 配置目录内部，避免递归复制".into());
-    }
-    if let Some(engine_dir) = source_engine_dir {
-        if engine_dir.is_dir() && path_is_inside_or_same(&engines_openclaw_dir, engine_dir) {
-            return Err("目标目录不能放在当前 OpenClaw 引擎目录内部，避免递归复制".into());
-        }
-    }
-    if let Some(hermes_home) = source_hermes_home {
-        if hermes_home.is_dir() && path_is_inside_or_same(&portable_hermes_home, hermes_home) {
-            return Err("目标目录不能放在当前 Hermes 数据目录内部，避免递归复制".into());
-        }
-    }
+    let engines_openclaw_dir = staging_root.join("engines").join("openclaw");
+    let engines_hermes_dir = staging_root.join("engines").join("hermes");
+    let runtimes_node_dir = staging_root.join("runtimes").join("node");
+    let runtimes_uv_dir = staging_root.join("runtimes").join("uv");
 
     for dir in [
-        target_root,
+        &staging_root,
         &data_dir,
         &panel_dir,
         &portable_openclaw_dir,
@@ -462,12 +678,6 @@ fn migrate_to_portable_impl(
             .map_err(|e| format!("创建目录 {} 失败: {e}", dir.display()))?;
     }
 
-    let manifest = portable_manifest();
-    let manifest_text = serde_json::to_string_pretty(&manifest)
-        .map_err(|e| format!("序列化 portable.json 失败: {e}"))?;
-    std::fs::write(&portable_json, manifest_text)
-        .map_err(|e| format!("写入 portable.json 失败: {e}"))?;
-
     let (portable_panel, removed_panel_keys) = sanitized_panel_config(panel_config);
     let panel_text = serde_json::to_string_pretty(&portable_panel)
         .map_err(|e| format!("序列化 clawpanel.json 失败: {e}"))?;
@@ -476,7 +686,8 @@ fn migrate_to_portable_impl(
 
     let mut warnings = Vec::new();
     let copied_openclaw = if source_openclaw_dir.is_dir() {
-        copy_dir_recursive(source_openclaw_dir, &portable_openclaw_dir)?;
+        collect_external_path_warnings(&source_openclaw_dir, &mut warnings);
+        copy_dir_recursive(&source_openclaw_dir, &portable_openclaw_dir)?;
         true
     } else {
         warnings.push("openclaw-source-missing".to_string());
@@ -484,7 +695,7 @@ fn migrate_to_portable_impl(
     };
 
     let mut copied_engine = false;
-    if let Some(engine_dir) = source_engine_dir {
+    if let Some(engine_dir) = source_engine_dir.as_deref() {
         if engine_dir.is_dir() {
             copy_dir_recursive(engine_dir, &engines_openclaw_dir)?;
             copied_engine = true;
@@ -492,14 +703,58 @@ fn migrate_to_portable_impl(
     }
 
     let mut copied_hermes_home = false;
-    if let Some(hermes_home) = source_hermes_home {
+    if let Some(hermes_home) = source_hermes_home.as_deref() {
         if hermes_home.is_dir() {
+            collect_external_path_warnings(hermes_home, &mut warnings);
             copy_dir_recursive(hermes_home, &portable_hermes_home)?;
             copied_hermes_home = true;
         }
     }
 
-    Ok(json!({
+    let mut app_copied = false;
+    let mut portable_app_path = None;
+    if include_current_app {
+        match copy_current_app_binary(&staging_root) {
+            Ok(staged_path) => {
+                let file_name = staged_path
+                    .file_name()
+                    .ok_or_else(|| "staging 应用路径无文件名".to_string())?;
+                app_copied = true;
+                portable_app_path = Some(target_root.join(file_name));
+            }
+            Err(error) if cfg!(not(windows)) => {
+                warnings.push(format!("app-copy-unsupported:{error}"));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    let manifest = portable_manifest();
+    let manifest_text = serde_json::to_string_pretty(&manifest)
+        .map_err(|e| format!("序列化 portable.json 失败: {e}"))?;
+    std::fs::write(staging_root.join("portable.json"), manifest_text)
+        .map_err(|e| format!("写入 staging portable.json 失败: {e}"))?;
+
+    if target_existed_empty {
+        std::fs::remove_dir(&target_root)
+            .map_err(|e| format!("移除空目标目录 {} 失败: {e}", target_root.display()))?;
+    }
+    if let Err(error) = std::fs::rename(&staging_root, &target_root) {
+        if target_existed_empty {
+            let _ = std::fs::create_dir_all(&target_root);
+        }
+        return Err(format!("提交便携迁移 staging 失败: {error}"));
+    }
+    staging.disarm();
+
+    let data_dir = target_root.join("data");
+    let portable_panel_config = data_dir.join("clawpanel").join("clawpanel.json");
+    let portable_openclaw_dir = data_dir.join("openclaw");
+    let portable_hermes_home = data_dir.join("hermes");
+    let engines_openclaw_dir = target_root.join("engines").join("openclaw");
+    let engines_hermes_dir = target_root.join("engines").join("hermes");
+
+    let mut report = json!({
         "root": target_root.to_string_lossy(),
         "portableJson": portable_json.to_string_lossy(),
         "panelConfigPath": portable_panel_config.to_string_lossy(),
@@ -514,7 +769,18 @@ fn migrate_to_portable_impl(
         "needsHermesInstall": true,
         "removedPanelKeys": removed_panel_keys,
         "warnings": warnings,
-    }))
+    });
+    if include_current_app {
+        let object = report.as_object_mut().expect("migration report object");
+        object.insert("appCopied".into(), Value::Bool(app_copied));
+        object.insert(
+            "portableAppPath".into(),
+            portable_app_path
+                .map(|path| Value::String(path.to_string_lossy().to_string()))
+                .unwrap_or(Value::Null),
+        );
+    }
+    Ok(report)
 }
 
 /// 目录存在且非空才值得备份；空目录直接复用，避免产生噪音备份
@@ -536,6 +802,94 @@ fn backup_sibling_path(path: &Path, timestamp: &str) -> PathBuf {
     path.with_file_name(format!("{name}.backup-{timestamp}"))
 }
 
+struct SwitchRecord {
+    target: PathBuf,
+    backup: Option<PathBuf>,
+    restore_empty_dir: bool,
+}
+
+fn remove_switched_target(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|e| format!("读取切换目标 {} 失败: {e}", path.display()))?;
+    if metadata.is_dir() {
+        std::fs::remove_dir_all(path)
+            .map_err(|e| format!("清理切换目标 {} 失败: {e}", path.display()))
+    } else {
+        std::fs::remove_file(path).map_err(|e| format!("清理切换目标 {} 失败: {e}", path.display()))
+    }
+}
+
+fn rollback_switch(record: &SwitchRecord) -> Result<(), String> {
+    remove_switched_target(&record.target)?;
+    if let Some(backup) = &record.backup {
+        std::fs::rename(backup, &record.target).map_err(|e| {
+            format!(
+                "恢复备份 {} -> {} 失败: {e}",
+                backup.display(),
+                record.target.display()
+            )
+        })?;
+    } else if record.restore_empty_dir {
+        std::fs::create_dir_all(&record.target)
+            .map_err(|e| format!("恢复空目录 {} 失败: {e}", record.target.display()))?;
+    }
+    Ok(())
+}
+
+fn switch_staged_directory(
+    staging: &mut StagingDir,
+    target: &Path,
+    timestamp: &str,
+) -> Result<SwitchRecord, String> {
+    let restore_empty_dir = target.is_dir() && !needs_backup(target);
+    let backup = if target.exists() && needs_backup(target) {
+        let backup = backup_sibling_path(target, timestamp);
+        if backup.exists() {
+            return Err(format!("备份路径已存在，请稍后重试: {}", backup.display()));
+        }
+        std::fs::rename(target, &backup)
+            .map_err(|e| format!("备份现有目录 {} 失败: {e}", target.display()))?;
+        Some(backup)
+    } else {
+        if restore_empty_dir {
+            std::fs::remove_dir(target)
+                .map_err(|e| format!("移除空目标目录 {} 失败: {e}", target.display()))?;
+        }
+        None
+    };
+
+    if let Err(error) = std::fs::rename(&staging.path, target) {
+        let restore_result = if let Some(backup) = &backup {
+            std::fs::rename(backup, target)
+                .map_err(|e| format!("恢复备份 {} 失败: {e}", backup.display()))
+        } else if restore_empty_dir {
+            std::fs::create_dir_all(target)
+                .map_err(|e| format!("恢复空目录 {} 失败: {e}", target.display()))
+        } else {
+            Ok(())
+        };
+        return match restore_result {
+            Ok(()) => Err(format!(
+                "切换 staging 到 {} 失败: {error}",
+                target.display()
+            )),
+            Err(restore_error) => Err(format!(
+                "切换 staging 到 {} 失败: {error}; {restore_error}",
+                target.display()
+            )),
+        };
+    }
+    staging.disarm();
+    Ok(SwitchRecord {
+        target: target.to_path_buf(),
+        backup,
+        restore_empty_dir,
+    })
+}
+
 /// 将便携数据迁移回本机默认位置（migrate_to_portable 的反向）。
 /// 语义：以 U 盘数据为准——本机已有数据先整体改名备份（.backup-<时间戳>），
 /// 再全新复制，避免新旧数据合并出难排查的混合状态。
@@ -547,61 +901,98 @@ fn migrate_to_local_impl(
     target_openclaw_dir: &Path,
     target_hermes_home: &Path,
 ) -> Result<Value, String> {
+    reject_link_or_reparse_root(source_openclaw_dir, "便携 OpenClaw 源目录")?;
+    reject_link_or_reparse_root(source_hermes_home, "便携 Hermes 源目录")?;
+    let source_openclaw_dir =
+        normalize_migration_path(source_openclaw_dir, "便携 OpenClaw 源目录")?;
+    let source_hermes_home = normalize_migration_path(source_hermes_home, "便携 Hermes 源目录")?;
+    let target_openclaw_dir =
+        normalize_migration_path(target_openclaw_dir, "本机 OpenClaw 目标目录")?;
+    let target_hermes_home = normalize_migration_path(target_hermes_home, "本机 Hermes 目标目录")?;
+
     // 防呆：目标不能位于便携源内部或与其相同（自定义路径可能指回 U 盘）
-    if path_is_inside_or_same(target_openclaw_dir, source_openclaw_dir)
-        || path_is_inside_or_same(source_openclaw_dir, target_openclaw_dir)
-    {
-        return Err("本机 OpenClaw 目录与便携目录重叠，无法迁移".into());
-    }
-    if path_is_inside_or_same(target_hermes_home, source_hermes_home)
-        || path_is_inside_or_same(source_hermes_home, target_hermes_home)
-    {
-        return Err("本机 Hermes 目录与便携目录重叠，无法迁移".into());
-    }
+    reject_overlapping_roots(
+        &target_openclaw_dir,
+        &[
+            (&source_openclaw_dir, "便携 OpenClaw 目录"),
+            (&source_hermes_home, "便携 Hermes 目录"),
+        ],
+    )?;
+    reject_overlapping_roots(
+        &target_hermes_home,
+        &[
+            (&source_openclaw_dir, "便携 OpenClaw 目录"),
+            (&source_hermes_home, "便携 Hermes 目录"),
+        ],
+    )?;
 
     let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
     let mut backups: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
+    let (panel, removed_keys) = sanitized_panel_config(source_panel_config);
 
-    // OpenClaw 数据（含面板级 clawpanel/ 子目录：模型渠道、媒体数据随之带回）
-    let mut copied_openclaw = false;
-    if source_openclaw_dir.is_dir() {
-        if target_openclaw_dir.exists() && needs_backup(target_openclaw_dir) {
-            let bak = backup_sibling_path(target_openclaw_dir, &timestamp);
-            std::fs::rename(target_openclaw_dir, &bak).map_err(|e| {
-                format!("备份本机 OpenClaw 数据失败（若本机 Gateway 正在运行请先停止）: {e}")
-            })?;
-            backups.push(bak.to_string_lossy().to_string());
-        }
-        copy_dir_recursive(source_openclaw_dir, target_openclaw_dir)?;
-        copied_openclaw = true;
+    let mut openclaw_staging = if source_openclaw_dir.is_dir() {
+        let staging = StagingDir::create_for(&target_openclaw_dir)?;
+        collect_external_path_warnings(&source_openclaw_dir, &mut warnings);
+        copy_dir_recursive(&source_openclaw_dir, &staging.path)?;
+        let panel_text = serde_json::to_string_pretty(&panel)
+            .map_err(|e| format!("序列化 clawpanel.json 失败: {e}"))?;
+        std::fs::write(staging.path.join("clawpanel.json"), panel_text)
+            .map_err(|e| format!("写入 staging clawpanel.json 失败: {e}"))?;
+        Some(staging)
     } else {
         warnings.push("portable-openclaw-missing".into());
-    }
+        None
+    };
+
+    let mut hermes_staging = if source_hermes_home.is_dir() {
+        let staging = StagingDir::create_for(&target_hermes_home)?;
+        collect_external_path_warnings(&source_hermes_home, &mut warnings);
+        copy_dir_recursive(&source_hermes_home, &staging.path)?;
+        Some(staging)
+    } else {
+        None
+    };
+
+    // OpenClaw 数据（含面板级 clawpanel/ 子目录：模型渠道、媒体数据随之带回）
+    let mut openclaw_switch = None;
+    let copied_openclaw = if let Some(staging) = openclaw_staging.as_mut() {
+        let switched = switch_staged_directory(staging, &target_openclaw_dir, &timestamp)
+            .map_err(|e| format!("切换本机 OpenClaw 数据失败: {e}"))?;
+        if let Some(backup) = &switched.backup {
+            backups.push(backup.to_string_lossy().to_string());
+        }
+        openclaw_switch = Some(switched);
+        true
+    } else {
+        false
+    };
 
     // Hermes 数据
-    let mut copied_hermes = false;
-    if source_hermes_home.is_dir() {
-        if target_hermes_home.exists() && needs_backup(target_hermes_home) {
-            let bak = backup_sibling_path(target_hermes_home, &timestamp);
-            std::fs::rename(target_hermes_home, &bak)
-                .map_err(|e| format!("备份本机 Hermes 数据失败: {e}"))?;
-            backups.push(bak.to_string_lossy().to_string());
+    let copied_hermes = if let Some(staging) = hermes_staging.as_mut() {
+        match switch_staged_directory(staging, &target_hermes_home, &timestamp) {
+            Ok(switched) => {
+                if let Some(backup) = &switched.backup {
+                    backups.push(backup.to_string_lossy().to_string());
+                }
+                true
+            }
+            Err(error) => {
+                if let Some(switched) = &openclaw_switch {
+                    if let Err(rollback_error) = rollback_switch(switched) {
+                        return Err(format!(
+                            "切换本机 Hermes 数据失败: {error}; 回滚 OpenClaw 失败: {rollback_error}"
+                        ));
+                    }
+                }
+                return Err(format!("切换本机 Hermes 数据失败: {error}"));
+            }
         }
-        copy_dir_recursive(source_hermes_home, target_hermes_home)?;
-        copied_hermes = true;
-    }
+    } else {
+        false
+    };
 
-    // 面板配置：写入本机 openclaw 目录下的 clawpanel.json；
-    // 与正向迁移同理清洗绝对路径字段（便携配置里可能残留指向 U 盘的路径）
-    let (panel, removed_keys) = sanitized_panel_config(source_panel_config);
     let target_panel_config = target_openclaw_dir.join("clawpanel.json");
-    std::fs::create_dir_all(target_openclaw_dir)
-        .map_err(|e| format!("创建本机数据目录失败: {e}"))?;
-    let panel_text = serde_json::to_string_pretty(&panel)
-        .map_err(|e| format!("序列化 clawpanel.json 失败: {e}"))?;
-    std::fs::write(&target_panel_config, panel_text)
-        .map_err(|e| format!("写入本机 clawpanel.json 失败: {e}"))?;
 
     Ok(json!({
         "openclawDir": target_openclaw_dir.to_string_lossy(),
@@ -648,6 +1039,7 @@ fn active_standalone_engine_dir() -> Option<PathBuf> {
     None
 }
 
+#[cfg(windows)]
 fn copy_current_app_binary(target_root: &Path) -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| format!("读取当前程序路径失败: {e}"))?;
     let file_name = exe
@@ -666,6 +1058,11 @@ fn copy_current_app_binary(target_root: &Path) -> Result<PathBuf, String> {
     Ok(target)
 }
 
+#[cfg(not(windows))]
+fn copy_current_app_binary(_target_root: &Path) -> Result<PathBuf, String> {
+    Err("当前平台不支持将应用复制为单文件便携程序".into())
+}
+
 /// 将当前本机配置复制到一个新的便携目录。当前进程不会切换到便携模式；
 /// 用户需要从目标目录里的程序重新启动，启动期才会读取 portable.json。
 #[tauri::command]
@@ -677,44 +1074,42 @@ pub fn migrate_to_portable(target_root: String) -> Result<Value, String> {
     if target_root.is_empty() {
         return Err("请选择便携模式目标目录".into());
     }
-    let target_root = PathBuf::from(target_root);
+    let target_root = normalize_migration_path(&PathBuf::from(target_root), "便携模式目标目录")?;
     let source_openclaw_dir = crate::commands::openclaw_dir();
     let engine_dir = active_standalone_engine_dir();
-    let mut report = migrate_to_portable_impl(
+    migrate_to_portable_impl(
         &target_root,
         crate::commands::read_panel_config_value(),
         &source_openclaw_dir,
         engine_dir.as_deref(),
         Some(&crate::commands::hermes::hermes_home_path()),
-    )?;
-
-    match copy_current_app_binary(&target_root) {
-        Ok(path) => {
-            if let Some(obj) = report.as_object_mut() {
-                obj.insert("appCopied".into(), Value::Bool(true));
-                obj.insert(
-                    "portableAppPath".into(),
-                    Value::String(path.to_string_lossy().to_string()),
-                );
-            }
-        }
-        Err(err) => {
-            if let Some(obj) = report.as_object_mut() {
-                obj.insert("appCopied".into(), Value::Bool(false));
-                obj.insert("portableAppPath".into(), Value::Null);
-                if let Some(warnings) = obj.get_mut("warnings").and_then(|v| v.as_array_mut()) {
-                    warnings.push(Value::String(format!("app-copy-failed:{err}")));
-                }
-            }
-        }
-    }
-
-    Ok(report)
+        true,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    fn create_directory_link(link: &Path, target: &Path) {
+        let status = std::process::Command::new("cmd")
+            .args([
+                "/C",
+                "mklink",
+                "/J",
+                &link.to_string_lossy(),
+                &target.to_string_lossy(),
+            ])
+            .status()
+            .unwrap();
+        assert!(status.success(), "failed to create test junction");
+    }
+
+    #[cfg(unix)]
+    fn create_directory_link(link: &Path, target: &Path) {
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
 
     fn temp_root(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -990,6 +1385,24 @@ mod tests {
     }
 
     #[test]
+    fn migrate_to_local_rejects_canonicalized_link_alias_overlap() {
+        let parent = temp_root("to-local-link-overlap");
+        let source = parent.join("portable-openclaw");
+        let alias = parent.join("source-alias");
+        let hermes_source = parent.join("portable-hermes");
+        let hermes_target = parent.join("local-hermes");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&hermes_source).unwrap();
+        create_directory_link(&alias, &source);
+
+        let err = migrate_to_local_impl(&source, &hermes_source, None, &alias, &hermes_target)
+            .unwrap_err();
+
+        assert!(err.contains("重叠"), "unexpected error: {err}");
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    #[test]
     fn migration_creates_portable_layout_and_sanitizes_host_paths() {
         let target = temp_root("migrate-target");
         let source = temp_root("migrate-source");
@@ -1018,9 +1431,15 @@ mod tests {
         let hermes_source = temp_root("migrate-hermes-source");
         std::fs::write(hermes_source.join("config.yaml"), b"model: test\n").unwrap();
 
-        let report =
-            migrate_to_portable_impl(&target, Some(panel), &source, None, Some(&hermes_source))
-                .unwrap();
+        let report = migrate_to_portable_impl(
+            &target,
+            Some(panel),
+            &source,
+            None,
+            Some(&hermes_source),
+            false,
+        )
+        .unwrap();
 
         assert!(target.join("portable.json").is_file());
         assert!(target
@@ -1073,5 +1492,201 @@ mod tests {
         let _ = std::fs::remove_dir_all(&target);
         let _ = std::fs::remove_dir_all(&source);
         let _ = std::fs::remove_dir_all(&hermes_source);
+    }
+
+    #[test]
+    fn migration_rejects_parent_components_in_target_path() {
+        let base = temp_root("parent-target");
+        let source = base.join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("openclaw.json"), b"{}").unwrap();
+        let target = base.join("unused").join("..");
+
+        let err = migrate_to_portable_impl(&target, None, &source, None, None, false).unwrap_err();
+
+        assert!(err.contains(".."), "unexpected error: {err}");
+        assert!(!base.join("portable.json").exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn copy_dir_recursive_rejects_directory_links() {
+        let source = temp_root("link-source");
+        let external = temp_root("link-external");
+        let target = temp_root("link-target");
+        std::fs::write(external.join("outside.txt"), b"outside").unwrap();
+        create_directory_link(&source.join("linked"), &external);
+
+        let err = copy_dir_recursive(&source, &target).unwrap_err();
+
+        assert!(
+            err.contains("链接") || err.contains("reparse"),
+            "unexpected error: {err}"
+        );
+        assert!(!target.join("linked").join("outside.txt").exists());
+        let _ = std::fs::remove_dir_all(&source);
+        let _ = std::fs::remove_dir_all(&external);
+        let _ = std::fs::remove_dir_all(&target);
+    }
+
+    #[test]
+    fn migration_rejects_link_used_as_source_root() {
+        let parent = temp_root("link-source-root");
+        let real_source = parent.join("real-source");
+        let source_link = parent.join("source-link");
+        let target = parent.join("portable");
+        std::fs::create_dir_all(&real_source).unwrap();
+        std::fs::write(real_source.join("outside.txt"), b"outside").unwrap();
+        create_directory_link(&source_link, &real_source);
+
+        let err =
+            migrate_to_portable_impl(&target, None, &source_link, None, None, false).unwrap_err();
+
+        assert!(
+            err.contains("链接") || err.contains("reparse"),
+            "unexpected error: {err}"
+        );
+        assert!(!target.exists());
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn failed_forward_migration_leaves_no_manifest_or_staging() {
+        let parent = temp_root("forward-failure");
+        let source = parent.join("source");
+        let external = parent.join("external");
+        let target = parent.join("portable");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&external).unwrap();
+        create_directory_link(&source.join("linked"), &external);
+
+        let err = migrate_to_portable_impl(&target, None, &source, None, None, false).unwrap_err();
+
+        assert!(
+            err.contains("链接") || err.contains("reparse"),
+            "unexpected error: {err}"
+        );
+        assert!(!target.join("portable.json").exists());
+        let staging_prefix = format!("{}.staging-", target.file_name().unwrap().to_string_lossy());
+        assert!(!std::fs::read_dir(&parent).unwrap().flatten().any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(&staging_prefix)
+        }));
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn failed_reverse_copy_keeps_existing_target_in_place() {
+        let parent = temp_root("reverse-failure");
+        let source = parent.join("portable-openclaw");
+        let external = parent.join("external");
+        let target = parent.join("local-openclaw");
+        let hermes_source = parent.join("portable-hermes");
+        let hermes_target = parent.join("local-hermes");
+        for dir in [&source, &external, &target, &hermes_source] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(target.join("local-only.txt"), b"keep").unwrap();
+        create_directory_link(&source.join("linked"), &external);
+
+        let err = migrate_to_local_impl(&source, &hermes_source, None, &target, &hermes_target)
+            .unwrap_err();
+
+        assert!(
+            err.contains("链接") || err.contains("reparse"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(
+            std::fs::read(target.join("local-only.txt")).unwrap(),
+            b"keep"
+        );
+        assert!(!std::fs::read_dir(&parent).unwrap().flatten().any(|entry| {
+            entry.file_name().to_string_lossy().contains(".backup-")
+                || entry.file_name().to_string_lossy().contains(".staging-")
+        }));
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn rollback_switch_restores_backup_after_later_switch_failure() {
+        let parent = temp_root("switch-rollback");
+        let target = parent.join("local-openclaw");
+        let backup = parent.join("local-openclaw.backup-test");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("new.txt"), b"new").unwrap();
+        std::fs::create_dir_all(&backup).unwrap();
+        std::fs::write(backup.join("old.txt"), b"old").unwrap();
+        let record = SwitchRecord {
+            target: target.clone(),
+            backup: Some(backup.clone()),
+            restore_empty_dir: false,
+        };
+
+        rollback_switch(&record).unwrap();
+
+        assert!(target.join("old.txt").is_file());
+        assert!(!target.join("new.txt").exists());
+        assert!(!backup.exists());
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn migration_warns_about_absolute_paths_outside_source_root() {
+        let parent = temp_root("external-path-warning");
+        let source = parent.join("source");
+        let target = parent.join("portable");
+        let outside = parent.join("outside-workspace");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(
+            source.join("openclaw.json"),
+            serde_json::to_vec(&json!({
+                "agents": {
+                    "defaults": { "workspace": outside },
+                    "list": [{ "id": "main", "path": outside.join("agent") }]
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let report = migrate_to_portable_impl(&target, None, &source, None, None, false).unwrap();
+        let warnings = report["warnings"].as_array().unwrap();
+
+        assert!(warnings.iter().any(|warning| warning
+            .as_str()
+            .is_some_and(|text| text.starts_with("external-absolute-path:"))));
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn migration_reports_platform_app_copy_truthfully() {
+        let parent = temp_root("app-copy-platform");
+        let source = parent.join("source");
+        let target = parent.join("portable");
+        std::fs::create_dir_all(&source).unwrap();
+
+        let report = migrate_to_portable_impl(&target, None, &source, None, None, true).unwrap();
+
+        if cfg!(windows) {
+            assert_eq!(report["appCopied"], true);
+            let app_path = PathBuf::from(report["portableAppPath"].as_str().unwrap());
+            assert!(app_path.is_file());
+        } else {
+            assert_eq!(report["appCopied"], false);
+            assert!(report["portableAppPath"].is_null());
+            assert!(report["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|warning| {
+                    warning
+                        .as_str()
+                        .is_some_and(|text| text.starts_with("app-copy-unsupported:"))
+                }));
+        }
+        assert!(target.join("portable.json").is_file());
+        let _ = std::fs::remove_dir_all(&parent);
     }
 }

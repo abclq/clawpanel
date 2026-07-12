@@ -325,6 +325,57 @@ pub fn path_compare_key(path: &std::path::Path) -> String {
     }
 }
 
+/// 将路径解析为可用于安全比较的绝对路径。
+/// 已存在路径直接 canonicalize；不存在路径 canonicalize 最近的存在祖先后再拼回尾部。
+pub fn canonicalize_path_for_safety(
+    path: &std::path::Path,
+    label: &str,
+) -> Result<std::path::PathBuf, String> {
+    use std::path::Component;
+
+    if path.as_os_str().is_empty() {
+        return Err(format!("{label}不能为空"));
+    }
+    if path
+        .components()
+        .any(|part| matches!(part, Component::ParentDir))
+    {
+        return Err(format!("{label}不能包含 .. 路径段"));
+    }
+
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|e| format!("读取当前目录失败: {e}"))?
+            .join(path)
+    };
+    if absolute.exists() {
+        return std::fs::canonicalize(&absolute)
+            .map_err(|e| format!("解析{label} {} 失败: {e}", absolute.display()));
+    }
+
+    let mut ancestor = absolute.clone();
+    let mut missing = Vec::new();
+    while !ancestor.exists() {
+        let name = ancestor
+            .file_name()
+            .ok_or_else(|| format!("找不到{label}的存在祖先: {}", absolute.display()))?
+            .to_os_string();
+        missing.push(name);
+        if !ancestor.pop() {
+            return Err(format!("找不到{label}的存在祖先: {}", absolute.display()));
+        }
+    }
+
+    let mut resolved = std::fs::canonicalize(&ancestor)
+        .map_err(|e| format!("解析{label}祖先 {} 失败: {e}", ancestor.display()))?;
+    for name in missing.into_iter().rev() {
+        resolved.push(name);
+    }
+    Ok(resolved)
+}
+
 /// path 是否等于 base 或位于 base 之下（带路径分隔符边界，media 不会误匹配 media-evil）
 pub fn path_is_inside_or_same(path: &std::path::Path, base: &std::path::Path) -> bool {
     let path_key = path_compare_key(path);

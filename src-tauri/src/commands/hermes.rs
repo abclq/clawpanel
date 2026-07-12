@@ -29,6 +29,7 @@ static GW_GUARDIAN_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// 通知 guardian 停止的 flag
 static GW_GUARDIAN_STOP: AtomicBool = AtomicBool::new(false);
 static GW_STARTING: AtomicBool = AtomicBool::new(false);
+static HERMES_INSTALLING: AtomicBool = AtomicBool::new(false);
 /// 缓存 AppHandle 供 guardian 发送事件
 static GW_APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 
@@ -45,6 +46,21 @@ fn try_gateway_start_guard() -> Option<GatewayStartGuard> {
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .ok()
         .map(|_| GatewayStartGuard)
+}
+
+struct HermesInstallGuard;
+
+impl Drop for HermesInstallGuard {
+    fn drop(&mut self) {
+        HERMES_INSTALLING.store(false, Ordering::SeqCst);
+    }
+}
+
+fn try_hermes_install_guard() -> Option<HermesInstallGuard> {
+    HERMES_INSTALLING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .ok()
+        .map(|_| HermesInstallGuard)
 }
 
 /// 获取 Gateway 的完整 URL（当前本地，未来可扩展为远程）
@@ -1835,6 +1851,7 @@ pub async fn install_hermes(
     method: String,
     extras: Vec<String>,
 ) -> Result<String, String> {
+    let _install_guard = try_hermes_install_guard().ok_or("Hermes Agent 正在安装，请勿重复操作")?;
     let _ = app.emit("hermes-install-log", "🚀 开始安装 Hermes Agent...");
     let _ = app.emit("hermes-install-progress", 0u32);
 
@@ -3085,6 +3102,152 @@ fn merge_env_file(existing: &str, managed_keys: &[&str], new_pairs: &[(String, S
         content.push('\n');
     }
     content
+}
+
+fn replace_hermes_files_transaction(entries: &[(PathBuf, String, bool)]) -> Result<(), String> {
+    let suffix = format!(
+        "{}-{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    );
+    let mut staged: Vec<(PathBuf, PathBuf, PathBuf, bool, bool)> = Vec::new();
+
+    for (file, content, _private) in entries {
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("创建 Hermes 配置目录失败: {e}"))?;
+        }
+        let temp = file.with_extension(format!("tmp-{suffix}"));
+        let backup = file.with_extension(format!("bak-sync-{suffix}"));
+        std::fs::write(&temp, content).map_err(|e| format!("写入临时配置失败: {e}"))?;
+        #[cfg(not(target_os = "windows"))]
+        if *private {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| format!("设置临时配置权限失败: {e}"))?;
+        }
+        staged.push((file.clone(), temp, backup, file.exists(), false));
+    }
+
+    let result = (|| {
+        for entry in &mut staged {
+            if entry.3 {
+                std::fs::rename(&entry.0, &entry.2)
+                    .map_err(|e| format!("备份 Hermes 配置失败: {e}"))?;
+            }
+            std::fs::rename(&entry.1, &entry.0)
+                .map_err(|e| format!("提交 Hermes 配置失败: {e}"))?;
+            entry.4 = true;
+        }
+        Ok(())
+    })();
+
+    if let Err(error) = result {
+        for entry in staged.iter().rev() {
+            if entry.4 {
+                let _ = std::fs::remove_file(&entry.0);
+            }
+            if entry.3 && entry.2.exists() {
+                let _ = std::fs::rename(&entry.2, &entry.0);
+            }
+            let _ = std::fs::remove_file(&entry.1);
+        }
+        return Err(error);
+    }
+
+    for entry in &staged {
+        if entry.3 {
+            let _ = std::fs::remove_file(&entry.2);
+        }
+    }
+    Ok(())
+}
+
+fn sync_hermes_provider_files_at(
+    home: &Path,
+    provider: &str,
+    api_key: &str,
+    base_url: Option<&str>,
+    model: Option<&str>,
+    set_default: bool,
+) -> Result<Value, String> {
+    use super::hermes_providers;
+
+    let provider = provider.trim();
+    let api_key = api_key.trim();
+    let config = hermes_providers::get_provider(provider)
+        .filter(|item| item.auth_type == hermes_providers::AUTH_API_KEY)
+        .ok_or_else(|| format!("Hermes Provider 不支持 API Key 同步: {provider}"))?;
+    let env_key = config
+        .api_key_env_vars
+        .first()
+        .copied()
+        .ok_or_else(|| format!("Hermes Provider 缺少 API Key 环境变量: {provider}"))?;
+    if api_key.is_empty() {
+        return Err("Hermes Provider API Key 不能为空".into());
+    }
+
+    let mut replace_keys: Vec<&str> = config.api_key_env_vars.to_vec();
+    if !config.base_url_env_var.is_empty() {
+        replace_keys.push(config.base_url_env_var);
+    }
+    let mut pairs = vec![(env_key.to_string(), api_key.to_string())];
+    if provider == "custom" {
+        if !replace_keys.contains(&"CUSTOM_API_KEY") {
+            replace_keys.push("CUSTOM_API_KEY");
+        }
+        pairs.push(("CUSTOM_API_KEY".into(), api_key.into()));
+    }
+    let normalized_base = base_url.unwrap_or_default().trim().trim_end_matches('/');
+    if !config.base_url_env_var.is_empty() && !normalized_base.is_empty() {
+        pairs.push((config.base_url_env_var.into(), normalized_base.into()));
+    }
+
+    let env_path = home.join(".env");
+    let current_env = std::fs::read_to_string(&env_path).unwrap_or_default();
+    let env_content = merge_env_file(&current_env, &replace_keys, &pairs);
+    let mut entries = vec![(env_path, env_content, true)];
+
+    if set_default {
+        let model = model.unwrap_or_default().trim();
+        if model.is_empty() {
+            return Err("设为默认模型时 model 不能为空".into());
+        }
+        let config_path = home.join("config.yaml");
+        let current_config = std::fs::read_to_string(&config_path).unwrap_or_else(|_| {
+            "platform_toolsets:\n  api_server:\n    - hermes-api-server\nterminal:\n  backend: local\nplatforms:\n  api_server:\n    enabled: true\n".into()
+        });
+        let base_url_line = if !normalized_base.is_empty() && config.base_url_env_var.is_empty() {
+            format!("  base_url: {normalized_base}\n")
+        } else {
+            String::new()
+        };
+        let provider_line = format!("  provider: {provider}\n");
+        let config_content =
+            merge_hermes_config_yaml(&current_config, model, &base_url_line, &provider_line);
+        entries.push((config_path, config_content, false));
+    }
+
+    replace_hermes_files_transaction(&entries)?;
+    Ok(serde_json::json!({ "providerId": provider, "envKey": env_key }))
+}
+
+#[tauri::command]
+pub fn hermes_sync_provider(
+    provider: String,
+    api_key: String,
+    base_url: Option<String>,
+    model: Option<String>,
+    set_default: bool,
+) -> Result<Value, String> {
+    sync_hermes_provider_files_at(
+        &hermes_home(),
+        &provider,
+        &api_key,
+        base_url.as_deref(),
+        model.as_deref(),
+        set_default,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -14134,6 +14297,29 @@ pub async fn hermes_health_check() -> Result<Value, String> {
         Ok(resp) => Err(format!("Gateway 返回 HTTP {}", resp.status())),
         Err(e) => Err(format!("Gateway 不可达: {e}")),
     }
+}
+
+#[tauri::command]
+pub async fn hermes_probe_gateway(url: String) -> Result<Value, String> {
+    let normalized = url.trim().trim_end_matches('/');
+    let parsed = reqwest::Url::parse(normalized).map_err(|e| format!("Gateway URL 无效: {e}"))?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err("Gateway URL 仅支持 HTTP/HTTPS".into());
+    }
+    let client = hermes_gateway_http_client(std::time::Duration::from_secs(5))
+        .map_err(|e| format!("HTTP 客户端创建失败: {e}"))?;
+    let response = client
+        .get(format!("{normalized}/health"))
+        .send()
+        .await
+        .map_err(|e| format!("Gateway 不可达: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("Gateway 返回 HTTP {}", response.status()));
+    }
+    response
+        .json()
+        .await
+        .map_err(|e| format!("Gateway 响应无效: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -25979,5 +26165,86 @@ platforms:
         )
         .unwrap_err();
         assert!(err.contains("display.platforms.telegram.streaming"));
+    }
+}
+#[cfg(test)]
+mod hermes_provider_sync_tests {
+    use super::sync_hermes_provider_files_at;
+    use std::path::PathBuf;
+
+    fn temp_home(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "clawpanel-hermes-provider-sync-{tag}-{}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn provider_sync_preserves_other_provider_credentials_and_updates_target() {
+        let home = temp_home("preserve");
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(
+            home.join(".env"),
+            "ANTHROPIC_API_KEY=keep-me\nOPENAI_API_KEY=old\nCUSTOM_FLAG=keep\n",
+        )
+        .unwrap();
+        std::fs::write(
+            home.join("config.yaml"),
+            "model:\n  default: old-model\n  provider: anthropic\nlogging:\n  level: INFO\n",
+        )
+        .unwrap();
+
+        sync_hermes_provider_files_at(
+            &home,
+            "custom",
+            "sk-new",
+            Some("https://gateway.example/v1"),
+            Some("gpt-test"),
+            true,
+        )
+        .unwrap();
+
+        let env = std::fs::read_to_string(home.join(".env")).unwrap();
+        assert!(env.contains("ANTHROPIC_API_KEY=keep-me"));
+        assert!(env.contains("CUSTOM_FLAG=keep"));
+        assert!(env.contains("OPENAI_API_KEY=sk-new"));
+        assert!(env.contains("CUSTOM_API_KEY=sk-new"));
+        assert!(env.contains("OPENAI_BASE_URL=https://gateway.example/v1"));
+
+        let config = std::fs::read_to_string(home.join("config.yaml")).unwrap();
+        assert!(config.contains("default: gpt-test"));
+        assert!(config.contains("provider: custom"));
+        assert!(config.contains("level: INFO"));
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn provider_sync_without_default_keeps_model_config_unchanged() {
+        let home = temp_home("no-default");
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let original = "model:\n  default: old-model\n  provider: anthropic\n";
+        std::fs::write(home.join("config.yaml"), original).unwrap();
+
+        sync_hermes_provider_files_at(
+            &home,
+            "anthropic",
+            "sk-ant",
+            None,
+            Some("claude-test"),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(home.join("config.yaml")).unwrap(),
+            original
+        );
+        let env = std::fs::read_to_string(home.join(".env")).unwrap();
+        assert!(env.contains("ANTHROPIC_API_KEY=sk-ant"));
+
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

@@ -1,8 +1,10 @@
 use base64::{engine::general_purpose, Engine as _};
+use futures_util::StreamExt;
 use serde_json::{json, Map, Value};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
+use tokio::io::AsyncWriteExt;
 
 /// media-jobs.json 的读改写锁：并发轮询/写入时防止互相覆盖
 static MEDIA_JOBS_LOCK: Mutex<()> = Mutex::new(());
@@ -1029,6 +1031,29 @@ fn guess_mime_from_ext(ext: &str, kind: &str) -> &'static str {
     }
 }
 
+fn media_content_length_exceeds_limit(
+    headers: &reqwest::header::HeaderMap,
+) -> Result<bool, String> {
+    let Some(value) = headers.get(reqwest::header::CONTENT_LENGTH) else {
+        return Ok(false);
+    };
+    let Ok(raw) = value.to_str() else {
+        return Ok(false);
+    };
+    let Ok(size) = raw.trim().parse::<u64>() else {
+        return Ok(false);
+    };
+    Ok(size > MAX_ASSET_BYTES)
+}
+
+fn ensure_media_content_length_allowed(headers: &reqwest::header::HeaderMap) -> Result<(), String> {
+    if media_content_length_exceeds_limit(headers)? {
+        Err("媒体文件超过 512MB，已停止保存".into())
+    } else {
+        Ok(())
+    }
+}
+
 fn relative_asset_path(_kind: &str, job_id: &str, index: usize, ext: &str) -> PathBuf {
     PathBuf::from("assets")
         .join(chrono::Utc::now().format("%Y").to_string())
@@ -1072,12 +1097,18 @@ async fn write_asset_bytes(
 
 /// 仅当资产 URL 与服务商 Base URL 同主机同端口时才允许携带 API Key，
 /// 防止服务商响应中混入第三方 URL 后把密钥发给任意主机
-fn asset_url_same_host(url: &str, base_url: &str) -> bool {
+fn asset_url_same_origin(url: &str, base_url: &str) -> bool {
     let (Ok(asset), Ok(base)) = (reqwest::Url::parse(url), reqwest::Url::parse(base_url)) else {
         return false;
     };
-    asset.host_str().map(str::to_ascii_lowercase) == base.host_str().map(str::to_ascii_lowercase)
+    asset.scheme().eq_ignore_ascii_case(base.scheme())
+        && asset.host_str().map(str::to_ascii_lowercase)
+            == base.host_str().map(str::to_ascii_lowercase)
         && asset.port_or_known_default() == base.port_or_known_default()
+}
+
+fn should_retry_asset_without_auth(status: reqwest::StatusCode, same_host: bool) -> bool {
+    same_host && matches!(status.as_u16(), 401 | 403)
 }
 
 async fn download_asset_to_media_root(
@@ -1088,18 +1119,73 @@ async fn download_asset_to_media_root(
     job_id: &str,
     index: usize,
 ) -> Result<Value, String> {
-    let mut request = client.get(url);
-    if asset_url_same_host(url, &provider.base_url) {
-        request = request.bearer_auth(&provider.api_key);
-    }
-    let resp = request
-        .send()
-        .await
-        .map_err(|e| format!("下载媒体资产失败: {e}"))?;
+    let (resp, final_url) = fetch_media_asset_response(client, provider, url).await?;
     if !resp.status().is_success() {
         return Err(format!("下载媒体资产失败: HTTP {}", resp.status()));
     }
-    let mime_owned = resp
+    stream_response_to_asset(
+        resp,
+        kind,
+        job_id,
+        index,
+        Some(&final_url),
+        provider.timeout_seconds,
+    )
+    .await
+}
+
+async fn fetch_media_asset_response(
+    client: &reqwest::Client,
+    provider: &MediaProviderConfig,
+    url: &str,
+) -> Result<(reqwest::Response, String), String> {
+    let mut current = reqwest::Url::parse(url).map_err(|e| format!("媒体资产 URL 无效: {e}"))?;
+    let mut retry_without_auth = false;
+    for redirects in 0..=5 {
+        let same_origin = asset_url_same_origin(current.as_str(), &provider.base_url);
+        let send_auth = same_origin && !retry_without_auth && !provider.api_key.is_empty();
+        let mut request = client.get(current.clone());
+        if send_auth {
+            request = request.bearer_auth(&provider.api_key);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|e| format!("下载媒体资产失败: {e}"))?;
+        if response.status().is_redirection() {
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .ok_or("媒体资产重定向缺少 Location")?;
+            if redirects == 5 {
+                return Err("媒体资产重定向次数过多".into());
+            }
+            current = current
+                .join(location)
+                .map_err(|e| format!("媒体资产重定向 URL 无效: {e}"))?;
+            retry_without_auth = false;
+            continue;
+        }
+        if send_auth && should_retry_asset_without_auth(response.status(), same_origin) {
+            retry_without_auth = true;
+            continue;
+        }
+        return Ok((response, current.to_string()));
+    }
+    Err("媒体资产重定向次数过多".into())
+}
+
+async fn stream_response_to_asset(
+    resp: reqwest::Response,
+    kind: &str,
+    job_id: &str,
+    index: usize,
+    source_url: Option<&str>,
+    timeout_seconds: u64,
+) -> Result<Value, String> {
+    ensure_media_content_length_allowed(resp.headers())?;
+    let mime = resp
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
@@ -1111,11 +1197,79 @@ async fn download_asset_to_media_root(
             }
         })
         .to_string();
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("读取媒体资产失败: {e}"))?;
-    write_asset_bytes(kind, job_id, index, bytes.as_ref(), &mime_owned, Some(url)).await
+    let cfg = read_media_config_private();
+    let root = ensure_media_output_root_from_config(&cfg)?;
+    let relative = relative_asset_path(
+        kind,
+        job_id,
+        index,
+        asset_ext_from_content_type(&mime, kind),
+    );
+    let target = root.join(&relative);
+    if let Some(parent) = target.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("创建媒体资产目录失败: {e}"))?;
+    }
+    let temp = target.with_extension(format!(
+        "{}.part-{}-{}",
+        target
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("asset"),
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    ));
+    let operation = async {
+        let mut file = tokio::fs::File::create(&temp)
+            .await
+            .map_err(|e| format!("创建媒体资产临时文件失败: {e}"))?;
+        let mut stream = resp.bytes_stream();
+        let mut total = 0u64;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| format!("读取媒体资产失败: {e}"))?;
+            total = total.saturating_add(chunk.len() as u64);
+            if total > MAX_ASSET_BYTES {
+                return Err("媒体文件超过 512MB，已停止保存".into());
+            }
+            file.write_all(&chunk)
+                .await
+                .map_err(|e| format!("保存媒体资产失败: {e}"))?;
+        }
+        file.flush()
+            .await
+            .map_err(|e| format!("刷新媒体资产失败: {e}"))?;
+        drop(file);
+        if target.exists() {
+            tokio::fs::remove_file(&target)
+                .await
+                .map_err(|e| format!("替换媒体资产失败: {e}"))?;
+        }
+        tokio::fs::rename(&temp, &target)
+            .await
+            .map_err(|e| format!("提交媒体资产失败: {e}"))?;
+        Ok::<u64, String>(total)
+    };
+    let result = tokio::time::timeout(Duration::from_secs(timeout_seconds.max(1)), operation).await;
+    let bytes = match result {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(error)) => {
+            let _ = tokio::fs::remove_file(&temp).await;
+            return Err(error);
+        }
+        Err(_) => {
+            let _ = tokio::fs::remove_file(&temp).await;
+            return Err("媒体资产下载超时".into());
+        }
+    };
+    Ok(json!({
+        "kind": kind,
+        "path": relative.to_string_lossy().replace('\\', "/"),
+        "root": root.to_string_lossy(),
+        "mime": mime,
+        "bytes": bytes,
+        "sourceUrl": source_url.unwrap_or("")
+    }))
 }
 
 async fn download_openai_video_content(
@@ -1129,26 +1283,19 @@ async fn download_openai_video_content(
         &provider.base_url,
         &format!("/videos/{provider_task_id}/content"),
     );
-    let resp = client
-        .get(endpoint)
-        .bearer_auth(&provider.api_key)
-        .send()
-        .await
-        .map_err(|e| format!("下载视频内容失败: {e}"))?;
+    let (resp, final_url) = fetch_media_asset_response(client, provider, &endpoint).await?;
     if !resp.status().is_success() {
         return Err(format!("下载视频内容失败: HTTP {}", resp.status()));
     }
-    let mime = resp
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("video/mp4")
-        .to_string();
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("读取视频内容失败: {e}"))?;
-    write_asset_bytes("video", job_id, index, bytes.as_ref(), &mime, None).await
+    stream_response_to_asset(
+        resp,
+        "video",
+        job_id,
+        index,
+        Some(&final_url),
+        provider.timeout_seconds,
+    )
+    .await
 }
 
 fn collect_image_outputs(value: &Value) -> Vec<Value> {
@@ -1214,7 +1361,7 @@ fn sanitize_provider_error(raw: &str, api_key: &str) -> String {
 }
 
 fn media_http_client(timeout_seconds: u64) -> Result<reqwest::Client, String> {
-    super::build_http_client_no_proxy(
+    super::build_http_client_no_proxy_no_redirect(
         Duration::from_secs(timeout_seconds),
         Some("ClawPanel Media"),
     )
@@ -1953,6 +2100,58 @@ mod tests {
         assert_eq!(provider_status_to_job_status("succeeded"), "succeeded");
         assert_eq!(provider_status_to_job_status("failed"), "failed");
         assert_eq!(provider_status_to_job_status("cancelled"), "canceled");
+    }
+
+    #[test]
+    fn same_host_asset_download_retries_without_auth_on_auth_rejection() {
+        assert!(should_retry_asset_without_auth(
+            reqwest::StatusCode::UNAUTHORIZED,
+            true
+        ));
+        assert!(should_retry_asset_without_auth(
+            reqwest::StatusCode::FORBIDDEN,
+            true
+        ));
+        assert!(!should_retry_asset_without_auth(
+            reqwest::StatusCode::UNAUTHORIZED,
+            false
+        ));
+        assert!(!should_retry_asset_without_auth(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            true
+        ));
+    }
+
+    #[test]
+    fn asset_auth_requires_matching_scheme_host_and_port() {
+        assert!(asset_url_same_origin(
+            "https://api.example.com/v1/asset",
+            "https://api.example.com/v1"
+        ));
+        assert!(!asset_url_same_origin(
+            "http://api.example.com/v1/asset",
+            "https://api.example.com/v1"
+        ));
+        assert!(!asset_url_same_origin(
+            "https://api.example.com:8443/asset",
+            "https://api.example.com/v1"
+        ));
+    }
+
+    #[test]
+    fn media_download_rejects_oversized_content_length_before_buffering() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::CONTENT_LENGTH,
+            reqwest::header::HeaderValue::from_static("536870913"),
+        );
+        assert!(media_content_length_exceeds_limit(&headers).unwrap());
+
+        headers.insert(
+            reqwest::header::CONTENT_LENGTH,
+            reqwest::header::HeaderValue::from_static("536870912"),
+        );
+        assert!(!media_content_length_exceeds_limit(&headers).unwrap());
     }
 
     #[test]

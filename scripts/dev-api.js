@@ -12,6 +12,7 @@ import { fileURLToPath } from 'url'
 import net from 'net'
 import http from 'http'
 import crypto from 'crypto'
+import { once } from 'events'
 import * as YAML from 'yaml'
 import * as skillhubSdk from './lib/skillhub-sdk.js'
 const DOCKER_TASK_TIMEOUT_MS = 10 * 60 * 1000
@@ -25,6 +26,7 @@ const HERMES_STABLE_VERSION = '0.18.0'
 const HERMES_STABLE_TAG = 'v2026.7.1'
 const HERMES_REPO_URL = 'https://github.com/NousResearch/hermes-agent.git'
 const HERMES_GIT_URL = `git+${HERMES_REPO_URL}@${HERMES_STABLE_TAG}`
+let _hermesInstallRunning = false
 
 function hermesProvider(id, name, authType, baseUrl, baseUrlEnvVar, apiKeyEnvVars, transport, modelsProbe, models, isAggregator = false, cliAuthHint = '') {
   return { id, name, authType, baseUrl, baseUrlEnvVar, apiKeyEnvVars, transport, modelsProbe, models, isAggregator, cliAuthHint }
@@ -57,7 +59,7 @@ const HERMES_PROVIDER_REGISTRY = [
   hermesProvider('zai', 'Z.AI / GLM', 'api_key', 'https://api.z.ai/api/paas/v4', 'GLM_BASE_URL', ['GLM_API_KEY', 'ZAI_API_KEY', 'Z_AI_API_KEY'], 'openai_chat', 'openai', ['glm-5.2', 'glm-5.1', 'glm-5', 'glm-5v-turbo', 'glm-5-turbo', 'glm-4.7', 'glm-4.5', 'glm-4.5-flash']),
   hermesProvider('kimi-coding', 'Kimi / Moonshot', 'api_key', 'https://api.moonshot.ai/v1', 'KIMI_BASE_URL', ['KIMI_API_KEY'], 'openai_chat', 'openai', ['kimi-k2.7-code', 'kimi-for-coding', 'kimi-k2.6', 'kimi-k2.5', 'kimi-k2-thinking', 'kimi-k2-turbo-preview', 'kimi-k2-0905-preview']),
   hermesProvider('kimi-coding-cn', 'Kimi / Moonshot (China)', 'api_key', 'https://api.moonshot.cn/v1', '', ['KIMI_CN_API_KEY'], 'openai_chat', 'openai', ['kimi-k2.7-code', 'kimi-for-coding', 'kimi-k2.6', 'kimi-k2.5', 'kimi-k2-thinking', 'kimi-k2-turbo-preview']),
-  hermesProvider('alibaba', 'Alibaba Cloud (DashScope)', 'api_key', 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', 'DASHSCOPE_BASE_URL', ['DASHSCOPE_API_KEY'], 'openai_chat', 'openai', ['qwen3.5-plus', 'qwen3-coder-plus', 'qwen3-coder-next', 'glm-5.2', 'glm-5', 'glm-4.7', 'kimi-k2.7-code', 'kimi-k2.5', 'MiniMax-M2.5']),
+  hermesProvider('alibaba', 'Qwen Cloud', 'api_key', 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', 'DASHSCOPE_BASE_URL', ['DASHSCOPE_API_KEY'], 'openai_chat', 'openai', ['qwen3.5-plus', 'qwen3-coder-plus', 'qwen3-coder-next', 'glm-5.2', 'glm-5', 'glm-4.7', 'kimi-k2.7-code', 'kimi-k2.5', 'MiniMax-M2.5']),
   hermesProvider('alibaba-coding-plan', 'Alibaba Cloud (Coding Plan)', 'api_key', 'https://coding-intl.dashscope.aliyuncs.com/v1', 'ALIBABA_CODING_PLAN_BASE_URL', ['ALIBABA_CODING_PLAN_API_KEY', 'DASHSCOPE_API_KEY'], 'openai_chat', 'openai', ['qwen3-coder-plus', 'qwen3-coder-next', 'qwen3.5-plus', 'qwen3.5-coder']),
   hermesProvider('minimax-cn', 'MiniMax (China)', 'api_key', 'https://api.minimaxi.com/v1', 'MINIMAX_CN_BASE_URL', ['MINIMAX_CN_API_KEY'], 'anthropic_messages', 'anthropic', ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed']),
   hermesProvider('xiaomi', 'Xiaomi MiMo', 'api_key', 'https://api.xiaomimimo.com/v1', 'XIAOMI_BASE_URL', ['XIAOMI_API_KEY'], 'openai_chat', 'openai', ['mimo-v2-pro', 'mimo-v2-omni', 'mimo-v2-flash']),
@@ -229,6 +231,54 @@ function gitMirrorEnv() {
     GIT_CONFIG_KEY_0: `url.${mirror}https://github.com/.insteadOf`,
     GIT_CONFIG_VALUE_0: 'https://github.com/',
   }
+}
+
+export function buildHermesInstallEnv(config = {}, baseEnv = process.env) {
+  const env = {
+    ...baseEnv,
+    PATH: hermesEnhancedPath(),
+    GIT_TERMINAL_PROMPT: '0',
+  }
+  const pypiMirror = String(config?.pypiMirror || '').trim()
+  if (pypiMirror) {
+    env.UV_DEFAULT_INDEX = pypiMirror
+    env.PIP_INDEX_URL = pypiMirror
+  }
+  let gitMirror = String(config?.gitMirror || '').trim()
+  if (gitMirror) {
+    if (!gitMirror.endsWith('/')) gitMirror += '/'
+    env.GIT_CONFIG_COUNT = '1'
+    env.GIT_CONFIG_KEY_0 = `url.${gitMirror}https://github.com/.insteadOf`
+    env.GIT_CONFIG_VALUE_0 = 'https://github.com/'
+  }
+  return env
+}
+
+export function runHermesInstallCommand(program, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(program, args, {
+      ...options,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    const append = (current, chunk) => (current + String(chunk)).slice(-1024 * 1024)
+    child.stdout?.on('data', chunk => { stdout = append(stdout, chunk) })
+    child.stderr?.on('data', chunk => { stderr = append(stderr, chunk) })
+    const timeoutMs = Number(options.timeout) || 600000
+    const timer = setTimeout(() => {
+      child.kill()
+      reject(new Error(`Hermes 安装超时（${timeoutMs}ms）`))
+    }, timeoutMs)
+    child.once('error', error => {
+      clearTimeout(timer)
+      reject(error)
+    })
+    child.once('close', status => {
+      clearTimeout(timer)
+      resolve({ status, stdout, stderr })
+    })
+  })
 }
 
 // 判断输出是否命中 「网络无法访问」 类失败，命中返回建议文案。
@@ -8778,7 +8828,7 @@ const ALWAYS_LOCAL = new Set([
   'assistant_list_dir', 'assistant_system_info', 'assistant_list_processes',
   'assistant_check_port', 'assistant_web_search', 'assistant_fetch_url',
   'assistant_ensure_data_dir', 'assistant_save_image', 'assistant_load_image', 'assistant_delete_image',
-  'read_model_channels', 'write_model_channels', 'reveal_model_channel_key',
+  'read_model_channels', 'write_model_channels', 'reveal_model_channel_key', 'hermes_sync_provider',
   'read_media_config', 'write_media_config', 'test_media_provider', 'fetch_media_models',
   'generate_image', 'create_video_task', 'poll_video_task',
   'cancel_media_job', 'list_media_jobs', 'delete_media_job',
@@ -9236,6 +9286,102 @@ function mediaApiKeyMask(key) {
   if (!value) return ''
   if ([...value].length <= 8) return '已保存'
   return `${value.slice(0, 3)}***${value.slice(-4)}`
+}
+
+function replaceHermesFilesTransaction(entries) {
+  const suffix = `${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
+  const staged = entries.map(({ file, content, mode }) => ({
+    file,
+    content,
+    mode,
+    temp: `${file}.tmp-${suffix}`,
+    backup: `${file}.bak-sync-${suffix}`,
+    existed: fs.existsSync(file),
+    installed: false,
+  }))
+
+  try {
+    for (const entry of staged) {
+      fs.mkdirSync(path.dirname(entry.file), { recursive: true })
+      fs.writeFileSync(entry.temp, entry.content, entry.mode ? { mode: entry.mode } : undefined)
+    }
+    for (const entry of staged) {
+      if (entry.existed) fs.renameSync(entry.file, entry.backup)
+      fs.renameSync(entry.temp, entry.file)
+      entry.installed = true
+    }
+    for (const entry of staged) {
+      if (entry.existed) fs.rmSync(entry.backup, { force: true })
+    }
+  } catch (error) {
+    for (const entry of [...staged].reverse()) {
+      try {
+        if (entry.installed) fs.rmSync(entry.file, { force: true })
+        if (entry.existed && fs.existsSync(entry.backup)) fs.renameSync(entry.backup, entry.file)
+      } catch {}
+      try { fs.rmSync(entry.temp, { force: true }) } catch {}
+    }
+    throw error
+  } finally {
+    for (const entry of staged) {
+      try { fs.rmSync(entry.temp, { force: true }) } catch {}
+    }
+  }
+}
+
+export function syncHermesProviderFilesAt(home, {
+  provider,
+  apiKey,
+  baseUrl = '',
+  model = '',
+  setDefault = false,
+} = {}) {
+  const providerId = String(provider || '').trim()
+  const key = String(apiKey || '').trim()
+  const config = HERMES_PROVIDER_REGISTRY.find(item => item.id === providerId)
+  if (!config || config.authType !== 'api_key' || !config.apiKeyEnvVars?.length) {
+    throw new Error(`Hermes Provider 不支持 API Key 同步: ${providerId || '-'}`)
+  }
+  if (!key) throw new Error('Hermes Provider API Key 不能为空')
+
+  const replaceKeys = new Set(config.apiKeyEnvVars)
+  if (config.baseUrlEnvVar) replaceKeys.add(config.baseUrlEnvVar)
+  const pairs = [[config.apiKeyEnvVars[0], key]]
+  if (providerId === 'custom') {
+    replaceKeys.add('CUSTOM_API_KEY')
+    pairs.push(['CUSTOM_API_KEY', key])
+  }
+  const normalizedBaseUrl = String(baseUrl || '').trim().replace(/\/+$/, '')
+  if (config.baseUrlEnvVar && normalizedBaseUrl) {
+    pairs.push([config.baseUrlEnvVar, normalizedBaseUrl])
+  }
+
+  const envPath = path.join(home, '.env')
+  const currentEnv = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : ''
+  const envContent = _mergeEnvFile(currentEnv, [...replaceKeys], pairs)
+  const entries = [{ file: envPath, content: envContent, mode: 0o600 }]
+
+  if (setDefault) {
+    const modelId = String(model || '').trim()
+    if (!modelId) throw new Error('设为默认模型时 model 不能为空')
+    const configPath = path.join(home, 'config.yaml')
+    const currentConfig = fs.existsSync(configPath)
+      ? fs.readFileSync(configPath, 'utf8')
+      : 'platform_toolsets:\n  api_server:\n    - hermes-api-server\nterminal:\n  backend: local\nplatforms:\n  api_server:\n    enabled: true\n'
+    const baseUrlLine = normalizedBaseUrl && !config.baseUrlEnvVar
+      ? `  base_url: ${normalizedBaseUrl}\n`
+      : ''
+    const configContent = _mergeHermesConfigYaml(
+      currentConfig,
+      modelId,
+      baseUrlLine,
+      `  provider: ${providerId}\n`,
+    )
+    entries.push({ file: configPath, content: configContent })
+  }
+
+  replaceHermesFilesTransaction(entries)
+  return { providerId, envKey: config.apiKeyEnvVars[0] }
 }
 
 // === 统一模型渠道（与 src-tauri/src/commands/model_channels.rs 行为保持一致） ===
@@ -9784,6 +9930,34 @@ function writeMediaAssetBytes(kind, jobId, index, buffer, mime, sourceUrl = '') 
   return { kind, path: rel, root, mime, bytes: buffer.length, sourceUrl }
 }
 
+function mediaContentLengthExceedsLimit(headers) {
+  const raw = headers?.get?.('content-length')
+  if (!raw) return false
+  const size = Number(raw)
+  return Number.isFinite(size) && size > MEDIA_MAX_ASSET_BYTES
+}
+
+async function readMediaResponseBuffer(resp, label = '媒体资产') {
+  if (mediaContentLengthExceedsLimit(resp.headers)) throw new Error('媒体文件超过 512MB，已停止保存')
+  const reader = resp.body?.getReader?.()
+  if (!reader) {
+    const fallback = Buffer.from(await resp.arrayBuffer())
+    if (fallback.length > MEDIA_MAX_ASSET_BYTES) throw new Error('媒体文件超过 512MB，已停止保存')
+    return fallback
+  }
+  const chunks = []
+  let total = 0
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    const chunk = Buffer.from(value)
+    total += chunk.length
+    if (total > MEDIA_MAX_ASSET_BYTES) throw new Error('媒体文件超过 512MB，已停止保存')
+    chunks.push(chunk)
+  }
+  return Buffer.concat(chunks, total)
+}
+
 async function fetchWithTimeout(url, options = {}, timeoutSeconds = 600) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutSeconds * 1000)
@@ -9812,34 +9986,127 @@ function sanitizeProviderError(raw, apiKey) {
 // 防止服务商响应中混入第三方 URL 后把密钥发给任意主机
 function mediaAssetUrlSameHost(url, baseUrl) {
   try {
-    return new URL(url).host.toLowerCase() === new URL(baseUrl).host.toLowerCase()
+    return new URL(url).origin.toLowerCase() === new URL(baseUrl).origin.toLowerCase()
   } catch {
     return false
   }
 }
 
-async function downloadMediaAsset(provider, url, kind, jobId, index) {
-  const sameHost = mediaAssetUrlSameHost(url, provider.baseUrl)
-  let resp = await fetchWithTimeout(url, sameHost ? {
-    headers: { Authorization: `Bearer ${provider.apiKey}` },
-  } : {}, provider.timeoutSeconds)
-  if (!resp.ok && sameHost && [401, 403].includes(resp.status)) {
-    resp = await fetchWithTimeout(url, {}, provider.timeoutSeconds)
+export async function downloadMediaUrlToFile({
+  url,
+  baseUrl,
+  apiKey,
+  target,
+  timeoutSeconds = 600,
+  maxBytes = MEDIA_MAX_ASSET_BYTES,
+}) {
+  const controller = new AbortController()
+  const timeoutMs = Math.max(1, Number(timeoutSeconds) * 1000)
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  let currentUrl = String(url)
+  let response = null
+  let tempPath = ''
+  let output = null
+  let retriedWithoutAuth = false
+  try {
+    for (let redirects = 0; redirects <= 5; redirects += 1) {
+      const sendAuth = !retriedWithoutAuth && !!apiKey && mediaAssetUrlSameHost(currentUrl, baseUrl)
+      response = await fetch(currentUrl, {
+        redirect: 'manual',
+        signal: controller.signal,
+        headers: sendAuth ? { Authorization: `Bearer ${apiKey}` } : {},
+      })
+      if ([301, 302, 303, 307, 308].includes(response.status)) {
+        const location = response.headers.get('location')
+        await response.body?.cancel().catch(() => {})
+        if (!location) throw new Error('媒体资产重定向缺少 Location')
+        if (redirects === 5) throw new Error('媒体资产重定向次数过多')
+        currentUrl = new URL(location, currentUrl).toString()
+        retriedWithoutAuth = false
+        continue
+      }
+      if (sendAuth && [401, 403].includes(response.status) && !retriedWithoutAuth) {
+        await response.body?.cancel().catch(() => {})
+        retriedWithoutAuth = true
+        continue
+      }
+      break
+    }
+    if (!response?.ok) throw new Error(`下载媒体资产失败: HTTP ${response?.status || 0}`)
+    if (mediaContentLengthExceedsLimit(response.headers)) throw new Error('媒体文件超过 512MB，已停止保存')
+
+    const mime = response.headers.get('content-type') || 'application/octet-stream'
+    output = typeof target === 'function' ? target(mime) : target
+    if (!output) throw new Error('媒体资产目标路径为空')
+    fs.mkdirSync(path.dirname(output), { recursive: true })
+    tempPath = `${output}.part-${crypto.randomUUID()}`
+    const writer = fs.createWriteStream(tempPath, { flags: 'wx' })
+    let total = 0
+    try {
+      await once(writer, 'open')
+      const reader = response.body?.getReader()
+      if (!reader) throw new Error('媒体资产响应体不可读')
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        total += value.byteLength
+        if (total > maxBytes) {
+          await reader.cancel().catch(() => {})
+          throw new Error('媒体文件超过 512MB，已停止保存')
+        }
+        if (!writer.write(Buffer.from(value))) await once(writer, 'drain')
+      }
+      writer.end()
+      await once(writer, 'finish')
+    } catch (error) {
+      writer.destroy()
+      if (!writer.closed) await once(writer, 'close').catch(() => {})
+      throw error
+    }
+    if (fs.existsSync(output)) fs.rmSync(output, { force: true })
+    fs.renameSync(tempPath, output)
+    tempPath = ''
+    return { path: output, bytes: total, mime, sourceUrl: currentUrl }
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error(`媒体资产下载超时（${timeoutMs}ms）`)
+    throw error
+  } finally {
+    clearTimeout(timer)
+    if (tempPath) fs.rmSync(tempPath, { force: true })
   }
-  if (!resp.ok) throw new Error(`下载媒体资产失败: HTTP ${resp.status}`)
-  const mime = resp.headers.get('content-type') || (kind === 'video' ? 'video/mp4' : 'image/jpeg')
-  const bytes = Buffer.from(await resp.arrayBuffer())
-  return writeMediaAssetBytes(kind, jobId, index, bytes, mime, url)
+}
+
+async function downloadMediaAsset(provider, url, kind, jobId, index) {
+  const root = ensureMediaOutputRoot()
+  let rel = ''
+  const saved = await downloadMediaUrlToFile({
+    url,
+    baseUrl: provider.baseUrl,
+    apiKey: provider.apiKey,
+    timeoutSeconds: provider.timeoutSeconds,
+    target: mime => {
+      const ext = contentTypeToExt(mime, kind)
+      rel = mediaAssetRelativePath(jobId, index, ext)
+      return resolveMediaPath(rel, root)
+    },
+  })
+  return { kind, path: rel, root, mime: saved.mime, bytes: saved.bytes, sourceUrl: url }
 }
 
 async function downloadOpenAIVideoContent(provider, providerTaskId, jobId, index) {
-  const resp = await fetchWithTimeout(buildMediaApiUrl(provider.baseUrl, `/videos/${providerTaskId}/content`), {
-    headers: { Authorization: `Bearer ${provider.apiKey}` },
-  }, provider.timeoutSeconds)
-  if (!resp.ok) throw new Error(`下载视频内容失败: HTTP ${resp.status}`)
-  const mime = resp.headers.get('content-type') || 'video/mp4'
-  const bytes = Buffer.from(await resp.arrayBuffer())
-  return writeMediaAssetBytes('video', jobId, index, bytes, mime)
+  const root = ensureMediaOutputRoot()
+  let rel = ''
+  const saved = await downloadMediaUrlToFile({
+    url: buildMediaApiUrl(provider.baseUrl, `/videos/${providerTaskId}/content`),
+    baseUrl: provider.baseUrl,
+    apiKey: provider.apiKey,
+    timeoutSeconds: provider.timeoutSeconds,
+    target: mime => {
+      rel = mediaAssetRelativePath(jobId, index, contentTypeToExt(mime, 'video'))
+      return resolveMediaPath(rel, root)
+    },
+  })
+  return { kind: 'video', path: rel, root, mime: saved.mime, bytes: saved.bytes, sourceUrl: '' }
 }
 
 function collectImageOutputs(value) {
@@ -13965,6 +14232,9 @@ const handlers = {
   },
 
   async install_hermes({ method = 'uv-tool', extras = [] } = {}) {
+    if (_hermesInstallRunning) throw new Error('Hermes Agent 正在安装，请勿重复操作')
+    _hermesInstallRunning = true
+    try {
     // 1. 查找 uv
     const uvPath = path.join(uvBinDir(), isWindows ? 'uv.exe' : 'uv')
     let uv = fs.existsSync(uvPath) ? uvPath : null
@@ -13975,12 +14245,10 @@ const handlers = {
     const installArgs = method === 'uv-pip'
       ? ['pip', 'install', pkg]
       : ['tool', 'install', '--force', pkg, '--python', '3.11', '--with', 'croniter', '--with', 'httpx', '--with', 'openai', '--with', 'aiohttp', '--with', 'websockets']
-    const result = spawnSync(uv, installArgs, {
-      env: { ...process.env, PATH: hermesEnhancedPath(), GIT_TERMINAL_PROMPT: '0', ...gitMirrorEnv() },
+    const result = await runHermesInstallCommand(uv, installArgs, {
+      env: buildHermesInstallEnv(readPanelConfig()),
       timeout: 600000,
       windowsHide: true,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
     })
     if (result.status !== 0) {
       const cleaned = sanitizeHermesInstallOutput((result.stderr || '').trim())
@@ -13992,6 +14260,9 @@ const handlers = {
     const ver = runHermesSilent('hermes', ['version'])
     if (ver.ok) return ver.stdout
     throw new Error('安装完成但验证失败: hermes version 不可用')
+    } finally {
+      _hermesInstallRunning = false
+    }
   },
 
   async configure_hermes({ provider, apiKey, model, baseUrl } = {}) {
@@ -14116,6 +14387,18 @@ const handlers = {
   async hermes_health_check() {
     const url = `${hermesGatewayUrl()}/health`
     const resp = await globalThis.fetch(url, { signal: AbortSignal.timeout(5000), headers: { 'User-Agent': 'ClawPanel-Web' } })
+    if (!resp.ok) throw new Error(`Gateway 返回 HTTP ${resp.status}`)
+    return await resp.json()
+  },
+
+  async hermes_probe_gateway({ url } = {}) {
+    const normalized = String(url || '').trim().replace(/\/+$/, '')
+    const parsed = new URL(normalized)
+    if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('Gateway URL 仅支持 HTTP/HTTPS')
+    const resp = await globalThis.fetch(`${normalized}/health`, {
+      signal: AbortSignal.timeout(5000),
+      headers: { 'User-Agent': 'ClawPanel-Web' },
+    })
     if (!resp.ok) throw new Error(`Gateway 返回 HTTP ${resp.status}`)
     return await resp.json()
   },
@@ -15549,6 +15832,16 @@ const handlers = {
     if (!content.endsWith('\n')) content += '\n'
     fs.writeFileSync(envPath, content)
     return null
+  },
+
+  hermes_sync_provider({ provider, apiKey, baseUrl, model, setDefault } = {}) {
+    return syncHermesProviderFilesAt(hermesHome(), {
+      provider,
+      apiKey,
+      baseUrl,
+      model,
+      setDefault: Boolean(setDefault),
+    })
   },
 
   hermes_env_delete({ key } = {}) {

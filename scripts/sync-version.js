@@ -83,6 +83,7 @@ const targets = [
 ]
 
 let changed = 0
+let failed = 0
 for (const { file, update } of targets) {
   const filepath = resolve(root, file)
   try {
@@ -97,7 +98,11 @@ for (const { file, update } of targets) {
     }
   } catch (e) {
     console.error(`❌ ${file}: ${e.message}`)
+    failed++
   }
 }
 
 console.log(`\n版本 ${version}，${changed ? `已同步 ${changed} 个文件` : '所有文件已是最新'}`)
+if (failed > 0) {
+  process.exitCode = 1
+}

@@ -48,7 +48,7 @@ pub async fn check_frontend_update() -> Result<Value, String> {
         .to_string();
 
     // 优先读取已热更新的版本，避免 macOS/Linux 用户安装旧包后永远提示有更新
-    let current = {
+    let frontend_current = {
         let version_file = update_dir().join(".version");
         std::fs::read_to_string(&version_file)
             .ok()
@@ -63,13 +63,14 @@ pub async fn check_frontend_update() -> Result<Value, String> {
         .and_then(|v| v.as_str())
         .unwrap_or("0.0.0");
 
-    let compatible = version_ge(&current, min_app);
-    let remote_newer = !latest.is_empty() && compatible && version_gt(&latest, &current);
+    let app_version = env!("CARGO_PKG_VERSION");
+    let compatible = version_ge(app_version, min_app);
+    let remote_newer = !latest.is_empty() && compatible && version_gt(&latest, &frontend_current);
     let update_ready = remote_newer && update_dir().join("index.html").exists();
     let has_update = remote_newer && !update_ready;
 
     Ok(serde_json::json!({
-        "currentVersion": current,
+        "currentVersion": frontend_current,
         "latestVersion": latest,
         "hasUpdate": has_update,
         "compatible": compatible,
