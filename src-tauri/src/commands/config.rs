@@ -369,6 +369,26 @@ pub(crate) fn ensure_node_runtime_compatible() -> Result<(), String> {
     ))
 }
 
+fn ensure_target_node_runtime_compatible_for_npm(version: &str) -> Result<(), String> {
+    let Some(requirement) = fallback_openclaw_node_requirement(version) else {
+        return Ok(());
+    };
+    let enhanced = super::enhanced_path();
+    let node_path = find_node_path(&enhanced).ok_or_else(|| {
+        format!(
+            "无法通过 npm 安装 OpenClaw {version}：未检测到系统 Node.js。目标版本要求 {requirement}，请先安装兼容版本，或选择自带 Node.js 的 standalone 安装。"
+        )
+    })?;
+    let current = node_version_from_bin(std::path::Path::new(&node_path))
+        .ok_or_else(|| format!("无法读取系统 Node.js 版本：{node_path}"))?;
+    if !node_version_satisfies_requirement(&current, requirement) {
+        return Err(format!(
+            "无法通过 npm 安装 OpenClaw {version}：当前 Node.js {current}，目标版本要求 {requirement}。请先升级 Node.js，或选择自带 Node.js 的 standalone 安装。"
+        ));
+    }
+    Ok(())
+}
+
 /// 提取基础版本号（去掉 -zh.x / -nightly.xxx 等后缀，只保留主版本数字部分）
 /// "2026.3.13-zh.1" → "2026.3.13", "2026.3.13" → "2026.3.13"
 fn base_version(v: &str) -> String {
@@ -2685,15 +2705,11 @@ fn should_fallback_standalone_to_npm(
 fn standalone_install_version(
     requested_version: Option<&str>,
     recommended_version: Option<&str>,
-    method: &str,
-    portable_mode: bool,
+    _method: &str,
+    _portable_mode: bool,
 ) -> String {
     if let Some(version) = requested_version {
         return version.to_string();
-    }
-
-    if portable_mode || method == "standalone-r2" || method == "standalone-github" {
-        return "latest".to_string();
     }
 
     recommended_version.unwrap_or("latest").to_string()
@@ -3469,6 +3485,67 @@ fn npm_openclaw_cli_path() -> Option<PathBuf> {
     }
 }
 
+fn standalone_work_dir(install_dir: &std::path::Path, suffix: &str) -> std::path::PathBuf {
+    let name = install_dir
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("openclaw");
+    install_dir
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join(format!("{name}.{suffix}"))
+}
+
+fn verify_standalone_install(
+    staging_dir: &std::path::Path,
+    remote_version: &str,
+) -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    let openclaw_bin = staging_dir.join("openclaw.cmd");
+    #[cfg(not(target_os = "windows"))]
+    let openclaw_bin = staging_dir.join("openclaw");
+
+    if !openclaw_bin.exists() {
+        return Err("standalone 解压后未找到 openclaw 可执行文件".into());
+    }
+    let verified_version = read_version_from_installation(&openclaw_bin)
+        .ok_or_else(|| "standalone 安装后无法读取目标 CLI 版本".to_string())?;
+    if !versions_match(&verified_version, remote_version) {
+        return Err(format!(
+            "standalone 安装校验失败：目标 CLI 版本为 {verified_version}，清单版本为 {remote_version}"
+        ));
+    }
+    Ok(verified_version)
+}
+
+fn replace_standalone_install(
+    staging_dir: &std::path::Path,
+    install_dir: &std::path::Path,
+    backup_dir: &std::path::Path,
+) -> Result<(), String> {
+    if backup_dir.exists() {
+        std::fs::remove_dir_all(backup_dir).map_err(|e| format!("清理旧升级备份失败: {e}"))?;
+    }
+    let old_install_moved = if install_dir.exists() {
+        std::fs::rename(install_dir, backup_dir)
+            .map_err(|e| format!("备份当前 standalone 安装失败: {e}"))?;
+        true
+    } else {
+        false
+    };
+
+    if let Err(error) = std::fs::rename(staging_dir, install_dir) {
+        if old_install_moved && !install_dir.exists() && backup_dir.exists() {
+            let _ = std::fs::rename(backup_dir, install_dir);
+        }
+        return Err(format!("激活新 standalone 安装失败，已恢复原版本: {error}"));
+    }
+    if old_install_moved {
+        std::fs::remove_dir_all(backup_dir).map_err(|e| format!("清理升级备份失败: {e}"))?;
+    }
+    Ok(())
+}
+
 /// 尝试从 standalone 独立安装包安装 OpenClaw（自带 Node.js，零依赖）
 /// 动态查询 latest.json 获取最新版本，下载对应平台的归档并解压
 /// 成功返回 Ok(版本号)，失败返回 Err(原因) 供 caller 降级到 R2/npm
@@ -3477,6 +3554,7 @@ async fn try_standalone_install(
     version: &str,
     override_base_url: Option<&str>,
 ) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
     let source_label = if override_base_url.is_some() {
         "GitHub"
     } else {
@@ -3501,64 +3579,71 @@ async fn try_standalone_install(
         );
     }
 
-    // 1. 动态查询最新版本
+    // 1. GitHub 固定版本直接解析；只有 latest 或 CDN 路径需要清单。
     let _ = app.emit(
         "upgrade-log",
         "\u{1F4E6} 尝试 standalone 独立安装包（汉化版专属，自带 Node.js 运行时，无需 npm）",
     );
-    let _ = app.emit("upgrade-log", "查询最新版本...");
-    let manifest_url = format!("{base_url}/latest.json");
     let client = crate::commands::build_http_client(std::time::Duration::from_secs(10), None)
         .map_err(|e| format!("HTTP 客户端创建失败: {e}"))?;
-    let manifest_resp = client
-        .get(&manifest_url)
-        .send()
-        .await
-        .map_err(|e| format!("standalone 清单获取失败: {e}"))?;
-    if !manifest_resp.status().is_success() {
-        return Err(format!(
-            "standalone 清单不可用 (HTTP {})",
-            manifest_resp.status()
-        ));
-    }
-    let manifest: Value = manifest_resp
-        .json()
-        .await
-        .map_err(|e| format!("standalone 清单解析失败: {e}"))?;
+    let (remote_version, manifest_base_url, archive_prefix): (String, Option<String>, &str) =
+        if override_base_url.is_some() && version != "latest" {
+            (version.to_string(), None, "openclaw-zh")
+        } else {
+            let _ = app.emit("upgrade-log", "查询最新版本...");
+            let manifest_url = format!("{base_url}/latest.json");
+            let manifest_resp = client
+                .get(&manifest_url)
+                .send()
+                .await
+                .map_err(|e| format!("standalone 清单获取失败: {e}"))?;
+            if !manifest_resp.status().is_success() {
+                return Err(format!(
+                    "standalone 清单不可用 (HTTP {})",
+                    manifest_resp.status()
+                ));
+            }
+            let manifest: Value = manifest_resp
+                .json()
+                .await
+                .map_err(|e| format!("standalone 清单解析失败: {e}"))?;
+            let edition_obj = manifest.get("editions").and_then(|e| e.get("zh"));
+            if let Some(ed) = edition_obj {
+                let ver = ed
+                    .get("version")
+                    .and_then(|v| v.as_str())
+                    .ok_or("standalone 清单 editions.zh 缺少 version 字段")?;
+                let bu = ed
+                    .get("base_url")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                (ver.to_string(), bu, "openclaw-zh")
+            } else {
+                let ver = manifest
+                    .get("version")
+                    .and_then(|v| v.as_str())
+                    .ok_or("standalone 清单缺少 version 字段")?;
+                let bu = manifest
+                    .get("base_url")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                (ver.to_string(), bu, "openclaw")
+            }
+        };
 
-    // 兼容两种 latest.json 格式：
-    // 新格式（CI 生成）: { "editions": { "zh": { "version": "...", "base_url": "..." } } }
-    // 旧格式（兼容）:   { "version": "...", "base_url": "..." }
-    let edition_obj = manifest.get("editions").and_then(|e| e.get("zh"));
-    let (remote_version, manifest_base_url, archive_prefix) = if let Some(ed) = edition_obj {
-        let ver = ed
-            .get("version")
-            .and_then(|v| v.as_str())
-            .ok_or("standalone 清单 editions.zh 缺少 version 字段")?;
-        let bu = ed.get("base_url").and_then(|v| v.as_str());
-        (ver, bu, "openclaw-zh")
-    } else {
-        let ver = manifest
-            .get("version")
-            .and_then(|v| v.as_str())
-            .ok_or("standalone 清单缺少 version 字段")?;
-        let bu = manifest.get("base_url").and_then(|v| v.as_str());
-        (ver, bu, "openclaw")
-    };
-
-    // 版本匹配检查
-    if version != "latest" && !versions_match(remote_version, version) {
+    if version != "latest" && !versions_match(&remote_version, version) {
         return Err(format!(
             "standalone 版本 {remote_version} 与请求版本 {version} 不匹配"
         ));
     }
 
     let default_base = format!("{base_url}/{remote_version}");
-    let override_base = override_base_url.map(|ovr| ovr.replace("{version}", remote_version));
-    let remote_base = if let Some(ovr) = override_base.as_deref() {
-        ovr
+    let remote_base = if let Some(override_url) = override_base_url {
+        override_url.replace("{version}", &remote_version)
+    } else if let Some(manifest_url) = manifest_base_url {
+        manifest_url
     } else {
-        manifest_base_url.unwrap_or(&default_base)
+        default_base
     };
 
     // 2. 构造下载 URL
@@ -3593,13 +3678,14 @@ async fn try_standalone_install(
     };
     let _ = app.emit("upgrade-log", format!("下载中 ({size_mb})..."));
 
-    {
+    let actual_sha = {
         use futures_util::StreamExt;
         use tokio::io::AsyncWriteExt;
         let mut file = tokio::fs::File::create(&archive_path)
             .await
             .map_err(|e| format!("创建临时文件失败: {e}"))?;
         let mut stream = dl_resp.bytes_stream();
+        let mut hasher = Sha256::new();
         let mut downloaded: u64 = 0;
         let mut last_progress: u32 = 15;
         while let Some(chunk) = stream.next().await {
@@ -3607,6 +3693,7 @@ async fn try_standalone_install(
             file.write_all(&chunk)
                 .await
                 .map_err(|e| format!("写入失败: {e}"))?;
+            hasher.update(&chunk);
             downloaded += chunk.len() as u64;
             if total_bytes > 0 {
                 let pct = 15 + ((downloaded as f64 / total_bytes as f64) * 55.0) as u32;
@@ -3629,17 +3716,53 @@ async fn try_standalone_install(
         file.flush()
             .await
             .map_err(|e| format!("刷新文件失败: {e}"))?;
-    }
+        format!("{:x}", hasher.finalize())
+    };
 
-    let _ = app.emit("upgrade-log", "下载完成，解压安装中...");
+    let _ = app.emit("upgrade-log", "下载完成，正在校验 SHA-256...");
+    let checksum_url = format!("{download_url}.sha256");
+    let checksum_resp = dl_client
+        .get(&checksum_url)
+        .send()
+        .await
+        .map_err(|e| format!("standalone 校验文件下载失败: {e}"))?;
+    if !checksum_resp.status().is_success() {
+        return Err(format!(
+            "standalone 校验文件不可用 (HTTP {})",
+            checksum_resp.status()
+        ));
+    }
+    let checksum_text = checksum_resp
+        .text()
+        .await
+        .map_err(|e| format!("standalone 校验文件读取失败: {e}"))?;
+    let expected_sha = checksum_text
+        .split_whitespace()
+        .find(|value| value.len() == 64 && value.chars().all(|ch| ch.is_ascii_hexdigit()))
+        .map(str::to_ascii_lowercase)
+        .ok_or("standalone 校验文件格式无效")?;
+    if actual_sha != expected_sha {
+        return Err(format!(
+            "standalone SHA-256 校验失败：expected={expected_sha}, actual={actual_sha}"
+        ));
+    }
+    let _ = app.emit("upgrade-log", "SHA-256 校验通过，解压安装中...");
     let _ = app.emit("upgrade-progress", 72);
 
-    // 4. 清理旧安装 & 创建目录
-    if install_dir.exists() {
-        std::fs::remove_dir_all(&install_dir)
-            .map_err(|e| format!("清理旧 standalone 安装目录失败: {e}"))?;
+    // 4. 解压到同盘 staging，验证通过后再原子切换。
+    let staging_dir = standalone_work_dir(&install_dir, "staging");
+    let backup_dir = standalone_work_dir(&install_dir, "backup");
+    if !install_dir.exists() && backup_dir.exists() {
+        std::fs::rename(&backup_dir, &install_dir)
+            .map_err(|e| format!("恢复上次 standalone 升级备份失败: {e}"))?;
     }
-    std::fs::create_dir_all(&install_dir).map_err(|e| format!("创建安装目录失败: {e}"))?;
+    if staging_dir.exists() {
+        std::fs::remove_dir_all(&staging_dir).map_err(|e| format!("清理 staging 目录失败: {e}"))?;
+    }
+    if backup_dir.exists() {
+        std::fs::remove_dir_all(&backup_dir).map_err(|e| format!("清理旧升级备份失败: {e}"))?;
+    }
+    std::fs::create_dir_all(&staging_dir).map_err(|e| format!("创建 staging 目录失败: {e}"))?;
 
     // 5. 解压
     #[cfg(target_os = "windows")]
@@ -3650,10 +3773,10 @@ async fn try_standalone_install(
         let mut zip_archive =
             zip::ZipArchive::new(archive_file).map_err(|e| format!("ZIP 解析失败: {e}"))?;
         zip_archive
-            .extract(&install_dir)
+            .extract(&staging_dir)
             .map_err(|e| format!("ZIP 解压失败: {e}"))?;
         // 归档内可能有 openclaw/ 子目录，需要提升一层
-        promote_nested_standalone_dir(&install_dir, "node.exe")?;
+        promote_nested_standalone_dir(&staging_dir, "node.exe")?;
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -3663,7 +3786,7 @@ async fn try_standalone_install(
                 "-xzf",
                 &archive_path.to_string_lossy(),
                 "-C",
-                &install_dir.to_string_lossy(),
+                &staging_dir.to_string_lossy(),
                 "--strip-components=1",
             ])
             .status()
@@ -3677,23 +3800,15 @@ async fn try_standalone_install(
     let _ = std::fs::remove_file(&archive_path);
     let _ = app.emit("upgrade-progress", 85);
 
-    // 6. 验证安装
+    // 6. 验证 staging 并切换
+    let verified_version = verify_standalone_install(&staging_dir, &remote_version)?;
+    replace_standalone_install(&staging_dir, &install_dir, &backup_dir)?;
+
     #[cfg(target_os = "windows")]
     let openclaw_bin = install_dir.join("openclaw.cmd");
     #[cfg(not(target_os = "windows"))]
     let openclaw_bin = install_dir.join("openclaw");
 
-    if !openclaw_bin.exists() {
-        return Err("standalone 解压后未找到 openclaw 可执行文件".into());
-    }
-
-    let verified_version = read_version_from_installation(&openclaw_bin)
-        .ok_or_else(|| "standalone 安装后无法读取目标 CLI 版本，已保留旧绑定".to_string())?;
-    if !versions_match(&verified_version, remote_version) {
-        return Err(format!(
-            "standalone 安装校验失败：目标 CLI 版本为 {verified_version}，清单版本为 {remote_version}，已保留旧绑定"
-        ));
-    }
     let _ = app.emit(
         "upgrade-log",
         format!(
@@ -4170,7 +4285,7 @@ async fn upgrade_openclaw_inner(
                     let _ = app.emit("upgrade-log", &msg);
                     let _ = app.emit(
                         "upgrade-log",
-                        "旧安装已保留。如需清理，请在“安装管理与清理”里确认后处理。",
+                        "升级已原子切换；如安装失败会自动恢复原版本。",
                     );
                     return Ok(msg);
                 }
@@ -4189,7 +4304,7 @@ async fn upgrade_openclaw_inner(
                     let _ = app.emit("upgrade-log", &msg);
                     let _ = app.emit(
                         "upgrade-log",
-                        "旧安装已保留。如需清理，请在“安装管理与清理”里确认后处理。",
+                        "升级已原子切换；如安装失败会自动恢复原版本。",
                     );
                     return Ok(msg);
                 }
@@ -4213,7 +4328,7 @@ async fn upgrade_openclaw_inner(
                             let _ = app.emit("upgrade-log", &msg);
                             let _ = app.emit(
                                 "upgrade-log",
-                                "旧安装已保留。如需清理，请在“安装管理与清理”里确认后处理。",
+                                "升级已原子切换；如安装失败会自动恢复原版本。",
                             );
                             return Ok(msg);
                         }
@@ -4249,6 +4364,8 @@ async fn upgrade_openclaw_inner(
     }
 
     // ── npm install（兜底或用户明确选择） ──
+
+    ensure_target_node_runtime_compatible_for_npm(ver)?;
 
     // 切换源时需要卸载旧包，但为避免安装失败导致 CLI 丢失，
     // 先安装新包，成功后再卸载旧包
@@ -7732,6 +7849,7 @@ mod write_openclaw_config_merge_tests {
     use super::node_version_satisfies_requirement;
     use super::path_without_curdir_string;
     use super::promote_nested_standalone_dir;
+    use super::replace_standalone_install;
     #[cfg(target_os = "windows")]
     use super::resolve_openclaw_cli_input_path;
     use super::select_calibration_source;
@@ -7749,6 +7867,49 @@ mod write_openclaw_config_merge_tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("clawpanel-{name}-{}-{suffix}", std::process::id()))
+    }
+
+    #[test]
+    fn standalone_activation_replaces_verified_staging() {
+        let root = unique_temp_dir("standalone-swap");
+        let install_dir = root.join("install");
+        let staging_dir = root.join("staging");
+        let backup_dir = root.join("backup");
+        std::fs::create_dir_all(&install_dir).unwrap();
+        std::fs::create_dir_all(&staging_dir).unwrap();
+        std::fs::write(install_dir.join("old.txt"), "old").unwrap();
+        std::fs::write(staging_dir.join("new.txt"), "new").unwrap();
+
+        replace_standalone_install(&staging_dir, &install_dir, &backup_dir).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(install_dir.join("new.txt")).unwrap(),
+            "new"
+        );
+        assert!(!install_dir.join("old.txt").exists());
+        assert!(!backup_dir.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn standalone_activation_restores_old_install_on_failure() {
+        let root = unique_temp_dir("standalone-rollback");
+        let install_dir = root.join("install");
+        let missing_staging_dir = root.join("missing-staging");
+        let backup_dir = root.join("backup");
+        std::fs::create_dir_all(&install_dir).unwrap();
+        std::fs::write(install_dir.join("old.txt"), "old").unwrap();
+
+        assert!(
+            replace_standalone_install(&missing_staging_dir, &install_dir, &backup_dir).is_err()
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(install_dir.join("old.txt")).unwrap(),
+            "old"
+        );
+        assert!(!backup_dir.exists());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// Regression guard: Issue #127 merge keeps full provider map when the UI payload
@@ -8111,22 +8272,22 @@ mod write_openclaw_config_merge_tests {
     }
 
     #[test]
-    fn standalone_version_uses_latest_for_portable_without_explicit_version() {
+    fn standalone_version_uses_recommended_for_portable_without_explicit_version() {
         assert_eq!(
             standalone_install_version(None, Some("2026.5.18-zh.1"), "auto", true),
-            "latest"
+            "2026.5.18-zh.1"
         );
     }
 
     #[test]
-    fn standalone_version_uses_latest_for_explicit_standalone_method() {
+    fn standalone_version_uses_recommended_for_explicit_standalone_method() {
         assert_eq!(
             standalone_install_version(None, Some("2026.5.18-zh.1"), "standalone-r2", false),
-            "latest"
+            "2026.5.18-zh.1"
         );
         assert_eq!(
             standalone_install_version(None, Some("2026.5.18-zh.1"), "standalone-github", false),
-            "latest"
+            "2026.5.18-zh.1"
         );
     }
 

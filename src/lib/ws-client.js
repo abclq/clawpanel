@@ -587,7 +587,7 @@ export class WsClient {
     this._autoPairAttempts++
     try {
       console.log('[ws] 执行自动配对（第', this._autoPairAttempts, '次）...')
-      const result = await api.autoPairDevice()
+      const result = await api.autoPairDevice(window.location.origin)
       console.log('[ws] 配对结果:', result)
 
       // 这里只修配对文件，不自动重启 Gateway。
@@ -625,7 +625,7 @@ export class WsClient {
         this._url = `${base}?token=${encodeURIComponent(this._token)}`
       }
       // 确保配对和 origins
-      try { await api.autoPairDevice() } catch {}
+      try { await api.autoPairDevice(window.location.origin) } catch {}
       // 3秒后重连
       setTimeout(() => {
         if (!this._intentionalClose) {

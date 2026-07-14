@@ -6,7 +6,7 @@ const devApi = readFileSync(new URL('../scripts/dev-api.js', import.meta.url), '
 const pairing = readFileSync(new URL('../src-tauri/src/commands/pairing.rs', import.meta.url), 'utf8')
 
 test('patchGatewayOrigins writes only allowedOrigins through merge path', () => {
-  const start = devApi.indexOf('function patchGatewayOrigins()')
+  const start = devApi.indexOf('function patchGatewayOrigins(')
   const end = devApi.indexOf('function readOpenclawConfigOptional()', start)
   const fn = start >= 0 && end > start ? devApi.slice(start, end) : ''
 
@@ -18,7 +18,7 @@ test('patchGatewayOrigins writes only allowedOrigins through merge path', () => 
 })
 
 test('patch_gateway_origins writes only allowedOrigins patch in Rust', () => {
-  const start = pairing.indexOf('fn patch_gateway_origins()')
+  const start = pairing.indexOf('fn patch_gateway_origins(')
   const end = pairing.indexOf('#[tauri::command]', start)
   const fn = start >= 0 && end > start ? pairing.slice(start, end) : ''
 

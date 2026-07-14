@@ -425,7 +425,7 @@ function renderSteps(page, { node, git, cliOk, config, version }) {
 
   // 第三步：OpenClaw CLI
   html += `
-    <div class="config-section" style="text-align:left;${nodeOk ? '' : 'opacity:0.65;pointer-events:none'}">
+    <div class="config-section" style="text-align:left">
       <div class="config-section-title" style="display:flex;align-items:center;gap:4px">
         ${stepIcon(cliOk)} OpenClaw CLI
       </div>
@@ -541,7 +541,7 @@ function renderSteps(page, { node, git, cliOk, config, version }) {
   }
 
   stepsEl.innerHTML = html
-  bindEvents(page, nodeOk, { node, git, cliOk, config })
+  bindEvents(page, { node, git, cliOk, config })
 }
 
 function renderInstallSection() {
@@ -705,7 +705,7 @@ ${problems.join('\n')}
 ${t('setup.promptOutro')}`
 }
 
-function bindEvents(page, nodeOk, detectState) {
+function bindEvents(page, detectState) {
   // 打开 AI 助手
   page.querySelector('#btn-goto-assistant')?.addEventListener('click', () => {
     window.location.hash = '/assistant'
@@ -1166,7 +1166,7 @@ function bindEvents(page, nodeOk, detectState) {
 
   // 一键安装
   const installBtn = page.querySelector('#btn-install')
-  if (!installBtn || !nodeOk) return
+  if (!installBtn) return
 
   installBtn.addEventListener('click', async () => {
     const source = page.querySelector('input[name="install-source"]:checked')?.value || 'chinese'

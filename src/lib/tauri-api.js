@@ -433,7 +433,7 @@ export const api = {
   createConnectFrame: (nonce, gatewayToken, gatewayPassword) => invoke('create_connect_frame', { nonce, gatewayToken, gatewayPassword: gatewayPassword || null }),
 
   // 设备配对
-  autoPairDevice: () => invoke('auto_pair_device'),
+  autoPairDevice: (origin = window.location.origin) => invoke('auto_pair_device', { origin: origin || null }),
   checkPairingStatus: () => invoke('check_pairing_status'),
   pairingListChannel: (channel) => invoke('pairing_list_channel', { channel }),
   pairingApproveChannel: (channel, code, notify = false) => invoke('pairing_approve_channel', { channel, code, notify }),

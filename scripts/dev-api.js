@@ -837,6 +837,15 @@ function ensureNodeRuntimeCompatibleWeb() {
   }
 }
 
+function ensureTargetNodeRuntimeCompatibleForNpm(version) {
+  const requirement = fallbackOpenclawNodeRequirement(version)
+  if (!requirement) return
+  const current = process.version
+  if (!nodeVersionSatisfiesRequirement(current, requirement)) {
+    throw new Error(`无法通过 npm 安装 OpenClaw ${version}：当前 Node.js ${current}，目标版本要求 ${requirement}。请先升级 Node.js，或选择自带 Node.js 的 standalone 安装。`)
+  }
+}
+
 function readWhereWhichOpenclawCandidates() {
   try {
     const cmd = isWindows ? 'where openclaw' : 'which -a openclaw 2>/dev/null'
@@ -1470,6 +1479,46 @@ function standaloneInstallDir() {
   return path.join(os.homedir(), '.openclaw-bin')
 }
 
+async function verifyStandaloneArchiveChecksum(downloadUrl, buffer) {
+  const checksumResp = await globalThis.fetch(`${downloadUrl}.sha256`, { signal: AbortSignal.timeout(30000) })
+  if (!checksumResp.ok) throw new Error(`standalone 校验文件不可用 (HTTP ${checksumResp.status})`)
+  const checksumText = await checksumResp.text()
+  const expected = checksumText.match(/\b[0-9a-fA-F]{64}\b/)?.[0]?.toLowerCase()
+  if (!expected) throw new Error('standalone 校验文件格式无效')
+  const actual = crypto.createHash('sha256').update(buffer).digest('hex')
+  if (actual !== expected) throw new Error(`standalone SHA-256 校验失败：expected=${expected}, actual=${actual}`)
+}
+
+function verifyStandaloneInstall(stagingDir, remoteVersion) {
+  const binFile = isWindows ? 'openclaw.cmd' : 'openclaw'
+  const cliPath = path.join(stagingDir, binFile)
+  if (!fs.existsSync(cliPath)) throw new Error('standalone 解压后未找到 openclaw 可执行文件')
+  const verifiedVersion = readVersionFromInstallation(cliPath)
+  if (!verifiedVersion) throw new Error('standalone 安装后无法读取目标 CLI 版本')
+  if (!versionsMatch(verifiedVersion, remoteVersion)) {
+    throw new Error(`standalone 安装校验失败：目标 CLI 版本为 ${verifiedVersion}，清单版本为 ${remoteVersion}`)
+  }
+  return verifiedVersion
+}
+
+export function replaceStandaloneInstall(stagingDir, installDir, backupDir) {
+  let oldInstallMoved = false
+  try {
+    if (fs.existsSync(backupDir)) fs.rmSync(backupDir, { recursive: true, force: true })
+    if (fs.existsSync(installDir)) {
+      fs.renameSync(installDir, backupDir)
+      oldInstallMoved = true
+    }
+    fs.renameSync(stagingDir, installDir)
+    if (oldInstallMoved) fs.rmSync(backupDir, { recursive: true, force: true })
+  } catch (error) {
+    if (!fs.existsSync(installDir) && oldInstallMoved && fs.existsSync(backupDir)) {
+      try { fs.renameSync(backupDir, installDir) } catch {}
+    }
+    throw error
+  }
+}
+
 async function _tryStandaloneInstall(version, logs, overrideBaseUrl = null) {
   const cfg = standaloneConfig()
   if (!cfg.enabled || !cfg.baseUrl) return false
@@ -1479,23 +1528,27 @@ async function _tryStandaloneInstall(version, logs, overrideBaseUrl = null) {
 
   logs.push('📦 尝试 standalone 独立安装包（汉化版专属，自带 Node.js 运行时，无需 npm）')
   logs.push('查询最新版本...')
-  const manifestUrl = `${cfg.baseUrl}/latest.json`
-  const resp = await globalThis.fetch(manifestUrl, { signal: AbortSignal.timeout(10000) })
-  if (!resp.ok) throw new Error(`standalone 清单不可用 (HTTP ${resp.status})`)
-  const manifest = await resp.json()
-
-  // 兼容两种 latest.json 格式：
-  // 新格式（CI 生成）: { "editions": { "zh": { "version": "...", "base_url": "..." } } }
-  // 旧格式（兼容）:   { "version": "...", "base_url": "..." }
-  const editionObj = manifest?.editions?.zh
-  const remoteVersion = editionObj?.version || manifest.version
-  if (!remoteVersion) throw new Error('standalone 清单缺少 version 字段')
-  if (version !== 'latest' && !versionsMatch(remoteVersion, version)) {
-    throw new Error(`standalone 版本 ${remoteVersion} 与请求版本 ${version} 不匹配`)
+  let remoteVersion
+  let manifestBaseUrl = null
+  let archivePrefix = 'openclaw-zh'
+  if (overrideBaseUrl && version !== 'latest') {
+    remoteVersion = version
+  } else {
+    const manifestUrl = `${cfg.baseUrl}/latest.json`
+    const resp = await globalThis.fetch(manifestUrl, { signal: AbortSignal.timeout(10000) })
+    if (!resp.ok) throw new Error(`standalone 清单不可用 (HTTP ${resp.status})`)
+    const manifest = await resp.json()
+    // 兼容新旧两种 latest.json 格式。
+    const editionObj = manifest?.editions?.zh
+    remoteVersion = editionObj?.version || manifest.version
+    if (!remoteVersion) throw new Error('standalone 清单缺少 version 字段')
+    if (version !== 'latest' && !versionsMatch(remoteVersion, version)) {
+      throw new Error(`standalone 版本 ${remoteVersion} 与请求版本 ${version} 不匹配`)
+    }
+    archivePrefix = editionObj ? 'openclaw-zh' : 'openclaw'
+    manifestBaseUrl = editionObj?.base_url || manifest.base_url
   }
 
-  const archivePrefix = editionObj ? 'openclaw-zh' : 'openclaw'
-  const manifestBaseUrl = editionObj?.base_url || manifest.base_url
   const remoteBase = overrideBaseUrl || manifestBaseUrl || `${cfg.baseUrl}/${remoteVersion}`
   const ext = isWindows ? 'zip' : 'tar.gz'
   const filename = `${archivePrefix}-${remoteVersion}-${platform}.${ext}`
@@ -1508,47 +1561,41 @@ async function _tryStandaloneInstall(version, logs, overrideBaseUrl = null) {
   if (!dlResp.ok) throw new Error(`standalone 下载失败 (HTTP ${dlResp.status})`)
   const buffer = Buffer.from(await dlResp.arrayBuffer())
   const sizeMb = (buffer.length / 1048576).toFixed(0)
-  logs.push(`下载完成 (${sizeMb}MB)，解压安装中...`)
+  logs.push(`下载完成 (${sizeMb}MB)，正在校验 SHA-256...`)
+  await verifyStandaloneArchiveChecksum(downloadUrl, buffer)
+  logs.push('SHA-256 校验通过，解压安装中...')
   fs.writeFileSync(tmpPath, buffer)
 
-  // 清理旧安装 & 解压
-  if (fs.existsSync(installDir)) {
-    fs.rmSync(installDir, { recursive: true, force: true })
-  }
-  fs.mkdirSync(installDir, { recursive: true })
+  const stagingDir = `${installDir}.staging`
+  const backupDir = `${installDir}.backup`
+  if (!fs.existsSync(installDir) && fs.existsSync(backupDir)) fs.renameSync(backupDir, installDir)
+  if (fs.existsSync(stagingDir)) fs.rmSync(stagingDir, { recursive: true, force: true })
+  if (fs.existsSync(backupDir)) fs.rmSync(backupDir, { recursive: true, force: true })
+  fs.mkdirSync(stagingDir, { recursive: true })
 
   if (isWindows) {
     // Windows: 用 PowerShell 解压 zip
-    execSync(`powershell -NoProfile -Command "Expand-Archive -Path '${tmpPath}' -DestinationPath '${installDir}' -Force"`, { windowsHide: true })
+    execSync(`powershell -NoProfile -Command "Expand-Archive -Path '${tmpPath}' -DestinationPath '${stagingDir}' -Force"`, { windowsHide: true })
     // 处理嵌套 openclaw/ 目录
-    const nested = path.join(installDir, 'openclaw')
+    const nested = path.join(stagingDir, 'openclaw')
     if (fs.existsSync(nested) && fs.existsSync(path.join(nested, 'node.exe'))) {
       for (const entry of fs.readdirSync(nested)) {
-        fs.renameSync(path.join(nested, entry), path.join(installDir, entry))
+        fs.renameSync(path.join(nested, entry), path.join(stagingDir, entry))
       }
       fs.rmSync(nested, { recursive: true, force: true })
     }
   } else {
     // Unix: tar 解压
-    execSync(`tar -xzf "${tmpPath}" -C "${installDir}" --strip-components=1`, { windowsHide: true })
+    execSync(`tar -xzf "${tmpPath}" -C "${stagingDir}" --strip-components=1`, { windowsHide: true })
   }
 
   try { fs.unlinkSync(tmpPath) } catch {}
 
-  // 验证
+  // 先验证 staging，再以同盘 rename 原子切换；失败时恢复旧安装。
   const binFile = isWindows ? 'openclaw.cmd' : 'openclaw'
-  if (!fs.existsSync(path.join(installDir, binFile))) {
-    throw new Error('standalone 解压后未找到 openclaw 可执行文件')
-  }
-
+  const verifiedVersion = verifyStandaloneInstall(stagingDir, remoteVersion)
+  replaceStandaloneInstall(stagingDir, installDir, backupDir)
   const cliPath = path.join(installDir, binFile)
-  const verifiedVersion = readVersionFromInstallation(cliPath)
-  if (!verifiedVersion) {
-    throw new Error('standalone 安装后无法读取目标 CLI 版本，已保留旧绑定')
-  }
-  if (!versionsMatch(verifiedVersion, remoteVersion)) {
-    throw new Error(`standalone 安装校验失败：目标 CLI 版本为 ${verifiedVersion}，清单版本为 ${remoteVersion}，已保留旧绑定`)
-  }
   logs.push(`目标 CLI 验证通过: ${cliPath} (${verifiedVersion})`)
   try {
     bindOpenclawCliPath(cliPath)
@@ -1559,7 +1606,7 @@ async function _tryStandaloneInstall(version, logs, overrideBaseUrl = null) {
 
   logs.push(`✅ standalone 安装完成 (${verifiedVersion})`)
   logs.push(`安装目录: ${installDir}`)
-  logs.push('旧安装已保留。如需清理，请在“安装管理与清理”里确认后处理。')
+  logs.push('升级已原子切换；如安装失败会自动恢复原版本。')
   return true
 }
 
@@ -2453,7 +2500,16 @@ const CALIBRATION_RESET_INHERIT_KEYS = [
   'wizard',
 ]
 
-function requiredControlUiOrigins() {
+function normalizeControlUiOrigin(value) {
+  try {
+    const parsed = new URL(String(value || '').trim())
+    return ['http:', 'https:'].includes(parsed.protocol) ? parsed.origin : null
+  } catch {
+    return null
+  }
+}
+
+function requiredControlUiOrigins(additionalOrigin = null) {
   const origins = [
     'tauri://localhost',
     'https://tauri.localhost',
@@ -2468,6 +2524,8 @@ function requiredControlUiOrigins() {
     origins.push(`http://${ip}:1420`)
     origins.push(`http://${ip}:18777`)
   }
+  const normalizedOrigin = normalizeControlUiOrigin(additionalOrigin)
+  if (normalizedOrigin) origins.push(normalizedOrigin)
   return [...new Set(origins)]
 }
 
@@ -2780,10 +2838,10 @@ function wsReadLoop(socket, onMessage, timeoutMs = DOCKER_TASK_TIMEOUT_MS) {
   return cancel
 }
 
-function patchGatewayOrigins() {
+function patchGatewayOrigins(additionalOrigin = null) {
   if (!fs.existsSync(CONFIG_PATH)) return false
   const config = readOpenclawConfigRequired()
-  const origins = requiredControlUiOrigins()
+  const origins = requiredControlUiOrigins(additionalOrigin)
   const existing = config?.gateway?.controlUi?.allowedOrigins || []
   // 合并：保留用户已有的 origins，只追加 ClawPanel 需要的
   const merged = [...new Set([...existing, ...origins])]
@@ -13025,6 +13083,7 @@ const handlers = {
     const gitConfigured = configureGitHttpsRules()
     const gitEnv = buildGitInstallEnv()
     logs.push(`Git HTTPS 规则已就绪 (${gitConfigured}/${GIT_HTTPS_REWRITES.length})`)
+    ensureTargetNodeRuntimeCompatibleForNpm(ver)
     const runInstall = (targetRegistry) => execSync(
       `${npmBin} install -g ${pkg}@${ver} --force --registry ${targetRegistry} --verbose 2>&1`,
       { timeout: 120000, windowsHide: true, env: gitEnv }
@@ -13198,8 +13257,8 @@ const handlers = {
   },
 
   // 设备配对 + Gateway 握手
-  auto_pair_device() {
-    const originsChanged = patchGatewayOrigins()
+  auto_pair_device({ origin } = {}) {
+    const originsChanged = patchGatewayOrigins(origin)
     const { deviceId, publicKey } = getOrCreateDeviceKey()
     if (!fs.existsSync(DEVICES_DIR)) fs.mkdirSync(DEVICES_DIR, { recursive: true })
     let paired = {}

@@ -9,6 +9,11 @@
 
 ### 改进 (Improvements)
 
+- **OpenClaw 7.1 安装链路加固** — npm 安装会在停止 Gateway 和清理旧文件前按目标版本校验 Node.js；无系统 Node.js 时仍可选择自带运行时的 standalone 安装
+- **standalone 升级原子切换** — 下载归档必须通过 SHA-256 和目标 CLI 版本校验，再通过同盘 staging/backup 切换；激活失败自动恢复原安装
+- **standalone 双源容灾** — 固定稳定版从 GitHub 下载时不再依赖 CDN `latest.json`，CDN 清单故障不会阻断 GitHub fallback
+- **Web 自定义域名兼容** — 自动配对会把浏览器当前 Origin 增量写入 Gateway 白名单，支持 HTTPS 域名和自定义端口部署
+
 - **Hermes 安装过程实时可见** — 安装/升级输出改为逐行实时显示（原先要等安装进程结束才出现日志），长时间安装不再只有转圈
 - **Hermes 安装镜像一键配置** — 安装步骤新增「网络与镜像」设置：PyPI 镜像（清华 / 阿里云 / 自定义）与 Git 镜像前缀可直接在向导内选择并保存，国内网络安装成功率显著提升
 - **安装失败提示可操作** — 依赖下载失败（PyPI 超时 / SSL / 代理问题）会给出明确的镜像与代理建议，不再只显示一句"安装失败"

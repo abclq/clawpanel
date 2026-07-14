@@ -228,10 +228,10 @@ fn now_ms() -> u64 {
 }
 
 #[tauri::command]
-pub fn auto_pair_device() -> Result<String, String> {
+pub fn auto_pair_device(origin: Option<String>) -> Result<String, String> {
     // 无论是否已配对，都确保 gateway.controlUi.allowedOrigins 已写入
     // 必须在最前面，避免因设备密钥不存在而跳过
-    patch_gateway_origins();
+    patch_gateway_origins(origin.as_deref());
 
     // 获取或生成设备密钥（首次安装时自动创建）
     let (device_id, public_key, _) = super::device::get_or_create_key()?;
@@ -308,19 +308,22 @@ pub fn auto_pair_device() -> Result<String, String> {
 
 /// 将 Tauri 应用的 origin 写入 gateway.controlUi.allowedOrigins
 /// 避免 Gateway 因 origin not allowed 拒绝 WebSocket 握手
-fn patch_gateway_origins() {
+fn patch_gateway_origins(additional_origin: Option<&str>) {
     let Ok(config) = super::config::load_openclaw_json() else {
         return;
     };
 
     // Tauri 应用 + 本地开发服务器必须存在的 origin
-    let required: Vec<String> = vec![
+    let mut required: Vec<String> = vec![
         "tauri://localhost".into(),
         "https://tauri.localhost".into(),
         "http://tauri.localhost".into(),
         "http://localhost:1420".into(),
         "http://127.0.0.1:1420".into(),
     ];
+    if let Some(origin) = additional_origin.and_then(normalize_control_ui_origin) {
+        required.push(origin);
+    }
 
     let existing: Vec<String> = config
         .pointer("/gateway/controlUi/allowedOrigins")
@@ -355,6 +358,14 @@ fn patch_gateway_origins() {
         }
     });
     let _ = super::config::save_openclaw_json(&patch);
+}
+
+fn normalize_control_ui_origin(value: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(value.trim()).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return None;
+    }
+    Some(parsed.origin().ascii_serialization())
 }
 
 #[tauri::command]
