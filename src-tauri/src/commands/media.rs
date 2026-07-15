@@ -1,13 +1,17 @@
 use base64::{engine::general_purpose, Engine as _};
 use futures_util::StreamExt;
 use serde_json::{json, Map, Value};
+use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::Semaphore;
 
 /// media-jobs.json 的读改写锁：并发轮询/写入时防止互相覆盖
 static MEDIA_JOBS_LOCK: Mutex<()> = Mutex::new(());
+static MEDIA_QUEUE_INFLIGHT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static MEDIA_QUEUE_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
 
 fn lock_media_jobs() -> std::sync::MutexGuard<'static, ()> {
     MEDIA_JOBS_LOCK
@@ -25,6 +29,8 @@ const MEDIA_CONFIG_FILE: &str = "media-config.json";
 const MEDIA_JOBS_FILE: &str = "media-jobs.json";
 const MAX_IMAGE_COUNT: u64 = 4;
 const MAX_ASSET_BYTES: u64 = 512 * 1024 * 1024;
+const MEDIA_QUEUE_CONCURRENCY: usize = 2;
+const MEDIA_QUEUE_POLL_INTERVAL: Duration = Duration::from_secs(5);
 /// 内嵌预览（base64 IPC）上限：超过此大小引导用户打开文件夹本地查看
 const MAX_INLINE_PREVIEW_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -366,16 +372,95 @@ fn read_json_or_default(path: &Path, default: Value) -> Value {
 }
 
 pub(super) fn write_json_atomic(path: &Path, value: &Value) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
-    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| "JSON 路径缺少父目录".to_string())?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
     let content = serde_json::to_string_pretty(value).map_err(|e| format!("序列化失败: {e}"))?;
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, content).map_err(|e| format!("写入临时文件失败: {e}"))?;
-    if path.exists() {
-        let _ = std::fs::remove_file(path);
+    let parsed: Value =
+        serde_json::from_str(&content).map_err(|e| format!("候选 JSON 校验失败: {e}"))?;
+    if &parsed != value {
+        return Err("候选 JSON 序列化后内容不一致".into());
     }
-    std::fs::rename(&tmp, path).map_err(|e| format!("替换文件失败: {e}"))
+
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("data.json");
+    let tmp = parent.join(format!(".{name}.{}.{suffix}.tmp", std::process::id()));
+    let rollback = parent.join(format!(".{name}.{}.{suffix}.old", std::process::id()));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .map_err(|e| format!("创建临时文件失败: {e}"))?;
+    if let Err(error) =
+        std::io::Write::write_all(&mut file, content.as_bytes()).and_then(|_| file.sync_all())
+    {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("写入临时文件失败: {error}"));
+    }
+    drop(file);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(error) = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!("设置临时文件权限失败: {error}"));
+        }
+    }
+
+    let had_existing = path.exists();
+    #[cfg(not(target_os = "windows"))]
+    let replace_result = {
+        if had_existing {
+            std::fs::copy(path, &rollback).map(|_| ())
+        } else {
+            Ok(())
+        }
+        .and_then(|_| std::fs::rename(&tmp, path))
+    };
+
+    #[cfg(target_os = "windows")]
+    let replace_result = if had_existing {
+        std::fs::rename(path, &rollback).and_then(|_| {
+            std::fs::rename(&tmp, path).inspect_err(|_| {
+                let _ = std::fs::rename(&rollback, path);
+            })
+        })
+    } else {
+        std::fs::rename(&tmp, path)
+    };
+
+    if let Err(error) = replace_result {
+        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(&rollback);
+        return Err(format!("替换 JSON 文件失败，原文件已保留: {error}"));
+    }
+
+    let readback = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
+    if readback.as_ref() != Some(value) {
+        if had_existing && rollback.exists() {
+            let _ = std::fs::copy(&rollback, path);
+        } else {
+            let _ = std::fs::remove_file(path);
+        }
+        let _ = std::fs::remove_file(&rollback);
+        return Err("JSON 写入后回读不一致，已恢复原文件".into());
+    }
+    let _ = std::fs::remove_file(&rollback);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
 }
 
 fn read_media_config_private() -> Value {
@@ -463,6 +548,57 @@ fn new_job_id(prefix: &str) -> String {
         chrono::Utc::now().format("%Y%m%d%H%M%S%3f"),
         rand::random::<u32>()
     )
+}
+
+fn build_queued_media_job(
+    job_id: &str,
+    kind: &str,
+    provider: &MediaProviderConfig,
+    request: &Value,
+) -> Value {
+    let now = now_iso();
+    let model = if kind == "video" {
+        &provider.video_model
+    } else {
+        &provider.image_model
+    };
+    json!({
+        "id": job_id,
+        "type": kind,
+        "provider": provider.provider,
+        "providerTaskId": null,
+        "status": "queued",
+        "providerStatus": "local-queued",
+        "prompt": str_field(request, "prompt"),
+        "model": model,
+        "createdAt": now,
+        "updatedAt": now,
+        "request": truncate_large_strings(request),
+        "assets": [],
+        "error": null,
+        "rawProviderResponse": null
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MediaRecoveryAction {
+    Schedule,
+    FailUnknown,
+    Ignore,
+}
+
+fn media_recovery_action(job: &Value) -> MediaRecoveryAction {
+    match str_field(job, "status") {
+        "queued" => MediaRecoveryAction::Schedule,
+        "running"
+            if str_field(job, "type") == "video"
+                && !str_field(job, "providerTaskId").is_empty() =>
+        {
+            MediaRecoveryAction::Schedule
+        }
+        "running" => MediaRecoveryAction::FailUnknown,
+        _ => MediaRecoveryAction::Ignore,
+    }
 }
 
 fn validate_provider_id(provider: &str) -> Result<(), String> {
@@ -1396,32 +1532,6 @@ fn truncate_large_strings(value: &Value) -> Value {
     }
 }
 
-fn media_error_job(
-    id: &str,
-    kind: &str,
-    provider: &str,
-    prompt: &str,
-    model: &str,
-    error: String,
-    raw_response: Option<Value>,
-) -> Value {
-    let now = now_iso();
-    json!({
-        "id": id,
-        "type": kind,
-        "provider": provider,
-        "providerTaskId": null,
-        "status": "failed",
-        "prompt": prompt,
-        "model": model,
-        "createdAt": now,
-        "updatedAt": now,
-        "assets": [],
-        "error": error,
-        "rawProviderResponse": raw_response.map(|v| truncate_large_strings(&v)).unwrap_or(Value::Null)
-    })
-}
-
 #[tauri::command]
 pub fn read_media_config() -> Result<Value, String> {
     ensure_media_root()?;
@@ -1524,15 +1634,11 @@ pub async fn fetch_media_models(provider: String) -> Result<Value, String> {
     }))
 }
 
-#[tauri::command]
-pub async fn generate_image(request: Value) -> Result<Value, String> {
-    validate_image_request(&request)?;
-    let provider_id = str_field(&request, "provider").to_string();
-    let prompt = str_field(&request, "prompt").to_string();
-    let provider = load_provider_config(&provider_id, "image", str_field(&request, "model"))?;
-    let job_id = new_job_id("img");
+async fn execute_queued_image_job(job_id: &str, request: &Value) -> Result<Value, String> {
+    let provider_id = str_field(request, "provider").to_string();
+    let provider = load_provider_config(&provider_id, "image", str_field(request, "model"))?;
     let client = media_http_client(provider.timeout_seconds)?;
-    let payload = build_image_generation_payload(&provider, &request);
+    let payload = build_image_generation_payload(&provider, request);
     let endpoint = build_api_url(&provider.base_url, "/images/generations");
     let resp = client
         .post(endpoint)
@@ -1549,63 +1655,28 @@ pub async fn generate_image(request: Value) -> Result<Value, String> {
     let parsed = serde_json::from_str::<Value>(&text).unwrap_or_else(|_| json!({ "raw": text }));
     if !status.is_success() {
         let error = sanitize_provider_error(&format!("HTTP {status}: {parsed}"), &provider.api_key);
-        let job = media_error_job(
-            &job_id,
-            "image",
-            &provider.provider,
-            &prompt,
-            &provider.image_model,
-            error.clone(),
-            Some(parsed),
-        );
-        let _ = upsert_media_job(job);
         return Err(error);
     }
-    let assets = match save_image_outputs(&client, &provider, &job_id, &parsed).await {
-        Ok(assets) => assets,
-        Err(error) => {
-            let job = media_error_job(
-                &job_id,
-                "image",
-                &provider.provider,
-                &prompt,
-                &provider.image_model,
-                error.clone(),
-                Some(parsed),
-            );
-            let _ = upsert_media_job(job);
-            return Err(error);
+    let assets = save_image_outputs(&client, &provider, job_id, &parsed).await?;
+    update_media_job(job_id, |entry| {
+        entry["request"] = truncate_large_strings(&payload);
+        entry["assets"] = Value::Array(assets.clone());
+        entry["rawProviderResponse"] = truncate_large_strings(&parsed);
+        entry["error"] = Value::Null;
+        if str_field(entry, "status") != "canceled" {
+            entry["status"] = Value::String("succeeded".into());
+            entry["providerStatus"] = Value::String("completed".into());
         }
-    };
-    let now = now_iso();
-    let job = json!({
-        "id": job_id,
-        "type": "image",
-        "provider": provider.provider,
-        "providerTaskId": null,
-        "status": "succeeded",
-        "prompt": prompt,
-        "model": provider.image_model,
-        "createdAt": now,
-        "updatedAt": now,
-        "request": truncate_large_strings(&payload),
-        "assets": assets,
-        "error": null,
-        "rawProviderResponse": truncate_large_strings(&parsed)
-    });
-    upsert_media_job(job)
+    })
 }
 
-#[tauri::command]
-pub async fn create_video_task(request: Value) -> Result<Value, String> {
-    validate_video_request(&request)?;
-    let provider_id = str_field(&request, "provider").to_string();
-    let prompt = str_field(&request, "prompt").to_string();
-    let provider = load_provider_config(&provider_id, "video", str_field(&request, "model"))?;
-    let job_id = new_job_id("vid");
+async fn submit_queued_video_job(job_id: &str, request: &Value) -> Result<Value, String> {
+    let provider_id = str_field(request, "provider").to_string();
+    let prompt = str_field(request, "prompt").to_string();
+    let provider = load_provider_config(&provider_id, "video", str_field(request, "model"))?;
     let client = media_http_client(provider.timeout_seconds)?;
     let (payload, resp) = if is_openai_compatible_provider(&provider.provider) {
-        let payload = build_openai_video_payload(&provider, &request);
+        let payload = build_openai_video_payload(&provider, request);
         let mut form = reqwest::multipart::Form::new()
             .text("model", str_field(&payload, "model").to_string())
             .text("prompt", str_field(&payload, "prompt").to_string())
@@ -1647,9 +1718,9 @@ pub async fn create_video_task(request: Value) -> Result<Value, String> {
         let mut payload = json!({
             "model": provider.video_model.clone(),
             "content": content,
-            "ratio": str_field(&request, "ratio"),
-            "resolution": str_field(&request, "resolution"),
-            "duration": u64_field(&request, "duration", 5)
+            "ratio": str_field(request, "ratio"),
+            "resolution": str_field(request, "resolution"),
+            "duration": u64_field(request, "duration", 5)
         });
         for key in ["ratio", "resolution"] {
             if payload[key].as_str().unwrap_or("").is_empty() {
@@ -1674,58 +1745,28 @@ pub async fn create_video_task(request: Value) -> Result<Value, String> {
     let parsed = serde_json::from_str::<Value>(&text).unwrap_or_else(|_| json!({ "raw": text }));
     if !status.is_success() {
         let error = sanitize_provider_error(&format!("HTTP {status}: {parsed}"), &provider.api_key);
-        let job = media_error_job(
-            &job_id,
-            "video",
-            &provider.provider,
-            &prompt,
-            &provider.video_model,
-            error.clone(),
-            Some(parsed),
-        );
-        let _ = upsert_media_job(job);
         return Err(error);
     }
     let provider_task_id = extract_provider_task_id(&parsed);
     if provider_task_id.is_empty() {
-        // 任务可能已在服务商侧创建并计费：即使无法识别任务 ID，也要落盘保留原始响应供恢复
-        let error = "服务商响应中没有视频任务 ID".to_string();
-        let _ = upsert_media_job(media_error_job(
-            &job_id,
-            "video",
-            &provider.provider,
-            &prompt,
-            &provider.video_model,
-            error.clone(),
-            Some(parsed),
-        ));
-        return Err(error);
+        return Err("服务商响应中没有视频任务 ID".into());
     }
     let provider_status = extract_provider_status(&parsed);
     let job_status = provider_status_to_job_status(&provider_status);
-    let now = now_iso();
-    let job = json!({
-        "id": job_id,
-        "type": "video",
-        "provider": provider.provider,
-        "providerTaskId": provider_task_id,
-        "status": job_status,
-        "providerStatus": provider_status,
-        "prompt": prompt,
-        "model": provider.video_model,
-        "createdAt": now,
-        "updatedAt": now,
-        "request": truncate_large_strings(&payload),
-        "assets": [],
-        "error": null,
-        "rawProviderResponse": truncate_large_strings(&parsed)
-    });
-    upsert_media_job(job)
+    update_media_job(job_id, |entry| {
+        entry["providerTaskId"] = Value::String(provider_task_id.clone());
+        entry["providerStatus"] = Value::String(provider_status.clone());
+        if str_field(entry, "status") != "canceled" {
+            entry["status"] = Value::String(job_status.into());
+        }
+        entry["request"] = truncate_large_strings(&payload);
+        entry["rawProviderResponse"] = truncate_large_strings(&parsed);
+        entry["error"] = Value::Null;
+    })
 }
 
-#[tauri::command]
-pub async fn poll_video_task(job_id: String) -> Result<Value, String> {
-    let job = media_job_by_id(&job_id).ok_or_else(|| format!("媒体任务不存在: {job_id}"))?;
+async fn poll_video_task_internal(job_id: &str) -> Result<Value, String> {
+    let job = media_job_by_id(job_id).ok_or_else(|| format!("媒体任务不存在: {job_id}"))?;
     if str_field(&job, "type") != "video" {
         return Err("只支持轮询视频任务".into());
     }
@@ -1760,7 +1801,7 @@ pub async fn poll_video_task(job_id: String) -> Result<Value, String> {
         let error = sanitize_provider_error(&format!("HTTP {status}: {parsed}"), &provider.api_key);
         // 429 / 5xx 属于瞬时错误：保留原状态允许继续轮询，避免把服务商侧仍在运行的付费任务永久标记为失败
         let transient = status.as_u16() == 429 || status.is_server_error();
-        return update_media_job(&job_id, |entry| {
+        return update_media_job(job_id, |entry| {
             if !transient {
                 entry["status"] = Value::String("failed".into());
             }
@@ -1776,7 +1817,7 @@ pub async fn poll_video_task(job_id: String) -> Result<Value, String> {
         let urls = collect_video_urls(&parsed);
         let mut saved = Vec::new();
         for (idx, url) in urls.iter().enumerate() {
-            match download_asset_to_media_root(&client, &provider, url, "video", &job_id, idx).await
+            match download_asset_to_media_root(&client, &provider, url, "video", job_id, idx).await
             {
                 Ok(asset) => saved.push(asset),
                 Err(e) => download_error = Some(e),
@@ -1787,7 +1828,7 @@ pub async fn poll_video_task(job_id: String) -> Result<Value, String> {
                 &client,
                 &provider,
                 &provider_task_id,
-                &job_id,
+                job_id,
                 saved.len(),
             )
             .await
@@ -1798,7 +1839,7 @@ pub async fn poll_video_task(job_id: String) -> Result<Value, String> {
         }
         assets = Value::Array(saved);
     }
-    update_media_job(&job_id, |entry| {
+    update_media_job(job_id, |entry| {
         entry["status"] = Value::String(job_status.into());
         entry["providerStatus"] = Value::String(provider_status.clone());
         entry["assets"] = assets.clone();
@@ -1811,6 +1852,196 @@ pub async fn poll_video_task(job_id: String) -> Result<Value, String> {
     })
 }
 
+fn media_queue_inflight() -> &'static Mutex<HashSet<String>> {
+    MEDIA_QUEUE_INFLIGHT.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn media_queue_semaphore() -> Arc<Semaphore> {
+    MEDIA_QUEUE_SEMAPHORE
+        .get_or_init(|| Arc::new(Semaphore::new(MEDIA_QUEUE_CONCURRENCY)))
+        .clone()
+}
+
+fn media_job_is_inflight(job_id: &str) -> bool {
+    media_queue_inflight()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains(job_id)
+}
+
+fn mark_media_job_failed(job_id: &str, error: &str) {
+    let _ = update_media_job(job_id, |entry| {
+        if matches!(str_field(entry, "status"), "canceled" | "succeeded") {
+            return;
+        }
+        entry["status"] = Value::String("failed".into());
+        entry["providerStatus"] = Value::String("local-failed".into());
+        entry["error"] = Value::String(error.to_string());
+    });
+}
+
+async fn process_media_queue_job(job_id: &str) -> Result<(), String> {
+    let mut job = media_job_by_id(job_id).ok_or_else(|| format!("媒体任务不存在: {job_id}"))?;
+    if matches!(
+        str_field(&job, "status"),
+        "succeeded" | "failed" | "canceled"
+    ) {
+        return Ok(());
+    }
+    if str_field(&job, "status") == "queued" {
+        job = update_media_job(job_id, |entry| {
+            if str_field(entry, "status") != "queued" {
+                return;
+            }
+            entry["status"] = Value::String("running".into());
+            entry["providerStatus"] = Value::String("local-starting".into());
+            entry["startedAt"] = Value::String(now_iso());
+            entry["error"] = Value::Null;
+        })?;
+        if str_field(&job, "status") != "running" {
+            return Ok(());
+        }
+        let request = job.get("request").cloned().unwrap_or_else(|| json!({}));
+        if str_field(&job, "type") == "image" {
+            execute_queued_image_job(job_id, &request).await?;
+            return Ok(());
+        }
+        submit_queued_video_job(job_id, &request).await?;
+    }
+
+    loop {
+        job = match media_job_by_id(job_id) {
+            Some(job) => job,
+            None => return Ok(()),
+        };
+        if matches!(str_field(&job, "status"), "canceled" | "failed") {
+            return Ok(());
+        }
+        if str_field(&job, "status") == "succeeded"
+            && job
+                .get("assets")
+                .and_then(Value::as_array)
+                .is_some_and(|assets| !assets.is_empty())
+        {
+            return Ok(());
+        }
+        if str_field(&job, "providerTaskId").is_empty() {
+            return Err("视频任务缺少服务商任务 ID".into());
+        }
+        match poll_video_task_internal(job_id).await {
+            Ok(updated)
+                if matches!(
+                    str_field(&updated, "status"),
+                    "succeeded" | "failed" | "canceled"
+                ) =>
+            {
+                return Ok(())
+            }
+            Ok(_) => {}
+            Err(error) => {
+                let _ = update_media_job(job_id, |entry| {
+                    if str_field(entry, "status") == "running" {
+                        entry["error"] = Value::String(error.clone());
+                    }
+                });
+            }
+        }
+        tokio::time::sleep(MEDIA_QUEUE_POLL_INTERVAL).await;
+    }
+}
+
+fn schedule_media_job(job_id: String) -> bool {
+    {
+        let mut inflight = media_queue_inflight()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !inflight.insert(job_id.clone()) {
+            return false;
+        }
+    }
+    tauri::async_runtime::spawn(async move {
+        let permit = match media_queue_semaphore().acquire_owned().await {
+            Ok(permit) => permit,
+            Err(error) => {
+                mark_media_job_failed(&job_id, &format!("后台队列不可用: {error}"));
+                media_queue_inflight()
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&job_id);
+                return;
+            }
+        };
+        if let Err(error) = process_media_queue_job(&job_id).await {
+            mark_media_job_failed(&job_id, &error);
+        }
+        drop(permit);
+        media_queue_inflight()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&job_id);
+    });
+    true
+}
+
+fn recover_media_queue() {
+    let jobs = read_media_jobs_private()
+        .get("jobs")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for job in jobs {
+        let job_id = str_field(&job, "id").to_string();
+        if job_id.is_empty() || media_job_is_inflight(&job_id) {
+            continue;
+        }
+        match media_recovery_action(&job) {
+            MediaRecoveryAction::Schedule => {
+                schedule_media_job(job_id);
+            }
+            MediaRecoveryAction::FailUnknown => mark_media_job_failed(
+                &job_id,
+                "应用重启时任务仍在提交中，服务商状态未知，请确认账单后重试",
+            ),
+            MediaRecoveryAction::Ignore => {}
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn generate_image(request: Value) -> Result<Value, String> {
+    validate_image_request(&request)?;
+    let provider_id = str_field(&request, "provider");
+    let provider = load_provider_config(provider_id, "image", str_field(&request, "model"))?;
+    let job_id = new_job_id("img");
+    let job = upsert_media_job(build_queued_media_job(
+        &job_id, "image", &provider, &request,
+    ))?;
+    schedule_media_job(job_id);
+    Ok(job)
+}
+
+#[tauri::command]
+pub async fn create_video_task(request: Value) -> Result<Value, String> {
+    validate_video_request(&request)?;
+    let provider_id = str_field(&request, "provider");
+    let provider = load_provider_config(provider_id, "video", str_field(&request, "model"))?;
+    let job_id = new_job_id("vid");
+    let job = upsert_media_job(build_queued_media_job(
+        &job_id, "video", &provider, &request,
+    ))?;
+    schedule_media_job(job_id);
+    Ok(job)
+}
+
+#[tauri::command]
+pub async fn poll_video_task(job_id: String) -> Result<Value, String> {
+    let job = poll_video_task_internal(&job_id).await?;
+    if str_field(&job, "status") == "running" {
+        schedule_media_job(job_id);
+    }
+    Ok(job)
+}
+
 #[tauri::command]
 pub async fn cancel_media_job(job_id: String) -> Result<Value, String> {
     update_media_job(&job_id, |entry| {
@@ -1821,6 +2052,7 @@ pub async fn cancel_media_job(job_id: String) -> Result<Value, String> {
 
 #[tauri::command]
 pub fn list_media_jobs(filter: Option<Value>) -> Result<Value, String> {
+    recover_media_queue();
     let filter = filter.unwrap_or_else(|| json!({}));
     let jobs_doc = read_media_jobs_private();
     Ok(media_jobs_response_from_doc(&jobs_doc, Some(&filter)))
@@ -2112,6 +2344,55 @@ mod tests {
         assert_eq!(provider_status_to_job_status("succeeded"), "succeeded");
         assert_eq!(provider_status_to_job_status("failed"), "failed");
         assert_eq!(provider_status_to_job_status("cancelled"), "canceled");
+    }
+
+    #[test]
+    fn queued_media_job_keeps_request_without_provider_credentials() {
+        let provider = MediaProviderConfig {
+            provider: "openai".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            api_key: "sk-secret".into(),
+            image_model: "gpt-image-1".into(),
+            video_model: "sora-2".into(),
+            timeout_seconds: 600,
+        };
+        let request = json!({
+            "provider": "openai",
+            "prompt": "batch image",
+            "model": "gpt-image-1",
+            "count": 2
+        });
+
+        let job = build_queued_media_job("img-test", "image", &provider, &request);
+
+        assert_eq!(job["status"], "queued");
+        assert_eq!(job["request"]["prompt"], "batch image");
+        assert_eq!(job["request"]["count"], 2);
+        assert!(job.to_string().find("sk-secret").is_none());
+    }
+
+    #[test]
+    fn recovery_only_resumes_safe_persisted_jobs() {
+        assert_eq!(
+            media_recovery_action(&json!({ "status": "queued", "type": "image" })),
+            MediaRecoveryAction::Schedule
+        );
+        assert_eq!(
+            media_recovery_action(&json!({
+                "status": "running",
+                "type": "video",
+                "providerTaskId": "provider-task-1"
+            })),
+            MediaRecoveryAction::Schedule
+        );
+        assert_eq!(
+            media_recovery_action(&json!({ "status": "running", "type": "image" })),
+            MediaRecoveryAction::FailUnknown
+        );
+        assert_eq!(
+            media_recovery_action(&json!({ "status": "succeeded", "type": "image" })),
+            MediaRecoveryAction::Ignore
+        );
     }
 
     #[test]

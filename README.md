@@ -213,7 +213,7 @@ curl -fsSL https://raw.githubusercontent.com/qingchencloud/clawpanel/main/script
 ```bash
 docker run -d --name clawpanel --restart unless-stopped \
   -p 1420:1420 -v clawpanel-data:/root/.openclaw \
-  node:22.19.0-slim \
+  node:22.22.3-slim \
   sh -c "apt-get update && apt-get install -y git && \
     npm install -g @qingchencloud/openclaw-zh --registry https://registry.npmmirror.com && \
     git clone https://github.com/qingchencloud/clawpanel.git /app && \
@@ -290,7 +290,7 @@ docker rm clawpanel
 # 重新启动新容器
 docker run -d --name clawpanel --restart unless-stopped \
   -p 1420:1420 -v clawpanel-data:/root/.openclaw \
-  node:22.19.0-slim \
+  node:22.22.3-slim \
   sh -c "apt-get update && apt-get install -y git && \
     npm install -g @qingchencloud/openclaw-zh --registry https://registry.npmmirror.com && \
     git clone https://github.com/qingchencloud/clawpanel.git /app && \

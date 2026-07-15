@@ -59,5 +59,63 @@ test('Web install_hermes does not block the server event loop with spawnSync', (
   const body = source.match(/async install_hermes\([^]*?\n  \},\n\n  async configure_hermes/)?.[0]
   assert.ok(body, 'install_hermes handler must be present')
   assert.doesNotMatch(body, /spawnSync\s*\(/)
-  assert.match(body, /await runHermesInstallCommand\s*\(/)
+  assert.match(body, /await runHermesInstallWithCacheRecovery\s*\(/)
+})
+
+test('Hermes rejects uv releases older than the archive collision fix', async () => {
+  const { isHermesUvVersionSupported } = await import('../scripts/dev-api.js')
+
+  assert.equal(isHermesUvVersionSupported('uv 0.11.14 (3fdfdc7d4 2026-05-12 x86_64-pc-windows-msvc)'), false)
+  assert.equal(isHermesUvVersionSupported('uv 0.11.24 (5e04460 2026-06-23 x86_64-pc-windows-msvc)'), true)
+  assert.equal(isHermesUvVersionSupported('uv 0.11.28 (ebf0f43 2026-07-07 x86_64-pc-windows-msvc)'), true)
+})
+
+test('Web Hermes install isolates the cache for unsafe uv and retries cache metadata failures', async () => {
+  const { runHermesInstallWithCacheRecovery } = await import('../scripts/dev-api.js')
+  const oldUvCalls = []
+  const oldUvResult = await runHermesInstallWithCacheRecovery(
+    async (_program, args) => {
+      oldUvCalls.push(args)
+      return { status: 0, stdout: 'ok', stderr: '' }
+    },
+    'uv',
+    ['tool', 'install', 'hermes-agent'],
+    {},
+    'uv 0.11.14',
+  )
+  assert.equal(oldUvResult.status, 0)
+  assert.equal(oldUvCalls.length, 1)
+  assert.ok(oldUvCalls[0].includes('--no-cache'))
+
+  const retryCalls = []
+  const retryResult = await runHermesInstallWithCacheRecovery(
+    async (_program, args) => {
+      retryCalls.push(args)
+      if (retryCalls.length === 1) {
+        return {
+          status: 2,
+          stdout: '',
+          stderr: 'The wheel is invalid: Metadata field Name not found',
+        }
+      }
+      return { status: 0, stdout: 'ok', stderr: '' }
+    },
+    'uv',
+    ['tool', 'install', 'hermes-agent'],
+    {},
+    'uv 0.11.28',
+  )
+  assert.equal(retryResult.status, 0)
+  assert.equal(retryCalls.length, 2)
+  assert.equal(retryCalls[0].includes('--no-cache'), false)
+  assert.ok(retryCalls[1].includes('--no-cache'))
+})
+
+test('Tauri Hermes installer pins a uv release with the archive collision fix', () => {
+  const source = fs.readFileSync(path.join(root, 'src-tauri/src/commands/hermes.rs'), 'utf8')
+
+  assert.match(source, /const HERMES_UV_VERSION: &str = "0\.11\.28"/)
+  assert.match(source, /const HERMES_MIN_UV_VERSION: &str = "0\.11\.24"/)
+  assert.match(source, /is_uv_wheel_cache_error/)
+  assert.match(source, /"--no-cache"/)
 })

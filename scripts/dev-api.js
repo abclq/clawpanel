@@ -15,6 +15,8 @@ import crypto from 'crypto'
 import { once } from 'events'
 import * as YAML from 'yaml'
 import * as skillhubSdk from './lib/skillhub-sdk.js'
+import { createBackgroundJobQueue } from './media-background-queue.js'
+import { normalizeModelApiType } from '../src/lib/model-presets.js'
 const DOCKER_TASK_TIMEOUT_MS = 10 * 60 * 1000
 
 // ---------------------------------------------------------------------------
@@ -22,10 +24,27 @@ const DOCKER_TASK_TIMEOUT_MS = 10 * 60 * 1000
 // ---------------------------------------------------------------------------
 const HERMES_HOME = path.join(homedir(), '.hermes')
 const HERMES_DEFAULT_PORT = 8642
-const HERMES_STABLE_VERSION = '0.18.0'
-const HERMES_STABLE_TAG = 'v2026.7.1'
+const HERMES_STABLE_VERSION = '0.18.2'
+const HERMES_STABLE_TAG = 'v2026.7.7.2'
 const HERMES_REPO_URL = 'https://github.com/NousResearch/hermes-agent.git'
 const HERMES_GIT_URL = `git+${HERMES_REPO_URL}@${HERMES_STABLE_TAG}`
+const HERMES_MIN_UV_VERSION = '0.11.24'
+const HERMES_RUNTIME_EXTRA_DEPS = ['croniter', 'httpx', 'openai', 'aiohttp', 'websockets']
+const HERMES_DASHBOARD_FALLBACK_INDEX_HTML = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Hermes Dashboard (ClawPanel stub)</title>
+    <meta name="generator" content="clawpanel-dashboard-spa-stub">
+  </head>
+  <body>
+    <main style="font-family:system-ui,-apple-system,sans-serif;padding:32px;color:#333">
+      <h1 style="margin:0 0 16px">Hermes Dashboard</h1>
+      <p>ClawPanel provides this minimal page so the Dashboard backend can issue a session token.</p>
+    </main>
+  </body>
+</html>
+`
 let _hermesInstallRunning = false
 
 function hermesProvider(id, name, authType, baseUrl, baseUrlEnvVar, apiKeyEnvVars, transport, modelsProbe, models, isAggregator = false, cliAuthHint = '') {
@@ -39,6 +58,20 @@ function hermesPackageSpec(extras = []) {
   return normalized.length
     ? `hermes-agent[${normalized.join(',')}] @ ${HERMES_GIT_URL}`
     : `hermes-agent @ ${HERMES_GIT_URL}`
+}
+
+function hermesRuntimeExtraArgs() {
+  return HERMES_RUNTIME_EXTRA_DEPS.flatMap(dep => ['--with', dep])
+}
+
+export function ensureHermesDashboardFallbackDist(home = hermesHome()) {
+  const dist = path.join(home, 'clawpanel-dashboard-web-dist')
+  fs.mkdirSync(path.join(dist, 'assets'), { recursive: true })
+  const indexPath = path.join(dist, 'index.html')
+  if (!fs.existsSync(indexPath)) {
+    fs.writeFileSync(indexPath, HERMES_DASHBOARD_FALLBACK_INDEX_HTML, 'utf8')
+  }
+  return dist
 }
 
 const HERMES_PROVIDER_REGISTRY = [
@@ -279,6 +312,50 @@ export function runHermesInstallCommand(program, args, options = {}) {
       resolve({ status, stdout, stderr })
     })
   })
+}
+
+function parseUvVersion(versionOutput = '') {
+  const match = String(versionOutput).match(/\b(\d+)\.(\d+)\.(\d+)\b/)
+  if (!match) return null
+  return match.slice(1).map(Number)
+}
+
+export function isHermesUvVersionSupported(versionOutput = '') {
+  const current = parseUvVersion(versionOutput)
+  const minimum = parseUvVersion(HERMES_MIN_UV_VERSION)
+  if (!current || !minimum) return false
+  for (let index = 0; index < minimum.length; index += 1) {
+    if (current[index] !== minimum[index]) return current[index] > minimum[index]
+  }
+  return true
+}
+
+export function isHermesWheelCacheError(text = '') {
+  const lower = String(text || '').toLowerCase()
+  return lower.includes('the wheel is invalid')
+    || lower.includes('metadata field name not found')
+    || lower.includes('failed to read from the distribution cache')
+    || lower.includes('failed to fetch wheel')
+}
+
+function withIsolatedUvCache(args) {
+  return args.includes('--no-cache') ? args : [...args, '--no-cache']
+}
+
+export async function runHermesInstallWithCacheRecovery(
+  runner,
+  program,
+  args,
+  options,
+  uvVersion,
+) {
+  const isolateInitially = !isHermesUvVersionSupported(uvVersion)
+  const firstArgs = isolateInitially ? withIsolatedUvCache(args) : args
+  let result = await runner(program, firstArgs, options)
+  if (result.status !== 0 && !isolateInitially && isHermesWheelCacheError(result.stderr)) {
+    result = await runner(program, withIsolatedUvCache(args), options)
+  }
+  return result
 }
 
 // 判断输出是否命中 「网络无法访问」 类失败，命中返回建议文案。
@@ -1489,7 +1566,39 @@ async function verifyStandaloneArchiveChecksum(downloadUrl, buffer) {
   if (actual !== expected) throw new Error(`standalone SHA-256 校验失败：expected=${expected}, actual=${actual}`)
 }
 
-function verifyStandaloneInstall(stagingDir, remoteVersion) {
+function standalonePackageDir(stagingDir) {
+  for (const packageName of [['@qingchencloud', 'openclaw-zh'], ['openclaw']]) {
+    const packageDir = path.join(stagingDir, 'node_modules', ...packageName)
+    if (fs.existsSync(path.join(packageDir, 'package.json'))) return packageDir
+  }
+  return null
+}
+
+function verifyStandaloneRuntimeDependencies(stagingDir) {
+  const packageDir = standalonePackageDir(stagingDir)
+  if (!packageDir) throw new Error('standalone 解压后未找到 OpenClaw 主包')
+
+  let packageJson
+  try {
+    packageJson = JSON.parse(fs.readFileSync(path.join(packageDir, 'package.json'), 'utf8'))
+  } catch (error) {
+    throw new Error(`standalone 主包 package.json 无法读取: ${error.message || error}`)
+  }
+
+  const dependencyRoots = [
+    path.join(packageDir, 'node_modules'),
+    path.join(stagingDir, 'node_modules'),
+  ]
+  const missing = Object.keys(packageJson.dependencies || {}).filter(dependency => {
+    const parts = dependency.split('/').filter(Boolean)
+    return !dependencyRoots.some(root => fs.existsSync(path.join(root, ...parts, 'package.json')))
+  })
+  if (missing.length > 0) {
+    throw new Error(`standalone 安装校验失败：缺少运行时依赖：${missing.sort().join(', ')}`)
+  }
+}
+
+export function verifyStandaloneInstall(stagingDir, remoteVersion) {
   const binFile = isWindows ? 'openclaw.cmd' : 'openclaw'
   const cliPath = path.join(stagingDir, binFile)
   if (!fs.existsSync(cliPath)) throw new Error('standalone 解压后未找到 openclaw 可执行文件')
@@ -1498,6 +1607,7 @@ function verifyStandaloneInstall(stagingDir, remoteVersion) {
   if (!versionsMatch(verifiedVersion, remoteVersion)) {
     throw new Error(`standalone 安装校验失败：目标 CLI 版本为 ${verifiedVersion}，清单版本为 ${remoteVersion}`)
   }
+  verifyStandaloneRuntimeDependencies(stagingDir)
   return verifiedVersion
 }
 
@@ -2391,7 +2501,7 @@ function getUid() {
   return execSync('id -u').toString().trim()
 }
 
-function stripUiFields(config) {
+export function stripUiFields(config) {
   if (!config || typeof config !== 'object' || Array.isArray(config)) return config
   // 清理根层级 ClawPanel 内部字段（version info 等），避免污染 openclaw.json
   // Issue #89: 这些字段被写入 openclaw.json 后导致 Gateway 无法启动（Unknown config keys）
@@ -2418,9 +2528,17 @@ function stripUiFields(config) {
   const providers = config?.models?.providers
   if (providers) {
     for (const p of Object.values(providers)) {
+      if (!p || typeof p !== 'object' || Array.isArray(p)) continue
+      if (p.api) p.api = normalizeModelApiType(p.api)
       if (!Array.isArray(p.models)) continue
-      for (const m of p.models) {
-        if (typeof m !== 'object') continue
+      for (let index = 0; index < p.models.length; index += 1) {
+        if (typeof p.models[index] === 'string' && p.models[index].trim()) {
+          const id = p.models[index].trim()
+          p.models[index] = { id, name: id }
+        }
+        const m = p.models[index]
+        if (!m || typeof m !== 'object' || Array.isArray(m)) continue
+        if (m.api) m.api = normalizeModelApiType(m.api)
         delete m.lastTestAt
         delete m.latency
         delete m.testStatus
@@ -2878,14 +2996,19 @@ function readOpenclawConfigRequired() {
   return cleanLoadedConfig(config)
 }
 
-function mergeConfigsPreservingFields(existing, next) {
+function mergeConfigsPreservingFields(existing, next, currentPath = '') {
   if (!existing || typeof existing !== 'object' || Array.isArray(existing)) return next
   if (!next || typeof next !== 'object' || Array.isArray(next)) return next
   const merged = { ...existing }
   for (const [key, value] of Object.entries(next)) {
+    if (currentPath === 'models.providers' && value === null) {
+      delete merged[key]
+      continue
+    }
+    const childPath = currentPath ? `${currentPath}.${key}` : key
     const prev = existing[key]
     if (prev && typeof prev === 'object' && !Array.isArray(prev) && value && typeof value === 'object' && !Array.isArray(value)) {
-      merged[key] = mergeConfigsPreservingFields(prev, value)
+      merged[key] = mergeConfigsPreservingFields(prev, value, childPath)
     } else {
       merged[key] = value
     }
@@ -2912,12 +3035,14 @@ function modelEnvValuesForConfig(config) {
   return values
 }
 
-function validateModelProviderEnvRefs(config) {
+export function validateModelProviderEnvRefs(config, previousConfig = null) {
   const providers = config?.models?.providers
   if (!providers || typeof providers !== 'object' || Array.isArray(providers)) return
+  const previousProviders = previousConfig?.models?.providers
   const values = modelEnvValuesForConfig(config)
   for (const [providerName, provider] of Object.entries(providers)) {
     if (!provider || typeof provider !== 'object') continue
+    if (provider.apiKey === previousProviders?.[providerName]?.apiKey) continue
     const envKey = modelApiKeyEnvRef(provider.apiKey)
     if (!envKey) continue
     const configured = values[envKey] !== undefined && String(values[envKey]).trim()
@@ -2928,11 +3053,61 @@ function validateModelProviderEnvRefs(config) {
   }
 }
 
+function validateOpenclawModelCandidate(config) {
+  if (config.models === undefined) return
+  if (!config.models || typeof config.models !== 'object' || Array.isArray(config.models)) {
+    throw new Error('OpenClaw models 必须是对象')
+  }
+  const providers = config.models.providers
+  if (providers === undefined) return
+  if (!providers || typeof providers !== 'object' || Array.isArray(providers)) {
+    throw new Error('OpenClaw models.providers 必须是对象')
+  }
+  for (const [providerId, provider] of Object.entries(providers)) {
+    if (!provider || typeof provider !== 'object' || Array.isArray(provider)) {
+      throw new Error(`模型服务商 ${providerId} 配置必须是对象`)
+    }
+    if (provider.api !== undefined && (typeof provider.api !== 'string' || !provider.api.trim())) {
+      throw new Error(`模型服务商 ${providerId} 的 api 必须是非空字符串`)
+    }
+    if (provider.api === 'openai-codex-responses') {
+      throw new Error(`模型服务商 ${providerId} 使用了已移除的 api；请改用 openai-chatgpt-responses`)
+    }
+    if (provider.baseUrl !== undefined && typeof provider.baseUrl !== 'string') {
+      throw new Error(`模型服务商 ${providerId} 的 baseUrl 必须是字符串`)
+    }
+    if (provider.baseUrl && !/^https?:\/\//.test(provider.baseUrl)) {
+      throw new Error(`模型服务商 ${providerId} 的 baseUrl 必须使用 http 或 https`)
+    }
+    if (provider.models === undefined) continue
+    if (!Array.isArray(provider.models)) throw new Error(`模型服务商 ${providerId} 的 models 必须是数组`)
+    provider.models.forEach((model, index) => {
+      if (!model || typeof model !== 'object' || Array.isArray(model)) {
+        throw new Error(`模型服务商 ${providerId} 的第 ${index + 1} 个模型必须是对象`)
+      }
+      for (const key of ['id', 'name']) {
+        if (typeof model[key] !== 'string' || !model[key].trim()) {
+          throw new Error(`模型服务商 ${providerId} 的第 ${index + 1} 个模型缺少 ${key}`)
+        }
+      }
+      if (model.api === 'openai-codex-responses') {
+        throw new Error(`模型服务商 ${providerId} 的模型 ${model.id} 使用了已移除的 api`)
+      }
+      for (const key of ['contextWindow', 'contextTokens', 'maxTokens']) {
+        if (model[key] !== undefined && (!Number.isInteger(model[key]) || model[key] <= 0)) {
+          throw new Error(`模型服务商 ${providerId} 的模型 ${model.id} 字段 ${key} 必须是正整数`)
+        }
+      }
+    })
+  }
+}
+
 function writeOpenclawConfigFile(config) {
   const cleaned = stripUiFields(config)
-  validateModelProviderEnvRefs(cleaned)
-  if (fs.existsSync(CONFIG_PATH)) fs.copyFileSync(CONFIG_PATH, CONFIG_PATH + '.bak')
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(cleaned, null, 2))
+  const previous = fs.existsSync(CONFIG_PATH) ? readJsonFileRelaxed(CONFIG_PATH) : null
+  validateModelProviderEnvRefs(cleaned, previous)
+  validateOpenclawModelCandidate(cleaned)
+  writeJsonAtomic(CONFIG_PATH, cleaned, { backup: true })
 }
 
 function ensureAgentsList(config) {
@@ -8048,6 +8223,11 @@ function triggerGatewayReloadNonBlocking(reason) {
 let _gwRestartInflight = null
 let _gwRestartLastFinishedAt = 0
 const GW_RESTART_COOLDOWN_MS = 2000
+const OPENCLAW_NATIVE_CONFIG_RELOAD_VERSION_FLOOR = '2026.7.1'
+
+function supportsNativeConfigReload(version = getLocalOpenclawVersion()) {
+  return !!version && versionGe(baseVersion(version), OPENCLAW_NATIVE_CONFIG_RELOAD_VERSION_FLOOR)
+}
 
 async function guardedGatewayRestart(source = 'unknown') {
   if (process.env.DISABLE_GATEWAY_SPAWN === '1' || process.env.DISABLE_GATEWAY_SPAWN === 'true') {
@@ -8923,6 +9103,43 @@ function _normalizeBaseUrl(raw) {
   return base
 }
 
+const DIRECT_MODEL_TEST_APIS = new Set([
+  'openai-completions',
+  'openai-responses',
+  'azure-openai-responses',
+  'anthropic-messages',
+  'google-generative-ai',
+  'ollama',
+])
+
+function _assertDirectModelTestSupported(apiType) {
+  if (!DIRECT_MODEL_TEST_APIS.has(apiType)) {
+    throw new Error(`该 API 类型需要由 OpenClaw 运行时验证: ${apiType}`)
+  }
+}
+
+function _extractSingleModelReply(data) {
+  if (typeof data?.output_text === 'string' && data.output_text) return data.output_text
+  if (Array.isArray(data?.output)) {
+    const output = data.output
+      .flatMap(item => Array.isArray(item?.content) ? item.content : [])
+      .filter(part => ['output_text', 'text'].includes(part?.type))
+      .map(part => part?.text)
+      .filter(Boolean)
+      .join('')
+    if (output) return output
+  }
+  const anthropic = (data?.content || []).filter(b => b.type === 'text').map(b => b.text).join('')
+  if (anthropic) return anthropic
+  const gemini = data?.candidates?.[0]?.content?.parts?.map?.(part => part.text).filter(Boolean).join('') || ''
+  if (gemini) return gemini
+  const message = data?.choices?.[0]?.message
+  if (message?.content) return message.content
+  if (message?.reasoning_content) return `[reasoning] ${message.reasoning_content}`
+  if (typeof data?.output?.text === 'string') return data.output.text
+  return ''
+}
+
 function isValidEnvKey(key) {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(key || '')
 }
@@ -8980,7 +9197,18 @@ function modelEnvValues() {
   return values
 }
 
-function resolveModelApiKey(apiKey) {
+export function resolveModelApiKey(apiKey) {
+  if (apiKey && typeof apiKey === 'object' && !Array.isArray(apiKey)) {
+    const source = String(apiKey.source || '').trim()
+    const id = String(apiKey.id || '').trim()
+    if (source !== 'env' || !isValidEnvKey(id)) {
+      throw new Error('该 SecretRef 需要由 OpenClaw 运行时解析，请使用 OpenClaw 模型探测')
+    }
+    const values = modelEnvValues()
+    const value = values[id] ?? process.env[id]
+    if (value !== undefined && String(value).trim()) return String(value)
+    throw new Error(`API Key 引用了环境变量 ${id}，但未在 OpenClaw env、~/.openclaw/.env 或当前进程环境中找到`)
+  }
   const key = modelApiKeyEnvRef(apiKey)
   if (!key) return apiKey || ''
   const values = modelEnvValues()
@@ -9347,12 +9575,69 @@ function readJsonOrDefault(file, fallback) {
   }
 }
 
-function writeJsonAtomic(file, value) {
+export function writeJsonAtomic(file, value, { backup = false } = {}) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
-  const tmp = `${file}.tmp`
-  fs.writeFileSync(tmp, JSON.stringify(value, null, 2))
-  if (fs.existsSync(file)) fs.rmSync(file, { force: true })
-  fs.renameSync(tmp, file)
+  const content = JSON.stringify(value, null, 2)
+  const parsed = JSON.parse(content)
+  if (JSON.stringify(parsed) !== JSON.stringify(value)) throw new Error('候选配置序列化后内容不一致')
+  const suffix = `${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
+  const tmp = `${file}.${suffix}.tmp`
+  try {
+    const fd = fs.openSync(tmp, 'wx', 0o600)
+    try {
+      fs.writeFileSync(fd, content)
+      fs.fsyncSync(fd)
+    } finally {
+      fs.closeSync(fd)
+    }
+  } catch (error) {
+    fs.rmSync(tmp, { force: true })
+    throw new Error(`写入候选配置失败: ${error.message || error}`)
+  }
+
+  const hadExisting = fs.existsSync(file)
+  const rollback = hadExisting ? `${file}.${suffix}.old` : ''
+  try {
+    if (backup && hadExisting) {
+      const stableBackup = `${file}.bak`
+      fs.copyFileSync(file, stableBackup)
+      const backupFd = fs.openSync(stableBackup, 'r+')
+      try {
+        fs.fsyncSync(backupFd)
+      } finally {
+        fs.closeSync(backupFd)
+      }
+      if (process.platform !== 'win32') fs.chmodSync(stableBackup, 0o600)
+    }
+    if (hadExisting) {
+      if (process.platform === 'win32') fs.renameSync(file, rollback)
+      else fs.copyFileSync(file, rollback)
+    }
+    fs.renameSync(tmp, file)
+  } catch (error) {
+    if (rollback && fs.existsSync(rollback)) {
+      if (fs.existsSync(file)) fs.copyFileSync(rollback, file)
+      else fs.renameSync(rollback, file)
+    }
+    fs.rmSync(tmp, { force: true })
+    if (rollback) fs.rmSync(rollback, { force: true })
+    throw new Error(`替换配置失败，原配置已保留: ${error.message || error}`)
+  }
+
+  let readbackMatches = false
+  try {
+    const readback = JSON.parse(fs.readFileSync(file, 'utf8'))
+    readbackMatches = JSON.stringify(readback) === JSON.stringify(value)
+  } catch {}
+  if (!readbackMatches) {
+    if (rollback && fs.existsSync(rollback)) fs.copyFileSync(rollback, file)
+    else if (backup && fs.existsSync(`${file}.bak`)) fs.copyFileSync(`${file}.bak`, file)
+    else fs.rmSync(file, { force: true })
+    if (rollback) fs.rmSync(rollback, { force: true })
+    throw new Error('配置写入后回读不一致，已恢复原配置')
+  }
+  if (rollback) fs.rmSync(rollback, { force: true })
+  if (process.platform !== 'win32') fs.chmodSync(file, 0o600)
 }
 
 function mediaApiKeyMask(key) {
@@ -9377,12 +9662,35 @@ function replaceHermesFilesTransaction(entries) {
   try {
     for (const entry of staged) {
       fs.mkdirSync(path.dirname(entry.file), { recursive: true })
-      fs.writeFileSync(entry.temp, entry.content, entry.mode ? { mode: entry.mode } : undefined)
+      const fd = fs.openSync(entry.temp, 'wx', entry.mode || 0o600)
+      try {
+        fs.writeFileSync(fd, entry.content)
+        fs.fsyncSync(fd)
+      } finally {
+        fs.closeSync(fd)
+      }
+    }
+    for (const entry of staged) {
+      if (!entry.existed) continue
+      const stableBackup = `${entry.file}.bak`
+      fs.copyFileSync(entry.file, stableBackup)
+      const backupFd = fs.openSync(stableBackup, 'r+')
+      try {
+        fs.fsyncSync(backupFd)
+      } finally {
+        fs.closeSync(backupFd)
+      }
+      if (process.platform !== 'win32') fs.chmodSync(stableBackup, entry.mode || 0o600)
     }
     for (const entry of staged) {
       if (entry.existed) fs.renameSync(entry.file, entry.backup)
       fs.renameSync(entry.temp, entry.file)
       entry.installed = true
+    }
+    for (const entry of staged) {
+      if (fs.readFileSync(entry.file, 'utf8') !== entry.content) {
+        throw new Error('Hermes 配置写入后回读不一致')
+      }
     }
     for (const entry of staged) {
       if (entry.existed) fs.rmSync(entry.backup, { force: true })
@@ -9455,7 +9763,7 @@ export function syncHermesProviderFilesAt(home, {
   }
 
   replaceHermesFilesTransaction(entries)
-  return { providerId, envKey: config.apiKeyEnvVars[0] }
+  return { providerId, envKey: config.apiKeyEnvVars[0], verified: true }
 }
 
 // === 统一模型渠道（与 src-tauri/src/commands/model_channels.rs 行为保持一致） ===
@@ -9476,12 +9784,22 @@ function normalizeChannelModel(entry) {
   }
   const id = String(entry?.id || '').trim()
   if (!id) return null
-  const out = { id }
+  const out = { ...entry, id }
   const name = String(entry?.name || '').trim()
   if (name) out.name = name
-  const ctx = Number(entry?.contextWindow)
-  if (Number.isFinite(ctx) && ctx > 0) out.contextWindow = ctx
+  for (const key of ['contextWindow', 'contextTokens', 'maxTokens']) {
+    const value = Number(entry?.[key])
+    if (Number.isFinite(value) && value > 0) out[key] = value
+    else delete out[key]
+  }
+  if (out.api) out.api = normalizeModelApiType(out.api)
   return out
+}
+
+function normalizeChannelApiKeyRef(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  if (!String(value.source || '').trim() || !String(value.id || '').trim()) return null
+  return structuredClone(value)
 }
 
 function normalizeModelChannel(entry, current) {
@@ -9491,7 +9809,18 @@ function normalizeModelChannel(entry, current) {
   const baseUrl = String(entry?.baseUrl || '').trim().replace(/\/+$/, '')
   if (baseUrl && !/^https?:\/\//.test(baseUrl)) return null
   const incomingKey = String(entry?.apiKey || '').trim()
-  const apiKey = isChannelKeepSentinel(incomingKey) ? String(current?.apiKey || '') : incomingKey
+  const keepKey = isChannelKeepSentinel(incomingKey)
+  const currentKey = String(current?.apiKey || '')
+  const apiKey = keepKey ? currentKey : incomingKey
+  const incomingRef = normalizeChannelApiKeyRef(entry?.apiKeyRef)
+  const currentRef = normalizeChannelApiKeyRef(current?.apiKeyRef)
+  const apiKeyRef = keepKey ? (incomingRef || currentRef) : null
+  const currentVersion = Number(current?.credentialVersion) || (currentKey ? 1 : 0)
+  const storedVersion = Number(entry?.credentialVersion) || 0
+  const refChanged = JSON.stringify(apiKeyRef) !== JSON.stringify(currentRef)
+  const credentialVersion = current
+    ? (((!keepKey && apiKey !== currentKey) || refChanged) ? currentVersion + 1 : currentVersion)
+    : Math.max(storedVersion, (apiKey || apiKeyRef) ? 1 : 0)
   const models = []
   const seen = new Set()
   for (const item of Array.isArray(entry?.models) ? entry.models : []) {
@@ -9503,13 +9832,20 @@ function normalizeModelChannel(entry, current) {
   }
   let defaultModel = String(entry?.defaultModel || '').trim()
   if (!models.some(m => m.id === defaultModel)) defaultModel = models[0]?.id || ''
+  const providerConfig = entry?.providerConfig && typeof entry.providerConfig === 'object' && !Array.isArray(entry.providerConfig)
+    ? { ...entry.providerConfig }
+    : {}
+  for (const key of ['baseUrl', 'api', 'apiKey', 'models']) delete providerConfig[key]
   return {
     id,
     name,
     presetKey: String(entry?.presetKey || '').trim(),
     baseUrl,
-    apiType: String(entry?.apiType || '').trim() || 'openai-completions',
+    apiType: normalizeModelApiType(entry?.apiType),
     apiKey,
+    ...(apiKeyRef ? { apiKeyRef } : {}),
+    credentialVersion,
+    providerConfig,
     models,
     defaultModel,
     enabled: entry?.enabled !== false,
@@ -9517,7 +9853,7 @@ function normalizeModelChannel(entry, current) {
   }
 }
 
-function normalizeModelChannelsDoc(config, current) {
+export function normalizeModelChannelsDoc(config, current) {
   const currentChannels = Array.isArray(current?.channels) ? current.channels : []
   const channels = []
   const seen = new Set()
@@ -9529,12 +9865,12 @@ function normalizeModelChannelsDoc(config, current) {
     if (normalized) channels.push(normalized)
   }
   const syncState = config?.syncState && typeof config.syncState === 'object' ? config.syncState : {}
-  return { version: 1, channels, syncState }
+  return { version: 2, channels, syncState }
 }
 
 function readModelChannelsPrivate() {
   return normalizeModelChannelsDoc(
-    readJsonOrDefault(modelChannelsPath(), { version: 1, channels: [], syncState: {} }),
+    readJsonOrDefault(modelChannelsPath(), { version: 2, channels: [], syncState: {} }),
     null,
   )
 }
@@ -9545,8 +9881,8 @@ function sanitizeModelChannelsForRead(doc) {
     channels: doc.channels.map(ch => ({
       ...ch,
       apiKey: '',
-      apiKeySaved: Boolean(String(ch.apiKey || '').trim()),
-      apiKeyMask: mediaApiKeyMask(ch.apiKey),
+      apiKeySaved: Boolean(String(ch.apiKey || '').trim() || ch.apiKeyRef),
+      apiKeyMask: ch.apiKeyRef ? 'SecretRef' : mediaApiKeyMask(ch.apiKey),
     })),
   }
 }
@@ -10278,21 +10614,184 @@ function truncateLargeStrings(value) {
   return value
 }
 
-function mediaErrorJob(id, kind, provider, prompt, model, error, rawProviderResponse = null) {
-  const now = mediaNowIso()
-  return {
-    id,
-    type: kind,
-    provider,
-    providerTaskId: null,
-    status: 'failed',
-    prompt,
-    model,
-    createdAt: now,
-    updatedAt: now,
-    assets: [],
-    error,
-    rawProviderResponse: rawProviderResponse == null ? null : truncateLargeStrings(rawProviderResponse),
+const MEDIA_QUEUE_CONCURRENCY = 2
+const MEDIA_QUEUE_POLL_INTERVAL_MS = 5000
+const MEDIA_TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'canceled'])
+
+function findMediaJob(jobId) {
+  return readMediaJobsPrivate().jobs.find(item => item.id === jobId) || null
+}
+
+function markMediaJobFailed(jobId, error) {
+  try {
+    return updateMediaJob(jobId, entry => {
+      if (entry.status === 'canceled' || entry.status === 'succeeded') return
+      entry.status = 'failed'
+      entry.providerStatus = 'local-failed'
+      entry.error = error?.message || String(error)
+    })
+  } catch (writeError) {
+    console.error('[media-queue] 无法写入失败状态', jobId, writeError)
+    return null
+  }
+}
+
+async function executeQueuedImageJob(jobId, request) {
+  const providerId = mediaStr(request, 'provider')
+  const provider = loadMediaProviderConfig(providerId, 'image', mediaStr(request, 'model'))
+  const payload = buildMediaImagePayload(provider, request)
+  const endpoint = buildMediaApiUrl(provider.baseUrl, '/images/generations')
+  const resp = await fetchWithTimeout(endpoint, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${provider.apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  }, provider.timeoutSeconds)
+  const parsed = await readProviderJson(resp)
+  if (!resp.ok) {
+    throw new Error(sanitizeProviderError(`HTTP ${resp.status}: ${JSON.stringify(parsed)}`, provider.apiKey))
+  }
+  const assets = await saveImageOutputs(provider, jobId, parsed)
+  return updateMediaJob(jobId, entry => {
+    entry.request = truncateLargeStrings(payload)
+    entry.assets = assets
+    entry.rawProviderResponse = truncateLargeStrings(parsed)
+    entry.error = null
+    if (entry.status !== 'canceled') {
+      entry.status = 'succeeded'
+      entry.providerStatus = 'completed'
+    }
+  })
+}
+
+async function submitQueuedVideoJob(jobId, request) {
+  const providerId = mediaStr(request, 'provider')
+  const prompt = mediaStr(request, 'prompt')
+  const provider = loadMediaProviderConfig(providerId, 'video', mediaStr(request, 'model'))
+  let payload
+  let resp
+  if (isOpenAICompatibleMediaProvider(provider.provider)) {
+    payload = buildOpenAIVideoPayload(provider, request)
+    const form = new FormData()
+    form.set('model', payload.model)
+    form.set('prompt', payload.prompt)
+    form.set('seconds', payload.seconds)
+    form.set('size', payload.size)
+    if (provider.provider === MEDIA_PROVIDER_NEWAPI) {
+      form.set('duration', payload.seconds)
+      const [width, height] = String(payload.size || '').split('x')
+      if (width && height) {
+        form.set('width', width)
+        form.set('height', height)
+      }
+    }
+    if (payload.image) form.set('image', payload.image)
+    if (payload.input_reference) form.set('input_reference', JSON.stringify(payload.input_reference))
+    resp = await fetchWithTimeout(buildMediaApiUrl(provider.baseUrl, '/videos'), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${provider.apiKey}` },
+      body: form,
+    }, provider.timeoutSeconds)
+  } else {
+    const content = [{ type: 'text', text: prompt }]
+    const imageUrl = mediaStr(request, 'imageUrl')
+    if (imageUrl) content.push({ type: 'image_url', image_url: { url: imageUrl } })
+    payload = {
+      model: provider.videoModel,
+      content,
+      duration: mediaNum(request, 'duration', 5),
+    }
+    const ratio = mediaStr(request, 'ratio')
+    const resolution = mediaStr(request, 'resolution')
+    if (ratio) payload.ratio = ratio
+    if (resolution) payload.resolution = resolution
+    resp = await fetchWithTimeout(buildMediaApiUrl(provider.baseUrl, '/contents/generations/tasks'), {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${provider.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    }, provider.timeoutSeconds)
+  }
+  const parsed = await readProviderJson(resp)
+  if (!resp.ok) {
+    throw new Error(sanitizeProviderError(`HTTP ${resp.status}: ${JSON.stringify(parsed)}`, provider.apiKey))
+  }
+  const providerTaskId = extractProviderTaskId(parsed)
+  if (!providerTaskId) throw new Error('服务商响应中没有视频任务 ID')
+  const providerStatus = extractProviderStatus(parsed)
+  return updateMediaJob(jobId, entry => {
+    entry.providerTaskId = providerTaskId
+    entry.providerStatus = providerStatus
+    entry.status = entry.status === 'canceled' ? 'canceled' : providerStatusToJobStatus(providerStatus)
+    entry.request = truncateLargeStrings(payload)
+    entry.rawProviderResponse = truncateLargeStrings(parsed)
+    entry.error = null
+  })
+}
+
+async function processMediaQueueJob(jobId) {
+  let job = findMediaJob(jobId)
+  if (!job || MEDIA_TERMINAL_STATUSES.has(job.status)) return
+  if (job.status === 'queued') {
+    job = updateMediaJob(jobId, entry => {
+      if (entry.status !== 'queued') return
+      entry.status = 'running'
+      entry.providerStatus = 'local-starting'
+      entry.startedAt = mediaNowIso()
+      entry.error = null
+    })
+    if (job.status !== 'running') return
+    if (job.type === 'image') {
+      await executeQueuedImageJob(jobId, job.request || {})
+      return
+    }
+    await submitQueuedVideoJob(jobId, job.request || {})
+  }
+
+  while (true) {
+    job = findMediaJob(jobId)
+    if (!job || job.status === 'canceled' || job.status === 'failed') return
+    if (job.status === 'succeeded' && Array.isArray(job.assets) && job.assets.length) return
+    if (!job.providerTaskId) throw new Error('视频任务缺少服务商任务 ID')
+    try {
+      const updated = await handlers.poll_video_task({ jobId })
+      if (MEDIA_TERMINAL_STATUSES.has(updated.status)) return
+    } catch (error) {
+      updateMediaJob(jobId, entry => {
+        if (entry.status === 'running') entry.error = error?.message || String(error)
+      })
+    }
+    await new Promise(resolve => setTimeout(resolve, MEDIA_QUEUE_POLL_INTERVAL_MS))
+  }
+}
+
+const mediaQueue = createBackgroundJobQueue({
+  concurrency: MEDIA_QUEUE_CONCURRENCY,
+  worker: processMediaQueueJob,
+  onError: markMediaJobFailed,
+})
+
+function queueMediaJob(jobId) {
+  return mediaQueue.enqueue(jobId)
+}
+
+function recoverMediaQueue() {
+  const jobs = readMediaJobsPrivate().jobs
+  for (const job of jobs) {
+    if (job.status === 'queued') {
+      queueMediaJob(job.id)
+      continue
+    }
+    if (job.status !== 'running' || mediaQueue.has(job.id)) continue
+    if (job.type === 'video' && job.providerTaskId) {
+      queueMediaJob(job.id)
+    } else {
+      markMediaJobFailed(job.id, new Error('应用重启时任务仍在提交中，服务商状态未知，请确认账单后重试'))
+    }
   }
 }
 
@@ -10436,6 +10935,10 @@ const handlers = {
   },
 
   async reload_gateway() {
+    const version = getLocalOpenclawVersion()
+    if (supportsNativeConfigReload(version)) {
+      return `OpenClaw ${version} 已接收配置变更，将由内核自动应用`
+    }
     return guardedGatewayRestart('reload_gateway')
   },
 
@@ -12219,9 +12722,8 @@ const handlers = {
 
   // 模型测试
   async test_model({ baseUrl, apiKey, modelId, apiType = 'openai-completions' }) {
-    const type = ['anthropic', 'anthropic-messages'].includes(apiType) ? 'anthropic-messages'
-      : apiType === 'google-gemini' ? 'google-gemini'
-      : 'openai-completions'
+    const type = normalizeModelApiType(apiType)
+    _assertDirectModelTestSupported(type)
     apiKey = resolveModelApiKey(apiKey)
     let base = _normalizeBaseUrl(baseUrl)
     // 仅 Anthropic 强制补 /v1，OpenAI 兼容类不强制（火山引擎等用 /v3）
@@ -12243,11 +12745,23 @@ const handlers = {
           }),
           signal: controller.signal
         })
-      } else if (type === 'google-gemini') {
+      } else if (type === 'google-generative-ai') {
         resp = await fetch(`${base}/models/${encodeURIComponent(modelId)}:generateContent?key=${encodeURIComponent(apiKey || '')}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'Hi' }] }] }),
+          signal: controller.signal
+        })
+      } else if (['openai-responses', 'azure-openai-responses'].includes(type)) {
+        const headers = { 'Content-Type': 'application/json' }
+        if (apiKey) {
+          if (type === 'azure-openai-responses') headers['api-key'] = apiKey
+          else headers['Authorization'] = `Bearer ${apiKey}`
+        }
+        resp = await fetch(`${base}/responses`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ model: modelId, input: 'Hi', max_output_tokens: 16 }),
           signal: controller.signal
         })
       } else {
@@ -12273,15 +12787,12 @@ const handlers = {
           const parsed = JSON.parse(text)
           msg = parsed.error?.message || parsed.message || msg
         } catch {}
-        if (resp.status === 401 || resp.status === 403) throw new Error(msg)
-        return `⚠ 连接正常（API 返回 ${resp.status}，部分模型对简单测试不兼容，不影响实际使用）`
+        throw new Error(`API 返回 ${resp.status}: ${msg}`)
       }
       const data = await resp.json()
-      const anthropicText = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('')
-      const geminiText = data.candidates?.[0]?.content?.parts?.map?.(p => p.text).filter(Boolean).join('') || ''
-      const content = data.choices?.[0]?.message?.content
-      const reasoning = data.choices?.[0]?.message?.reasoning_content
-      return anthropicText || geminiText || content || (reasoning ? `[reasoning] ${reasoning}` : '（无回复内容）')
+      const reply = _extractSingleModelReply(data)
+      if (!reply) throw new Error('API 已响应但未解析出内容')
+      return reply
     } catch (e) {
       clearTimeout(timeout)
       if (e.name === 'AbortError') throw new Error('请求超时 (30s)')
@@ -12291,9 +12802,8 @@ const handlers = {
 
   // 模型测试（详细版 #Compat-1）：返回 {success, status, reqUrl, reqBody, respBody, reply, error, elapsedMs, usedApi}
   async test_model_verbose({ baseUrl, apiKey, modelId, apiType = 'openai-completions' }) {
-    const type = ['anthropic', 'anthropic-messages'].includes(apiType) ? 'anthropic-messages'
-      : apiType === 'google-gemini' ? 'google-gemini'
-      : 'openai-completions'
+    const type = normalizeModelApiType(apiType)
+    _assertDirectModelTestSupported(type)
     apiKey = resolveModelApiKey(apiKey)
     let base = _normalizeBaseUrl(baseUrl)
     if (type === 'anthropic-messages' && !/\/v1$/i.test(base)) base += '/v1'
@@ -12311,12 +12821,22 @@ const handlers = {
       reqBody = { model: modelId, messages: [{ role: 'user', content: '你好，请用一句话回复' }], max_tokens: 200 }
       headers = { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', 'Accept-Encoding': 'identity' }
       if (apiKey) headers['x-api-key'] = apiKey
-    } else if (type === 'google-gemini') {
+    } else if (type === 'google-generative-ai') {
       usedApi = 'Gemini'
       reqUrl = `${base}/models/${encodeURIComponent(modelId)}:generateContent?key=***`
       realUrl = `${base}/models/${encodeURIComponent(modelId)}:generateContent?key=${encodeURIComponent(apiKey || '')}`
       reqBody = { contents: [{ role: 'user', parts: [{ text: '你好，请用一句话回复' }] }] }
       headers = { 'Content-Type': 'application/json', 'Accept-Encoding': 'identity' }
+    } else if (['openai-responses', 'azure-openai-responses'].includes(type)) {
+      usedApi = 'Responses'
+      reqUrl = `${base}/responses`
+      realUrl = reqUrl
+      reqBody = { model: modelId, input: '你好，请用一句话回复', max_output_tokens: 200 }
+      headers = { 'Content-Type': 'application/json', 'Accept-Encoding': 'identity' }
+      if (apiKey) {
+        if (type === 'azure-openai-responses') headers['api-key'] = apiKey
+        else headers['Authorization'] = `Bearer ${apiKey}`
+      }
     } else {
       // OpenAI 兼容路径用 stream:true：部分兼容网关的 non-streaming 分支对某些模型
       // 会返回 200 + 空 body，而 streaming 分支所有 provider 都稳定支持，与真实对话一致
@@ -12368,17 +12888,7 @@ const handlers = {
     if (!reply) {
       try {
         const v = JSON.parse(respBody)
-        if (Array.isArray(v.content)) {
-          reply = v.content.filter(b => b.type === 'text').map(b => b.text).join('')
-        }
-        if (!reply && v.candidates?.[0]?.content?.parts) {
-          reply = v.candidates[0].content.parts.map(p => p.text).filter(Boolean).join('')
-        }
-        if (!reply && v.choices?.[0]?.message) {
-          const msg = v.choices[0].message
-          reply = msg.content || (msg.reasoning_content ? `[reasoning] ${msg.reasoning_content}` : '')
-        }
-        if (!reply && v.output?.text) reply = v.output.text
+        reply = _extractSingleModelReply(v)
       } catch {}
     }
 
@@ -12398,9 +12908,8 @@ const handlers = {
   },
 
   async list_remote_models({ baseUrl, apiKey, apiType = 'openai-completions' }) {
-    const type = ['anthropic', 'anthropic-messages'].includes(apiType) ? 'anthropic-messages'
-      : apiType === 'google-gemini' ? 'google-gemini'
-      : 'openai-completions'
+    const type = normalizeModelApiType(apiType)
+    _assertDirectModelTestSupported(type)
     apiKey = resolveModelApiKey(apiKey)
     let base = _normalizeBaseUrl(baseUrl)
     // 仅 Anthropic 强制补 /v1，OpenAI 兼容类不强制（火山引擎等用 /v3）
@@ -12413,11 +12922,14 @@ const handlers = {
         const headers = { 'anthropic-version': '2023-06-01' }
         if (apiKey) headers['x-api-key'] = apiKey
         resp = await fetch(`${base}/models`, { headers, signal: controller.signal })
-      } else if (type === 'google-gemini') {
+      } else if (type === 'google-generative-ai') {
         resp = await fetch(`${base}/models?key=${encodeURIComponent(apiKey || '')}`, { signal: controller.signal })
       } else {
         const headers = {}
-        if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
+        if (apiKey) {
+          if (type === 'azure-openai-responses') headers['api-key'] = apiKey
+          else headers['Authorization'] = `Bearer ${apiKey}`
+        }
         resp = await fetch(`${base}/models`, { headers, signal: controller.signal })
       }
       clearTimeout(timeout)
@@ -13381,7 +13893,7 @@ const handlers = {
 
   write_model_channels({ config }) {
     const normalized = normalizeModelChannelsDoc(config, readModelChannelsPrivate())
-    writeJsonAtomic(modelChannelsPath(), normalized)
+    writeJsonAtomic(modelChannelsPath(), normalized, { backup: true })
     return sanitizeModelChannelsForRead(normalized)
   },
 
@@ -13389,6 +13901,7 @@ const handlers = {
     const doc = readModelChannelsPrivate()
     const channel = doc.channels.find(ch => ch.id === String(channelId || '').trim())
     if (!channel) throw new Error(`模型渠道不存在: ${channelId}`)
+    if (channel.apiKeyRef) throw new Error('该渠道使用 OpenClaw SecretRef，只能原样同步到 OpenClaw')
     return channel.apiKey || ''
   },
 
@@ -13462,47 +13975,25 @@ const handlers = {
     const prompt = mediaStr(request, 'prompt')
     const provider = loadMediaProviderConfig(providerId, 'image', mediaStr(request, 'model'))
     const jobId = newMediaJobId('img')
-    const payload = buildMediaImagePayload(provider, request)
-
-    const endpoint = buildMediaApiUrl(provider.baseUrl, '/images/generations')
-    const resp = await fetchWithTimeout(endpoint, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${provider.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    }, provider.timeoutSeconds)
-    const parsed = await readProviderJson(resp)
-    if (!resp.ok) {
-      const error = sanitizeProviderError(`HTTP ${resp.status}: ${JSON.stringify(parsed)}`, provider.apiKey)
-      upsertMediaJob(mediaErrorJob(jobId, 'image', provider.provider, prompt, provider.imageModel, error, parsed))
-      throw new Error(error)
-    }
-    let assets
-    try {
-      assets = await saveImageOutputs(provider, jobId, parsed)
-    } catch (error) {
-      const message = error?.message || String(error)
-      upsertMediaJob(mediaErrorJob(jobId, 'image', provider.provider, prompt, provider.imageModel, message, parsed))
-      throw error
-    }
     const now = mediaNowIso()
-    return upsertMediaJob({
+    const job = upsertMediaJob({
       id: jobId,
       type: 'image',
       provider: provider.provider,
       providerTaskId: null,
-      status: 'succeeded',
+      status: 'queued',
+      providerStatus: 'local-queued',
       prompt,
       model: provider.imageModel,
       createdAt: now,
       updatedAt: now,
-      request: truncateLargeStrings(payload),
-      assets,
+      request: truncateLargeStrings(request),
+      assets: [],
       error: null,
-      rawProviderResponse: truncateLargeStrings(parsed),
+      rawProviderResponse: null,
     })
+    queueMediaJob(jobId)
+    return job
   },
 
   async create_video_task({ request }) {
@@ -13512,84 +14003,25 @@ const handlers = {
     const prompt = mediaStr(request, 'prompt')
     const provider = loadMediaProviderConfig(providerId, 'video', mediaStr(request, 'model'))
     const jobId = newMediaJobId('vid')
-    let payload
-    let resp
-    if (isOpenAICompatibleMediaProvider(provider.provider)) {
-      payload = buildOpenAIVideoPayload(provider, request)
-      const form = new FormData()
-      form.set('model', payload.model)
-      form.set('prompt', payload.prompt)
-      form.set('seconds', payload.seconds)
-      form.set('size', payload.size)
-      if (provider.provider === MEDIA_PROVIDER_NEWAPI) {
-        form.set('duration', payload.seconds)
-        const [width, height] = String(payload.size || '').split('x')
-        if (width && height) {
-          form.set('width', width)
-          form.set('height', height)
-        }
-      }
-      if (payload.image) form.set('image', payload.image)
-      if (payload.input_reference) form.set('input_reference', JSON.stringify(payload.input_reference))
-      resp = await fetchWithTimeout(buildMediaApiUrl(provider.baseUrl, '/videos'), {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${provider.apiKey}` },
-        body: form,
-      }, provider.timeoutSeconds)
-    } else {
-      const content = [{ type: 'text', text: prompt }]
-      const imageUrl = mediaStr(request, 'imageUrl')
-      if (imageUrl) content.push({ type: 'image_url', image_url: { url: imageUrl } })
-      payload = {
-        model: provider.videoModel,
-        content,
-        duration: mediaNum(request, 'duration', 5),
-      }
-      const ratio = mediaStr(request, 'ratio')
-      const resolution = mediaStr(request, 'resolution')
-      if (ratio) payload.ratio = ratio
-      if (resolution) payload.resolution = resolution
-
-      resp = await fetchWithTimeout(buildMediaApiUrl(provider.baseUrl, '/contents/generations/tasks'), {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${provider.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-      }, provider.timeoutSeconds)
-    }
-    const parsed = await readProviderJson(resp)
-    if (!resp.ok) {
-      const error = sanitizeProviderError(`HTTP ${resp.status}: ${JSON.stringify(parsed)}`, provider.apiKey)
-      upsertMediaJob(mediaErrorJob(jobId, 'video', provider.provider, prompt, provider.videoModel, error, parsed))
-      throw new Error(error)
-    }
-    const providerTaskId = extractProviderTaskId(parsed)
-    if (!providerTaskId) {
-      // 任务可能已在服务商侧创建并计费：即使无法识别任务 ID，也要落盘保留原始响应供恢复
-      const error = '服务商响应中没有视频任务 ID'
-      upsertMediaJob(mediaErrorJob(jobId, 'video', provider.provider, prompt, provider.videoModel, error, parsed))
-      throw new Error(error)
-    }
-    const providerStatus = extractProviderStatus(parsed)
     const now = mediaNowIso()
-    return upsertMediaJob({
+    const job = upsertMediaJob({
       id: jobId,
       type: 'video',
       provider: provider.provider,
-      providerTaskId,
-      status: providerStatusToJobStatus(providerStatus),
-      providerStatus,
+      providerTaskId: null,
+      status: 'queued',
+      providerStatus: 'local-queued',
       prompt,
       model: provider.videoModel,
       createdAt: now,
       updatedAt: now,
-      request: truncateLargeStrings(payload),
+      request: truncateLargeStrings(request),
       assets: [],
       error: null,
-      rawProviderResponse: truncateLargeStrings(parsed),
+      rawProviderResponse: null,
     })
+    queueMediaJob(jobId)
+    return job
   },
 
   async poll_video_task({ jobId }) {
@@ -13655,6 +14087,7 @@ const handlers = {
   },
 
   list_media_jobs({ filter } = {}) {
+    recoverMediaQueue()
     const doc = readMediaJobsPrivate()
     return buildMediaJobsResponse(doc, filter || {})
   },
@@ -14318,13 +14751,14 @@ const handlers = {
     // 2. 安装
     const pkg = hermesPackageSpec(extras)
     const installArgs = method === 'uv-pip'
-      ? ['pip', 'install', pkg]
-      : ['tool', 'install', '--force', pkg, '--python', '3.11', '--with', 'croniter', '--with', 'httpx', '--with', 'openai', '--with', 'aiohttp', '--with', 'websockets']
-    const result = await runHermesInstallCommand(uv, installArgs, {
+      ? ['pip', 'install', pkg, ...HERMES_RUNTIME_EXTRA_DEPS]
+      : ['tool', 'install', '--force', pkg, '--python', '3.11', ...hermesRuntimeExtraArgs()]
+    const uvVersion = runHermesSilent(uv, ['--version']).stdout || ''
+    const result = await runHermesInstallWithCacheRecovery(runHermesInstallCommand, uv, installArgs, {
       env: buildHermesInstallEnv(readPanelConfig()),
       timeout: 600000,
       windowsHide: true,
-    })
+    }, uvVersion)
     if (result.status !== 0) {
       const cleaned = sanitizeHermesInstallOutput((result.stderr || '').trim())
       const hint = diagnoseHermesInstallError(cleaned)
@@ -15912,7 +16346,7 @@ const handlers = {
   hermes_sync_provider({ provider, apiKey, baseUrl, model, setDefault } = {}) {
     return syncHermesProviderFilesAt(hermesHome(), {
       provider,
-      apiKey,
+      apiKey: resolveModelApiKey(apiKey),
       baseUrl,
       model,
       setDefault: Boolean(setDefault),
@@ -16131,6 +16565,7 @@ const handlers = {
     }
     // 注入 .env
     const envVars = { ...process.env, PATH: hermesEnhancedPath() }
+    envVars.HERMES_WEB_DIST = ensureHermesDashboardFallbackDist(home)
     const envPath = path.join(home, '.env')
     if (fs.existsSync(envPath)) {
       for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
@@ -16140,7 +16575,7 @@ const handlers = {
         if (eq > 0) envVars[t.slice(0, eq).trim()] = t.slice(eq + 1).trim()
       }
     }
-    const child = spawn('hermes', ['dashboard'], {
+    const child = spawn('hermes', ['dashboard', '--no-open'], {
       cwd: home,
       env: envVars,
       stdio: ['ignore', out, err],
@@ -16900,7 +17335,7 @@ const handlers = {
     const uvPath = path.join(uvBinDir(), isWindows ? 'uv.exe' : 'uv')
     const uv = fs.existsSync(uvPath) ? uvPath : 'uv'
     const pkg = hermesPackageSpec(['web'])
-    const result = spawnSync(uv, ['tool', 'install', '--reinstall', pkg, '--python', '3.11', '--with', 'croniter'], {
+    const result = spawnSync(uv, ['tool', 'install', '--reinstall', pkg, '--python', '3.11', ...hermesRuntimeExtraArgs()], {
       env: { ...process.env, PATH: hermesEnhancedPath(), GIT_TERMINAL_PROMPT: '0', ...gitMirrorEnv() },
       timeout: 600000, windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
     })

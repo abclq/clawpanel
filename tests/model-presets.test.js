@@ -1,11 +1,38 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import {
-  API_TYPES,
-  PROVIDER_PRESETS,
-  MODEL_PRESETS,
-} from '../src/lib/model-presets.js'
+import * as presets from '../src/lib/model-presets.js'
+
+const { API_TYPES, PROVIDER_PRESETS, MODEL_PRESETS } = presets
+
+test('OpenClaw 7.1 API 类型与上游契约一致', () => {
+  assert.deepEqual(API_TYPES.map(item => item.value), [
+    'openai-completions',
+    'openai-responses',
+    'openai-chatgpt-responses',
+    'anthropic-messages',
+    'google-generative-ai',
+    'google-vertex',
+    'github-copilot',
+    'bedrock-converse-stream',
+    'ollama',
+    'azure-openai-responses',
+  ])
+})
+
+test('旧 Codex Responses API 类型迁移到 7.1 正式名称', () => {
+  assert.equal(typeof presets.normalizeModelApiType, 'function')
+  assert.equal(presets.normalizeModelApiType('openai-codex-responses'), 'openai-chatgpt-responses')
+  assert.equal(presets.normalizeModelApiType('openai-responses'), 'openai-responses')
+  assert.equal(presets.normalizeModelApiType('future-adapter'), 'future-adapter')
+})
+
+test('编辑未知 OpenClaw API 类型时保留原值供用户选择', () => {
+  const options = presets.modelApiTypeOptions('future-adapter')
+  assert.equal(options[0].value, 'future-adapter')
+  assert.equal(options.filter(item => item.value === 'future-adapter').length, 1)
+  assert.ok(options.some(item => item.value === 'openai-completions'))
+})
 
 // ===== Provider Presets =====
 

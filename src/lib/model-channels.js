@@ -4,11 +4,12 @@
  * 渠道是唯一维护入口（Base URL + API Key + 模型列表），通过显式同步推送到
  * OpenClaw / Hermes / 晴辰助手。同步全部组合现有 API 完成：
  * - OpenClaw：read/write_openclaw_config（后端自带备份，合并保留未知字段）
- * - Hermes：hermes_env_set（写 .env）+ hermes_model_config_save（自带备份）
+ * - Hermes：hermes_sync_provider（事务更新 .env + config.yaml）
  * - 助手：一次性拷贝到 localStorage（clawpanel-assistant）
  * 本模块自身不直接写任何引擎配置文件。
  */
 import { api } from './tauri-api.js'
+import { normalizeModelApiType } from './model-presets.js'
 
 export const ASSISTANT_STORAGE_KEY = 'clawpanel-assistant'
 
@@ -32,24 +33,26 @@ export const ASSISTANT_SUPPORTED_API_TYPES = [
 ]
 
 export function hermesSyncSupported(channel) {
-  return Boolean(HERMES_TARGET_MAP[channel?.apiType])
+  return !channel?.apiKeyRef && Boolean(HERMES_TARGET_MAP[channel?.apiType])
 }
 
 export function assistantSyncSupported(channel) {
-  return ASSISTANT_SUPPORTED_API_TYPES.includes(channel?.apiType)
+  return !channel?.apiKeyRef && ASSISTANT_SUPPORTED_API_TYPES.includes(channel?.apiType)
 }
 
 /**
  * 渠道内容指纹（djb2）：基于脱敏字段计算，用于「已同步 / 有未同步变更」徽标。
- * apiKeyMask 参与计算 —— Key 更换时掩码随之变化。
+ * credentialVersion 覆盖明文 Key 变更，apiKeyRef 覆盖结构化凭据引用变更。
  */
 export function channelFingerprint(channel) {
   const src = JSON.stringify([
     channel?.name || '',
     channel?.baseUrl || '',
-    channel?.apiType || '',
-    channel?.apiKeyMask || '',
-    (channel?.models || []).map(m => m.id),
+    normalizeModelApiType(channel?.apiType),
+    channel?.credentialVersion || channel?.apiKeyMask || '',
+    channel?.apiKeyRef || null,
+    channel?.models || [],
+    channel?.providerConfig || {},
     channel?.defaultModel || '',
   ])
   let hash = 5381
@@ -74,17 +77,32 @@ function asObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
 }
 
+function matchesSubset(expected, actual) {
+  if (Array.isArray(expected)) {
+    return Array.isArray(actual)
+      && expected.length === actual.length
+      && expected.every((value, index) => matchesSubset(value, actual[index]))
+  }
+  if (expected && typeof expected === 'object') {
+    if (!actual || typeof actual !== 'object' || Array.isArray(actual)) return false
+    return Object.entries(expected).every(([key, value]) => matchesSubset(value, actual[key]))
+  }
+  return Object.is(expected, actual)
+}
+
 /**
  * 同步到 OpenClaw：只 upsert 渠道对应的 models.providers.{key}，
  * 展开旧对象保留未知字段；渠道模型为准但保留目标已有模型的测试元数据。
  */
 export async function syncChannelToOpenclaw(channel, { setDefault = false } = {}) {
-  const apiKey = await api.revealModelChannelKey(channel.id)
+  const apiKeyRef = asObject(channel?.apiKeyRef)
+  const apiKeyValue = Object.keys(apiKeyRef).length
+    ? apiKeyRef
+    : await api.revealModelChannelKey(channel.id)
   const config = asObject(await api.readOpenclawConfig())
-  config.models = asObject(config.models)
-  config.models.providers = asObject(config.models.providers)
+  const providers = asObject(asObject(config.models).providers)
   const providerKey = channelProviderKey(channel)
-  const existing = asObject(config.models.providers[providerKey])
+  const existing = asObject(providers[providerKey])
   const existingModels = Array.isArray(existing.models) ? existing.models : []
 
   // 内核 ModelDefinitionSchema 为 strict 且 id/name 必填（zod-schema.core.ts）：
@@ -95,6 +113,7 @@ export async function syncChannelToOpenclaw(channel, { setDefault = false } = {}
     const prevObj = prev && typeof prev === 'object' ? prev : {}
     const merged = {
       ...prevObj,
+      ...model,
       id: model.id,
       name: model.name || prevObj.name || model.id,
     }
@@ -102,25 +121,40 @@ export async function syncChannelToOpenclaw(channel, { setDefault = false } = {}
     return merged
   })
 
-  config.models.providers[providerKey] = {
+  const providerPatch = {
     ...existing,
+    ...asObject(channel.providerConfig),
     baseUrl: channel.baseUrl,
-    api: channel.apiType,
-    apiKey,
+    api: normalizeModelApiType(channel.apiType),
+    apiKey: apiKeyValue,
     models,
   }
 
+  const patch = { models: { providers: { [providerKey]: providerPatch } } }
   if (setDefault && channel.defaultModel) {
-    config.agents = asObject(config.agents)
-    config.agents.defaults = asObject(config.agents.defaults)
-    config.agents.defaults.model = {
-      ...asObject(config.agents.defaults.model),
-      primary: `${providerKey}/${channel.defaultModel}`,
-    }
+    patch.agents = { defaults: { model: { primary: `${providerKey}/${channel.defaultModel}` } } }
   }
 
-  await api.writeOpenclawConfig(config)
-  return { providerKey, modelCount: models.length }
+  await api.writeOpenclawConfig(patch)
+  const readback = asObject(await api.readOpenclawConfig())
+  const savedProvider = asObject(asObject(readback.models).providers)[providerKey]
+  const expectedProvider = {
+    ...asObject(channel.providerConfig),
+    baseUrl: channel.baseUrl,
+    api: normalizeModelApiType(channel.apiType),
+    apiKey: apiKeyValue,
+    models,
+  }
+  if (!savedProvider || !matchesSubset(expectedProvider, savedProvider)) {
+    throw new Error(`OpenClaw 配置写入后回读核对失败: ${providerKey}`)
+  }
+  if (setDefault && channel.defaultModel) {
+    const primary = readback?.agents?.defaults?.model?.primary
+    if (primary !== `${providerKey}/${channel.defaultModel}`) {
+      throw new Error(`OpenClaw 默认模型写入后回读核对失败: ${providerKey}/${channel.defaultModel}`)
+    }
+  }
+  return { providerKey, modelCount: models.length, verified: true }
 }
 
 /** 解析渠道对应的 Hermes provider（API Key 型；预设命中优先，否则用核对过的回退 id），不支持返回 null */
@@ -168,6 +202,9 @@ export async function syncChannelToHermes(channel, { setDefault = false } = {}) 
  * apiKey 由调用方 reveal 后传入，避免本模块内多次取明文。
  */
 export function syncChannelToAssistant(channel, apiKey, model = '') {
+  if (/^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$/.test(String(apiKey || '').trim())) {
+    throw new Error('环境变量引用不能直接保存到浏览器助手，请改用明文 Key 或通过后端代理')
+  }
   let config = {}
   try {
     config = JSON.parse(localStorage.getItem(ASSISTANT_STORAGE_KEY) || '{}') || {}
@@ -179,7 +216,18 @@ export function syncChannelToAssistant(channel, apiKey, model = '') {
   config.model = model || channel.defaultModel || config.model || ''
   config.apiType = channel.apiType
   localStorage.setItem(ASSISTANT_STORAGE_KEY, JSON.stringify(config))
-  return { model: config.model }
+  let readback
+  try {
+    readback = JSON.parse(localStorage.getItem(ASSISTANT_STORAGE_KEY) || '{}')
+  } catch {
+    throw new Error('助手模型配置写入后回读失败')
+  }
+  const verified = readback?.baseUrl === config.baseUrl
+    && readback?.apiKey === config.apiKey
+    && readback?.model === config.model
+    && readback?.apiType === config.apiType
+  if (!verified) throw new Error('助手模型配置写入后回读不一致')
+  return { model: config.model, verified: true }
 }
 
 /** 从 OpenClaw 现有 providers 生成渠道（跳过已按 presetKey 存在的），用于冷启动导入 */
@@ -191,16 +239,22 @@ export async function importChannelsFromOpenclaw(existingChannels = []) {
   for (const [key, provider] of Object.entries(providers)) {
     if (!provider || typeof provider !== 'object' || taken.has(key)) continue
     const models = (Array.isArray(provider.models) ? provider.models : [])
-      .map(m => (typeof m === 'string' ? { id: m } : { id: String(m?.id || '').trim(), name: m?.name }))
+      .map(m => (typeof m === 'string'
+        ? { id: m }
+        : { ...m, id: String(m?.id || '').trim(), name: m?.name }))
       .filter(m => m.id)
+    const { baseUrl, api: providerApi, apiKey, models: _models, ...providerConfig } = provider
+    const apiKeyRef = asObject(apiKey)
     imported.push({
       id: `ch-${key}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4)}`,
       name: key,
       presetKey: key,
-      baseUrl: String(provider.baseUrl || '').trim().replace(/\/+$/, ''),
-      apiType: String(provider.api || 'openai-completions').trim(),
-      apiKey: String(provider.apiKey || ''),
+      baseUrl: String(baseUrl || '').trim().replace(/\/+$/, ''),
+      apiType: normalizeModelApiType(providerApi),
+      apiKey: typeof apiKey === 'string' ? apiKey : '',
+      ...(Object.keys(apiKeyRef).length ? { apiKeyRef } : {}),
       models,
+      providerConfig,
       defaultModel: '',
       enabled: true,
     })

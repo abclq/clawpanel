@@ -6,6 +6,7 @@
 //!   3. 写入 Hermes Home 下的 config.yaml + .env
 
 use serde_json::Value;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -1681,12 +1682,12 @@ pub async fn hermes_dashboard_start(app: tauri::AppHandle) -> Result<Value, Stri
     // 2. 清掉残留 PID（来自上一次 spawn）
     let _ = kill_dashboard_pid();
 
-    // 2b. 上游 wheel 漏装 dashboard_auth + web_dist 时，dashboard 进程会直接崩。
-    // 在 spawn 前先做一次幂等 stub 注入，覆盖既有用户（从早期版本升上来、没走过 install_hermes
-    // 的新代码路径）也能立即恢复。已存在的真实文件不会被覆盖。
+    // 2b. 旧版安装缺失 dashboard_auth 时先幂等补齐；最新版源码标签不附带 SPA，
+    // ClawPanel 会另外通过 HERMES_WEB_DIST 提供仅用于 token bootstrap 的最小页面。
     inject_hermes_dashboard_compat_stub(&app);
 
     let home = hermes_home();
+    let dashboard_dist = ensure_hermes_dashboard_fallback_dist(&home)?;
     let log_path = home.join("dashboard-run.log");
     let log_file =
         std::fs::File::create(&log_path).map_err(|e| format!("创建日志文件失败: {e}"))?;
@@ -1696,11 +1697,12 @@ pub async fn hermes_dashboard_start(app: tauri::AppHandle) -> Result<Value, Stri
 
     let enhanced = hermes_enhanced_path();
     let mut cmd = std::process::Command::new(hermes_program_for_spawn()?);
-    cmd.args(["dashboard"])
+    cmd.args(["dashboard", "--no-open"])
         .current_dir(&home)
         .stdin(std::process::Stdio::null())
         .stdout(log_file)
         .stderr(log_err);
+    cmd.env("HERMES_WEB_DIST", dashboard_dist);
     apply_hermes_runtime_env(&mut cmd, &enhanced);
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
@@ -1868,7 +1870,7 @@ pub async fn install_hermes(
 
     let _ = app.emit("hermes-install-progress", 90u32);
 
-    // Step 2b: 注入 dashboard 兼容 stub（弥补上游 wheel 漏装 dashboard_auth + web_dist）
+    // Step 2b: 为早期缺失 dashboard_auth 的安装保留兼容 stub。
     inject_hermes_dashboard_compat_stub(&app);
 
     // Step 3: 验证安装
@@ -1899,7 +1901,40 @@ pub async fn install_hermes(
     }
 }
 
-/// 确保 uv 二进制可用，不存在则下载
+const HERMES_UV_VERSION: &str = "0.11.28";
+const HERMES_MIN_UV_VERSION: &str = "0.11.24";
+
+fn parse_version_triplet(text: &str) -> Option<[u64; 3]> {
+    text.split_whitespace().find_map(|part| {
+        let normalized = part.trim_matches(|ch: char| !ch.is_ascii_digit() && ch != '.');
+        let values = normalized
+            .split('.')
+            .map(str::parse::<u64>)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        (values.len() == 3).then(|| [values[0], values[1], values[2]])
+    })
+}
+
+fn is_hermes_uv_version_supported(version_output: &str) -> bool {
+    let Some(current) = parse_version_triplet(version_output) else {
+        return false;
+    };
+    let Some(minimum) = parse_version_triplet(HERMES_MIN_UV_VERSION) else {
+        return false;
+    };
+    current >= minimum
+}
+
+fn is_uv_wheel_cache_error(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("the wheel is invalid")
+        || lower.contains("metadata field name not found")
+        || lower.contains("failed to read from the distribution cache")
+        || lower.contains("failed to fetch wheel")
+}
+
+/// 确保 uv 二进制可用；版本低于缓存冲突修复基线时下载受管版本。
 async fn ensure_uv(app: &tauri::AppHandle) -> Result<String, String> {
     ensure_hermes_portable_dirs()?;
     let uv_path = uv_bin_path();
@@ -1909,8 +1944,16 @@ async fn ensure_uv(app: &tauri::AppHandle) -> Result<String, String> {
     if uv_path.exists() {
         let path_str = uv_path.to_string_lossy().to_string();
         if let Ok(ver) = run_silent(&path_str, &["--version"]) {
-            let _ = app.emit("hermes-install-log", format!("✓ uv 已就绪: {ver}"));
-            return Ok(path_str);
+            if is_hermes_uv_version_supported(&ver) {
+                let _ = app.emit("hermes-install-log", format!("✓ uv 已就绪: {ver}"));
+                return Ok(path_str);
+            }
+            let _ = app.emit(
+                "hermes-install-log",
+                format!(
+                    "⚠ uv 版本过低: {ver}；Hermes 安装要求 >= {HERMES_MIN_UV_VERSION}，将更新受管 uv"
+                ),
+            );
         }
     }
 
@@ -1923,11 +1966,19 @@ async fn ensure_uv(app: &tauri::AppHandle) -> Result<String, String> {
         // 系统 PATH 中有 uv
         let enhanced = hermes_enhanced_path();
         if let Ok(ver) = run_at_path("uv", &["--version"], &enhanced) {
-            let _ = app.emit("hermes-install-log", format!("✓ 系统 uv 已就绪: {ver}"));
-            if let Some(path) = find_executable_path("uv", &enhanced) {
-                return Ok(path);
+            if is_hermes_uv_version_supported(&ver) {
+                let _ = app.emit("hermes-install-log", format!("✓ 系统 uv 已就绪: {ver}"));
+                if let Some(path) = find_executable_path("uv", &enhanced) {
+                    return Ok(path);
+                }
+                return Ok("uv".into());
             }
-            return Ok("uv".into());
+            let _ = app.emit(
+                "hermes-install-log",
+                format!(
+                    "⚠ 系统 {ver} 早于缓存修复版本 {HERMES_MIN_UV_VERSION}，将安装受管 uv {HERMES_UV_VERSION}"
+                ),
+            );
         }
     }
 
@@ -1935,7 +1986,7 @@ async fn ensure_uv(app: &tauri::AppHandle) -> Result<String, String> {
     let _ = app.emit("hermes-install-log", "📦 下载 uv 包管理器...");
     let _ = app.emit("hermes-install-progress", 5u32);
 
-    let version = "0.7.12"; // 稳定版本
+    let version = HERMES_UV_VERSION;
     let url = uv_download_url(version);
     let _ = app.emit("hermes-install-log", format!("下载: {url}"));
 
@@ -2051,9 +2102,40 @@ fn extract_uv_tar_gz(data: &[u8], dest: &std::path::Path) -> Result<(), String> 
     Err("tar.gz 中未找到 uv".into())
 }
 
-const HERMES_STABLE_VERSION: &str = "0.18.0";
-const HERMES_STABLE_TAG: &str = "v2026.7.1";
+const HERMES_STABLE_VERSION: &str = "0.18.2";
+const HERMES_STABLE_TAG: &str = "v2026.7.7.2";
 const HERMES_GIT_REPO_URL: &str = "https://github.com/NousResearch/hermes-agent.git";
+
+#[cfg(test)]
+mod hermes_uv_install_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_uv_before_archive_collision_fix() {
+        assert!(!is_hermes_uv_version_supported(
+            "uv 0.11.14 (3fdfdc7d4 2026-05-12 x86_64-pc-windows-msvc)"
+        ));
+        assert!(is_hermes_uv_version_supported(
+            "uv 0.11.24 (5e04460 2026-06-23 x86_64-pc-windows-msvc)"
+        ));
+        assert!(is_hermes_uv_version_supported(
+            "uv 0.11.28 (ebf0f43 2026-07-07 x86_64-pc-windows-msvc)"
+        ));
+    }
+
+    #[test]
+    fn recognizes_invalid_wheel_metadata_as_cache_recoverable() {
+        assert!(is_uv_wheel_cache_error(
+            "The wheel is invalid: Metadata field Name not found"
+        ));
+        assert!(is_uv_wheel_cache_error(
+            "Failed to read from the distribution cache"
+        ));
+        assert!(!is_uv_wheel_cache_error(
+            "Could not resolve host: github.com"
+        ));
+    }
+}
 
 /// Runtime Python deps that `hermes-agent` needs at runtime but are NOT declared as
 /// install-time dependencies in its `[project].dependencies` (e.g. lazy-loaded
@@ -2089,8 +2171,10 @@ fn hermes_runtime_extras_log_segment() -> String {
 // particular, the missing dashboard_auth subpackage breaks `hermes dashboard`
 // completely, taking down every ClawPanel page that talks to port 9119
 // (Profile, Kanban, OAuth, Channels, Sessions detail).
-// Current stable Hermes v0.18.0 / v2026.7.1 ships these files; this remains a
-// no-op compatibility fallback for users upgrading from older broken installs.
+// Current stable Hermes v0.18.2 / v2026.7.7.2 ships dashboard_auth, but a source
+// install still omits web_dist. ClawPanel-spawned Dashboard processes use the
+// managed HERMES_WEB_DIST below; package injection remains as an idempotent
+// compatibility fallback for existing and externally started installations.
 //
 // To stay self-sufficient (per project policy: do not patch upstream), we
 // inject a minimal pass-through stub into the installed venv:
@@ -2245,6 +2329,18 @@ const HERMES_DASHBOARD_WEB_DIST_INDEX_HTML: &str = r#"<!doctype html>
   </body>
 </html>
 "#;
+
+fn ensure_hermes_dashboard_fallback_dist(home: &Path) -> Result<PathBuf, String> {
+    let dist = home.join("clawpanel-dashboard-web-dist");
+    std::fs::create_dir_all(dist.join("assets"))
+        .map_err(|e| format!("创建 Hermes Dashboard 兼容资源目录失败: {e}"))?;
+    let index_path = dist.join("index.html");
+    if !index_path.exists() {
+        std::fs::write(&index_path, HERMES_DASHBOARD_WEB_DIST_INDEX_HTML)
+            .map_err(|e| format!("写入 Hermes Dashboard 兼容首页失败: {e}"))?;
+    }
+    Ok(dist)
+}
 
 /// Resolve `<uv tool dir>/hermes-agent` — the venv root that `uv tool install`
 /// creates. Returns `None` if `uv` is unavailable or hermes-agent isn't installed
@@ -2632,26 +2728,25 @@ async fn install_via_uv_tool(
 
     let pkg = hermes_package_spec(extras);
 
-    let mut cmd = tokio::process::Command::new(uv_path);
-    cmd.args(["tool", "install", "--force", &pkg, "--python", "3.11"]);
-    append_hermes_runtime_extras(&mut cmd);
-
-    // 配置 PyPI 镜像（extras 的依赖仍从 PyPI 下载）
-    if let Some(mirror) = pypi_mirror_url() {
-        cmd.args(["--index-url", &mirror]);
-    }
-
-    // 代理
-    super::apply_proxy_env_tokio(&mut cmd);
-    let enhanced = hermes_enhanced_path();
-    apply_hermes_runtime_env_tokio(&mut cmd, &enhanced);
-    // uv 需要 git 来克隆仓库
-    cmd.env("GIT_TERMINAL_PROMPT", "0");
-    // 用户配置了 Git 镜像（如 ghproxy）→ 进程级注入 insteadOf 重写
-    apply_git_mirror_env(&mut cmd);
-
-    #[cfg(target_os = "windows")]
-    cmd.creation_flags(CREATE_NO_WINDOW);
+    let build_install_command = |no_cache: bool| {
+        let mut cmd = tokio::process::Command::new(uv_path);
+        cmd.args(["tool", "install", "--force", &pkg, "--python", "3.11"]);
+        append_hermes_runtime_extras(&mut cmd);
+        if no_cache {
+            cmd.arg("--no-cache");
+        }
+        if let Some(mirror) = pypi_mirror_url() {
+            cmd.args(["--index-url", &mirror]);
+        }
+        super::apply_proxy_env_tokio(&mut cmd);
+        let enhanced = hermes_enhanced_path();
+        apply_hermes_runtime_env_tokio(&mut cmd, &enhanced);
+        cmd.env("GIT_TERMINAL_PROMPT", "0");
+        apply_git_mirror_env(&mut cmd);
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd
+    };
 
     let _ = app.emit(
         "hermes-install-log",
@@ -2662,7 +2757,16 @@ async fn install_via_uv_tool(
     );
 
     // 流式执行：安装输出逐行实时显示，不再等进程结束
-    let (status, stderr_text) = run_install_command_streaming(app, cmd).await?;
+    let (mut status, mut stderr_text) =
+        run_install_command_streaming(app, build_install_command(false)).await?;
+    if !status.success() && is_uv_wheel_cache_error(&stderr_text) {
+        let _ = app.emit(
+            "hermes-install-log",
+            "⚠ 检测到 uv wheel 缓存异常，正在使用隔离缓存自动重试...",
+        );
+        (status, stderr_text) =
+            run_install_command_streaming(app, build_install_command(true)).await?;
+    }
 
     if status.success() {
         let _ = app.emit("hermes-install-log", "✓ uv tool install 完成");
@@ -2747,24 +2851,43 @@ async fn install_via_uv_pip(
     let pkg = hermes_package_spec(extras);
     let _ = app.emit(
         "hermes-install-log",
-        format!("> uv pip install hermes-agent@{HERMES_STABLE_TAG}"),
+        format!(
+            "> uv pip install hermes-agent@{HERMES_STABLE_TAG} {}",
+            HERMES_RUNTIME_EXTRA_DEPS.join(" ")
+        ),
     );
 
-    let mut pip_cmd = tokio::process::Command::new(uv_path);
-    pip_cmd.args(["pip", "install", &pkg]);
-    pip_cmd.env("GIT_TERMINAL_PROMPT", "0");
-    pip_cmd.env("VIRTUAL_ENV", &venv_str);
-    apply_hermes_runtime_env_tokio(&mut pip_cmd, &enhanced);
-    if let Some(mirror) = pypi_mirror_url() {
-        pip_cmd.args(["--index-url", &mirror]);
-    }
-    apply_git_mirror_env(&mut pip_cmd);
-    super::apply_proxy_env_tokio(&mut pip_cmd);
-    #[cfg(target_os = "windows")]
-    pip_cmd.creation_flags(CREATE_NO_WINDOW);
+    let build_pip_command = |no_cache: bool| {
+        let mut pip_cmd = tokio::process::Command::new(uv_path);
+        pip_cmd.args(["pip", "install", &pkg]);
+        pip_cmd.args(HERMES_RUNTIME_EXTRA_DEPS);
+        if no_cache {
+            pip_cmd.arg("--no-cache");
+        }
+        pip_cmd.env("GIT_TERMINAL_PROMPT", "0");
+        pip_cmd.env("VIRTUAL_ENV", &venv_str);
+        apply_hermes_runtime_env_tokio(&mut pip_cmd, &enhanced);
+        if let Some(mirror) = pypi_mirror_url() {
+            pip_cmd.args(["--index-url", &mirror]);
+        }
+        apply_git_mirror_env(&mut pip_cmd);
+        super::apply_proxy_env_tokio(&mut pip_cmd);
+        #[cfg(target_os = "windows")]
+        pip_cmd.creation_flags(CREATE_NO_WINDOW);
+        pip_cmd
+    };
 
     // 流式执行：pip 下载/构建输出逐行实时显示
-    let (pip_status, pip_stderr) = run_install_command_streaming(app, pip_cmd).await?;
+    let (mut pip_status, mut pip_stderr) =
+        run_install_command_streaming(app, build_pip_command(false)).await?;
+    if !pip_status.success() && is_uv_wheel_cache_error(&pip_stderr) {
+        let _ = app.emit(
+            "hermes-install-log",
+            "⚠ 检测到 uv wheel 缓存异常，正在使用隔离缓存自动重试...",
+        );
+        (pip_status, pip_stderr) =
+            run_install_command_streaming(app, build_pip_command(true)).await?;
+    }
 
     if !pip_status.success() {
         let cleaned = sanitize_hermes_install_output(pip_stderr.trim());
@@ -3104,31 +3227,104 @@ fn merge_env_file(existing: &str, managed_keys: &[&str], new_pairs: &[(String, S
     content
 }
 
+fn hermes_stable_backup_path(file: &Path) -> PathBuf {
+    let mut backup = file.as_os_str().to_os_string();
+    backup.push(".bak");
+    PathBuf::from(backup)
+}
+
 fn replace_hermes_files_transaction(entries: &[(PathBuf, String, bool)]) -> Result<(), String> {
     let suffix = format!(
         "{}-{}",
         std::process::id(),
         chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
     );
-    let mut staged: Vec<(PathBuf, PathBuf, PathBuf, bool, bool)> = Vec::new();
+    let mut staged: Vec<(PathBuf, PathBuf, PathBuf, bool, bool, String)> = Vec::new();
 
-    for (file, content, private) in entries {
-        #[cfg(not(unix))]
-        let _ = private;
-        if let Some(parent) = file.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("创建 Hermes 配置目录失败: {e}"))?;
+    let staging_result = (|| {
+        for (file, content, private) in entries {
+            #[cfg(not(unix))]
+            let _ = private;
+            if let Some(parent) = file.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("创建 Hermes 配置目录失败: {e}"))?;
+            }
+            let temp = file.with_extension(format!("tmp-{suffix}"));
+            let backup = file.with_extension(format!("bak-sync-{suffix}"));
+            let mut staged_file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp)
+                .map_err(|e| format!("创建 Hermes 临时配置失败: {e}"))?;
+            if let Err(error) = staged_file
+                .write_all(content.as_bytes())
+                .and_then(|_| staged_file.sync_all())
+            {
+                drop(staged_file);
+                let _ = std::fs::remove_file(&temp);
+                return Err(format!("写入 Hermes 临时配置失败: {error}"));
+            }
+            drop(staged_file);
+            #[cfg(unix)]
+            if *private {
+                use std::os::unix::fs::PermissionsExt;
+                if let Err(error) =
+                    std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600))
+                {
+                    let _ = std::fs::remove_file(&temp);
+                    return Err(format!("设置临时配置权限失败: {error}"));
+                }
+            }
+            staged.push((
+                file.clone(),
+                temp,
+                backup,
+                file.exists(),
+                false,
+                content.clone(),
+            ));
         }
-        let temp = file.with_extension(format!("tmp-{suffix}"));
-        let backup = file.with_extension(format!("bak-sync-{suffix}"));
-        std::fs::write(&temp, content).map_err(|e| format!("写入临时配置失败: {e}"))?;
-        #[cfg(unix)]
-        if *private {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600))
-                .map_err(|e| format!("设置临时配置权限失败: {e}"))?;
+        Ok(())
+    })();
+    if let Err(error) = staging_result {
+        for entry in &staged {
+            let _ = std::fs::remove_file(&entry.1);
+            let _ = std::fs::remove_file(&entry.2);
         }
-        staged.push((file.clone(), temp, backup, file.exists(), false));
+        return Err(error);
+    }
+
+    let stable_backup_result = (|| {
+        for (file, _, private) in entries {
+            #[cfg(not(unix))]
+            let _ = private;
+            if !file.exists() {
+                continue;
+            }
+            let stable_backup = hermes_stable_backup_path(file);
+            std::fs::copy(file, &stable_backup)
+                .map_err(|e| format!("创建 Hermes 稳定备份失败: {e}"))?;
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&stable_backup)
+                .and_then(|backup| backup.sync_all())
+                .map_err(|e| format!("同步 Hermes 稳定备份失败: {e}"))?;
+            #[cfg(unix)]
+            if *private {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&stable_backup, std::fs::Permissions::from_mode(0o600))
+                    .map_err(|e| format!("设置 Hermes 稳定备份权限失败: {e}"))?;
+            }
+        }
+        Ok(())
+    })();
+    if let Err(error) = stable_backup_result {
+        for entry in &staged {
+            let _ = std::fs::remove_file(&entry.1);
+            let _ = std::fs::remove_file(&entry.2);
+        }
+        return Err(error);
     }
 
     let result = (|| {
@@ -3140,6 +3336,13 @@ fn replace_hermes_files_transaction(entries: &[(PathBuf, String, bool)]) -> Resu
             std::fs::rename(&entry.1, &entry.0)
                 .map_err(|e| format!("提交 Hermes 配置失败: {e}"))?;
             entry.4 = true;
+        }
+        for entry in &staged {
+            let readback = std::fs::read_to_string(&entry.0)
+                .map_err(|e| format!("回读 Hermes 配置失败: {e}"))?;
+            if readback != entry.5 {
+                return Err("Hermes 配置写入后回读不一致".into());
+            }
         }
         Ok(())
     })();
@@ -3231,7 +3434,7 @@ fn sync_hermes_provider_files_at(
     }
 
     replace_hermes_files_transaction(&entries)?;
-    Ok(serde_json::json!({ "providerId": provider, "envKey": env_key }))
+    Ok(serde_json::json!({ "providerId": provider, "envKey": env_key, "verified": true }))
 }
 
 #[tauri::command]
@@ -3242,6 +3445,7 @@ pub fn hermes_sync_provider(
     model: Option<String>,
     set_default: bool,
 ) -> Result<Value, String> {
+    let api_key = super::config::resolve_model_api_key(&api_key)?;
     sync_hermes_provider_files_at(
         &hermes_home(),
         &provider,
@@ -26197,7 +26401,7 @@ mod hermes_provider_sync_tests {
         )
         .unwrap();
 
-        sync_hermes_provider_files_at(
+        let result = sync_hermes_provider_files_at(
             &home,
             "custom",
             "sk-new",
@@ -26206,6 +26410,7 @@ mod hermes_provider_sync_tests {
             true,
         )
         .unwrap();
+        assert_eq!(result["verified"], serde_json::json!(true));
 
         let env = std::fs::read_to_string(home.join(".env")).unwrap();
         assert!(env.contains("ANTHROPIC_API_KEY=keep-me"));
@@ -26218,6 +26423,14 @@ mod hermes_provider_sync_tests {
         assert!(config.contains("default: gpt-test"));
         assert!(config.contains("provider: custom"));
         assert!(config.contains("level: INFO"));
+        assert_eq!(
+            std::fs::read_to_string(home.join(".env.bak")).unwrap(),
+            "ANTHROPIC_API_KEY=keep-me\nOPENAI_API_KEY=old\nCUSTOM_FLAG=keep\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(home.join("config.yaml.bak")).unwrap(),
+            "model:\n  default: old-model\n  provider: anthropic\nlogging:\n  level: INFO\n"
+        );
 
         let _ = std::fs::remove_dir_all(&home);
     }

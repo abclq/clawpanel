@@ -263,9 +263,9 @@ function _debouncedReloadGateway() {
 export const api = {
   // 服务管理（状态用短缓存，操作不缓存）
   getServicesStatus: () => cachedInvoke('get_services_status', {}, 10000),
-  startService: (label) => { invalidate('get_services_status'); return invoke('start_service', { label }) },
-  stopService: (label) => { invalidate('get_services_status'); return invoke('stop_service', { label }) },
-  restartService: (label) => { invalidate('get_services_status'); return invoke('restart_service', { label }) },
+  startService: (label) => { invalidate('get_services_status'); return invoke('start_service', { label }).finally(() => invalidate('get_services_status')) },
+  stopService: (label) => { invalidate('get_services_status'); return invoke('stop_service', { label }).finally(() => invalidate('get_services_status')) },
+  restartService: (label) => { invalidate('get_services_status'); return invoke('restart_service', { label }).finally(() => invalidate('get_services_status')) },
   claimGateway: () => { invalidate('get_services_status'); return invoke('claim_gateway') },
   probeGatewayPort: () => invoke('probe_gateway_port'),
   diagnoseGatewayConnection: () => invoke('diagnose_gateway_connection'),
@@ -285,10 +285,18 @@ export const api = {
   readOpenclawConfig: () => cachedInvoke('read_openclaw_config'),
   calibrateOpenclawConfig: (mode = 'inherit') => { invalidate('read_openclaw_config', 'check_installation', 'list_backups', 'get_services_status', 'get_status_summary'); return invoke('calibrate_openclaw_config', { mode }).then(r => { _debouncedReloadGateway(); return r }) },
   writeOpenclawConfig: (config, opts = {}) => { invalidate('read_openclaw_config'); return invoke('write_openclaw_config', { config }).then(r => { if (opts.noReload !== true) _debouncedReloadGateway(); return r }) },
+  deleteOpenclawModelProvider: (providerKey, opts = {}) => {
+    invalidate('read_openclaw_config')
+    const config = { models: { providers: { [providerKey]: null } } }
+    return invoke('write_openclaw_config', { config }).then(r => {
+      if (opts.noReload !== true) _debouncedReloadGateway()
+      return r
+    })
+  },
   readMcpConfig: () => cachedInvoke('read_mcp_config'),
   writeMcpConfig: (config) => { invalidate('read_mcp_config'); return invoke('write_mcp_config', { config }) },
   reloadGateway: () => invoke('reload_gateway'),
-  restartGateway: () => invoke('restart_gateway'),
+  restartGateway: () => { invalidate('get_services_status'); return invoke('restart_gateway').finally(() => invalidate('get_services_status')) },
   doctorCheck: () => invoke('doctor_check'),
   doctorFix: () => invoke('doctor_fix'),
   listOpenclawVersions: (source = 'chinese') => invoke('list_openclaw_versions', { source }),
@@ -521,7 +529,7 @@ export const api = {
     invalidate('list_media_jobs')
     return invoke('cancel_media_job', { jobId })
   },
-  listMediaJobs: (filter = {}) => cachedInvoke('list_media_jobs', { filter }, 5000),
+  listMediaJobs: (filter = {}) => cachedInvoke('list_media_jobs', { filter }, 1000),
   deleteMediaJob: (jobId, deleteAssets = true) => {
     invalidate('list_media_jobs')
     return invoke('delete_media_job', { jobId, deleteAssets })

@@ -9,6 +9,7 @@ import {
   channelProviderKey,
   hermesSyncSupported,
   assistantSyncSupported,
+  resolveHermesTarget,
   syncChannelToOpenclaw,
   syncChannelToHermes,
   syncChannelToAssistant,
@@ -128,7 +129,10 @@ async function loadInitial(page, state) {
 function syncStateOf(state, target, channel) {
   const record = state.doc?.syncState?.[target]?.[channel.id]
   if (!record) return 'never'
-  return record.hash === channelFingerprint(channel) ? 'synced' : 'drift'
+  if (record.verified === true) {
+    return record.hash === channelFingerprint(channel) ? 'synced' : 'drift'
+  }
+  return 'never'
 }
 
 function renderBody(page, state) {
@@ -292,7 +296,10 @@ function collectDraft(page, state) {
   const lines = (page.querySelector('#mch-models')?.value || '')
     .split('\n').map(line => line.trim()).filter(Boolean)
   const seen = new Set()
-  draft.models = lines.filter(id => (seen.has(id) ? false : seen.add(id))).map(id => ({ id }))
+  const previousModels = new Map((draft.models || []).map(model => [model.id, model]))
+  draft.models = lines
+    .filter(id => (seen.has(id) ? false : seen.add(id)))
+    .map(id => ({ ...(previousModels.get(id) || {}), id }))
   draft.defaultModel = page.querySelector('#mch-default-model')?.value || ''
   return draft
 }
@@ -341,7 +348,7 @@ function bindEvents(page, state) {
         state.editing = {
           id: newChannelId(), isNew: true, name: '', presetKey: '', baseUrl: '',
           apiType: 'openai-completions', apiKeySaved: false, apiKeyMask: '',
-          models: [], defaultModel: '', typedKey: '',
+          credentialVersion: 0, providerConfig: {}, models: [], defaultModel: '', typedKey: '',
         }
         renderBody(page, state)
       } else if (action === 'edit') {
@@ -387,6 +394,8 @@ async function saveEditor(page, state) {
     apiType: draft.apiType,
     // 留空 = 保持已保存 Key（后端 __KEEP__ 语义）
     apiKey: draft.typedKey || '',
+    credentialVersion: draft.credentialVersion || 0,
+    providerConfig: draft.providerConfig || {},
     models: draft.models,
     defaultModel: draft.defaultModel,
     enabled: true,
@@ -419,7 +428,8 @@ async function fetchModelsIntoEditor(page, state) {
   try {
     const ids = await api.listRemoteModels(draft.baseUrl, apiKey, draft.apiType)
     const merged = [...new Set([...(draft.models || []).map(m => m.id), ...(Array.isArray(ids) ? ids : [])])]
-    state.editing.models = merged.map(id => ({ id }))
+    const previousModels = new Map((draft.models || []).map(item => [item.id, item]))
+    state.editing.models = merged.map(id => ({ ...(previousModels.get(id) || {}), id }))
     toast(merged.length ? t('modelChannels.fetchOk', { count: (Array.isArray(ids) ? ids : []).length }) : t('modelChannels.fetchEmpty'), merged.length ? 'success' : 'info')
   } finally {
     state.fetchBusy = false
@@ -480,11 +490,10 @@ async function syncChannel(page, state, channelId, target) {
         setDefault = await showConfirm(t('modelChannels.syncSetDefaultAsk', { model: channel.defaultModel }), { variant: 'primary' })
       }
       const result = await syncChannelToOpenclaw(channel, { setDefault })
-      recordSync(state, target, channel, { providerKey: result.providerKey })
+      recordSync(state, target, channel, { providerKey: result.providerKey, verified: result.verified })
       await persistDoc(state)
       toast(t('modelChannels.syncDone', { target: t('modelChannels.targetOpenclaw') }), 'success')
     } else if (target === 'hermes') {
-      const { resolveHermesTarget } = await import('../lib/model-channels.js')
       const hermesTarget = await resolveHermesTarget(channel)
       if (!hermesTarget) { toast(t('modelChannels.syncHermesUnsupported'), 'warning'); return }
       const ok = await showConfirm(t('modelChannels.syncHermesConfirm', { env: hermesTarget.apiKeyEnvVars[0], provider: hermesTarget.id }), { variant: 'primary' })
@@ -494,7 +503,7 @@ async function syncChannel(page, state, channelId, target) {
         setDefault = await showConfirm(t('modelChannels.syncSetDefaultAsk', { model: channel.defaultModel }), { variant: 'primary' })
       }
       const result = await syncChannelToHermes(channel, { setDefault })
-      recordSync(state, target, channel, { providerId: result.providerId })
+      recordSync(state, target, channel, { providerId: result.providerId, verified: result.verified })
       await persistDoc(state)
       toast(t('modelChannels.syncDone', { target: t('modelChannels.targetHermes') }), 'success')
     } else if (target === 'assistant') {
@@ -503,8 +512,8 @@ async function syncChannel(page, state, channelId, target) {
       if (!ok) return
       const apiKey = await api.revealModelChannelKey(channel.id)
       if (!apiKey) { toast(t('modelChannels.noKeyForSync'), 'warning'); return }
-      syncChannelToAssistant(channel, apiKey, model)
-      recordSync(state, target, channel, { model })
+      const result = syncChannelToAssistant(channel, apiKey, model)
+      recordSync(state, target, channel, { model: result.model, verified: result.verified })
       await persistDoc(state)
       toast(t('modelChannels.syncDone', { target: t('modelChannels.targetAssistant') }), 'success')
     }

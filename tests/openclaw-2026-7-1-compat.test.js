@@ -7,6 +7,9 @@ const featureCatalog = readFileSync(new URL('../src/lib/feature-catalog.js', imp
 const linuxDeploy = readFileSync(new URL('../scripts/linux-deploy.sh', import.meta.url), 'utf8')
 const webBackend = readFileSync(new URL('../scripts/dev-api.js', import.meta.url), 'utf8')
 const desktopDevice = readFileSync(new URL('../src-tauri/src/commands/device.rs', import.meta.url), 'utf8')
+const desktopConfig = readFileSync(new URL('../src-tauri/src/commands/config.rs', import.meta.url), 'utf8')
+const desktopService = readFileSync(new URL('../src-tauri/src/commands/service.rs', import.meta.url), 'utf8')
+const chatPage = readFileSync(new URL('../src/pages/chat.js', import.meta.url), 'utf8')
 
 test('ClawPanel recommends the matching official and Chinese 2026.7.1 stable builds', () => {
   assert.equal(policy.default.official.recommended, '2026.7.1')
@@ -34,4 +37,38 @@ test('Gateway connect frames retain a range that overlaps OpenClaw 2026.7.1 prot
   assert.match(webBackend, /minProtocol: 3, maxProtocol: 4/)
   assert.match(desktopDevice, /"minProtocol": 3/)
   assert.match(desktopDevice, /"maxProtocol": 4/)
+})
+
+test('OpenClaw 2026.7.1 config reload uses the kernel watcher without probing panel ports', () => {
+  assert.match(desktopConfig, /fn\s+supports_native_config_reload\s*\(/)
+  assert.match(desktopConfig, /OPENCLAW_NATIVE_CONFIG_RELOAD_VERSION_FLOOR:\s*&str\s*=\s*"2026\.7\.1"/)
+  assert.doesNotMatch(desktopConfig, /control_ports\s*=\s*\[gw_port\s*\+\s*2,\s*18792\]/)
+  assert.doesNotMatch(desktopConfig, /__api\/reload/)
+  assert.match(
+    desktopConfig,
+    /pub\s+async\s+fn\s+reload_gateway[\s\S]*?reload_gateway_internal\(Some\(&app\)\)\.await/,
+  )
+  assert.match(
+    desktopConfig,
+    /pub\s+async\s+fn\s+restart_gateway[\s\S]*?restart_gateway_guarded\(Some\(&app\)\)\.await/,
+  )
+  assert.match(webBackend, /supportsNativeConfigReload\s*\(/)
+})
+
+test('Windows Gateway terminal closes after its managed process exits', () => {
+  assert.match(
+    desktopService,
+    /"cmd",\s*"\/D",\s*"\/C",\s*runner_path_str\.as_str\(\)/,
+  )
+  assert.doesNotMatch(
+    desktopService,
+    /"cmd",\s*"\/D",\s*"\/K",\s*runner_path_str\.as_str\(\)/,
+  )
+  assert.doesNotMatch(desktopService, /pause \^>nul/)
+})
+
+test('Chat can abort a run while waiting for the first response event', () => {
+  assert.match(chatPage, /let\s+_isAwaitingResponse\s*=\s*false/)
+  assert.match(chatPage, /if\s*\(_isStreaming\s*\|\|\s*_isAwaitingResponse\)\s*stopGeneration\(\)/)
+  assert.match(chatPage, /wsClient\.chatAbort\(_sessionKey,\s*_currentRunId\s*\|\|\s*undefined\)/)
 })

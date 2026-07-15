@@ -4,9 +4,10 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::models::types::VersionInfo;
@@ -1109,6 +1110,212 @@ pub fn save_openclaw_json(config: &Value) -> Result<(), String> {
     write_openclaw_config(config.clone())
 }
 
+fn validate_openclaw_model_candidate(config: &Value) -> Result<(), String> {
+    let Some(models) = config.get("models") else {
+        return Ok(());
+    };
+    let models = models
+        .as_object()
+        .ok_or_else(|| "OpenClaw models 必须是对象".to_string())?;
+    let Some(providers) = models.get("providers") else {
+        return Ok(());
+    };
+    let providers = providers
+        .as_object()
+        .ok_or_else(|| "OpenClaw models.providers 必须是对象".to_string())?;
+    for (provider_id, provider) in providers {
+        let provider = provider
+            .as_object()
+            .ok_or_else(|| format!("模型服务商 {provider_id} 配置必须是对象"))?;
+        if let Some(api) = provider.get("api") {
+            let api = api
+                .as_str()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| format!("模型服务商 {provider_id} 的 api 必须是非空字符串"))?;
+            if api == "openai-codex-responses" {
+                return Err(format!(
+                    "模型服务商 {provider_id} 使用了已移除的 api；请改用 openai-chatgpt-responses"
+                ));
+            }
+        }
+        if let Some(base_url) = provider.get("baseUrl") {
+            let base_url = base_url
+                .as_str()
+                .ok_or_else(|| format!("模型服务商 {provider_id} 的 baseUrl 必须是字符串"))?;
+            if !(base_url.is_empty()
+                || base_url.starts_with("https://")
+                || base_url.starts_with("http://"))
+            {
+                return Err(format!(
+                    "模型服务商 {provider_id} 的 baseUrl 必须使用 http 或 https"
+                ));
+            }
+        }
+        let Some(entries) = provider.get("models") else {
+            continue;
+        };
+        let entries = entries
+            .as_array()
+            .ok_or_else(|| format!("模型服务商 {provider_id} 的 models 必须是数组"))?;
+        for (index, model) in entries.iter().enumerate() {
+            let model = model.as_object().ok_or_else(|| {
+                format!(
+                    "模型服务商 {provider_id} 的第 {} 个模型必须是对象",
+                    index + 1
+                )
+            })?;
+            for key in ["id", "name"] {
+                if model
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .is_none()
+                {
+                    return Err(format!(
+                        "模型服务商 {provider_id} 的第 {} 个模型缺少 {key}",
+                        index + 1
+                    ));
+                }
+            }
+            if model.get("api").and_then(Value::as_str) == Some("openai-codex-responses") {
+                return Err(format!(
+                    "模型服务商 {provider_id} 的模型 {} 使用了已移除的 api",
+                    model.get("id").and_then(Value::as_str).unwrap_or("")
+                ));
+            }
+            for key in ["contextWindow", "contextTokens", "maxTokens"] {
+                if let Some(value) = model.get(key) {
+                    let valid = value.as_u64().is_some_and(|number| number > 0);
+                    if !valid {
+                        return Err(format!(
+                            "模型服务商 {provider_id} 的模型 {} 字段 {key} 必须是正整数",
+                            model.get("id").and_then(Value::as_str).unwrap_or("")
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn write_verified_json_with_backup(path: &Path, value: &Value) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "配置路径缺少父目录".to_string())?;
+    fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败: {e}"))?;
+    let content = serde_json::to_string_pretty(value).map_err(|e| format!("序列化失败: {e}"))?;
+    let parsed: Value =
+        serde_json::from_str(&content).map_err(|e| format!("候选配置校验失败: {e}"))?;
+    if &parsed != value {
+        return Err("候选配置序列化后内容不一致".into());
+    }
+
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let tmp = parent.join(format!(
+        ".openclaw.json.{}.{suffix}.tmp",
+        std::process::id()
+    ));
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .map_err(|e| format!("创建候选配置失败: {e}"))?;
+    if let Err(error) = file
+        .write_all(content.as_bytes())
+        .and_then(|_| file.sync_all())
+    {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("写入候选配置失败: {error}"));
+    }
+    drop(file);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(error) = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600)) {
+            let _ = fs::remove_file(&tmp);
+            return Err(format!("设置候选配置权限失败: {error}"));
+        }
+    }
+
+    let backup = path.with_extension("json.bak");
+    let had_existing = path.exists();
+    if had_existing {
+        fs::copy(path, &backup).map_err(|e| {
+            let _ = fs::remove_file(&tmp);
+            format!("备份当前配置失败: {e}")
+        })?;
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&backup)
+            .and_then(|file| file.sync_all())
+            .map_err(|e| {
+                let _ = fs::remove_file(&tmp);
+                format!("同步当前配置备份失败: {e}")
+            })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&backup, fs::Permissions::from_mode(0o600)).map_err(|e| {
+                let _ = fs::remove_file(&tmp);
+                format!("设置配置备份权限失败: {e}")
+            })?;
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    let replace_result = fs::rename(&tmp, path);
+
+    #[cfg(target_os = "windows")]
+    let replace_result = {
+        let swap = parent.join(format!(
+            ".openclaw.json.{}.{suffix}.old",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&swap);
+        if had_existing {
+            fs::rename(path, &swap).and_then(|_| {
+                fs::rename(&tmp, path).inspect_err(|_| {
+                    let _ = fs::rename(&swap, path);
+                })
+            })
+        } else {
+            fs::rename(&tmp, path)
+        }
+        .map(|_| {
+            let _ = fs::remove_file(&swap);
+        })
+    };
+
+    if let Err(error) = replace_result {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("替换 OpenClaw 配置失败，原配置已保留: {error}"));
+    }
+
+    let readback = fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
+    if readback.as_ref() != Some(value) {
+        if had_existing && backup.exists() {
+            let _ = fs::copy(&backup, path);
+        } else {
+            let _ = fs::remove_file(path);
+        }
+        return Err("OpenClaw 配置写入后回读不一致，已恢复原配置".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
 fn model_env_values_for_config(config: &Value) -> HashMap<String, String> {
     let mut values = HashMap::new();
     if let Some(env) = config.get("env").and_then(|v| v.as_object()) {
@@ -1134,7 +1341,10 @@ fn model_env_values_for_config(config: &Value) -> HashMap<String, String> {
     values
 }
 
-fn validate_model_provider_env_refs(config: &Value) -> Result<(), String> {
+fn validate_model_provider_env_refs(
+    config: &Value,
+    previous_config: Option<&Value>,
+) -> Result<(), String> {
     let values = model_env_values_for_config(config);
     let Some(providers) = config
         .get("models")
@@ -1148,6 +1358,15 @@ fn validate_model_provider_env_refs(config: &Value) -> Result<(), String> {
         let Some(api_key) = provider.get("apiKey").and_then(|v| v.as_str()) else {
             continue;
         };
+        let previous_api_key = previous_config
+            .and_then(|config| config.get("models"))
+            .and_then(|models| models.get("providers"))
+            .and_then(|providers| providers.get(provider_name))
+            .and_then(|provider| provider.get("apiKey"))
+            .and_then(Value::as_str);
+        if previous_api_key == Some(api_key) {
+            continue;
+        }
         let Some(env_key) = model_api_key_env_ref(api_key)? else {
             continue;
         };
@@ -1184,26 +1403,22 @@ pub fn write_openclaw_config(config: Value) -> Result<(), String> {
         .ok()
         .and_then(|c| parse_json_relaxed(&c));
 
-    // 备份
-    let bak = super::openclaw_dir().join("openclaw.json.bak");
-    let _ = fs::copy(&path, &bak);
-
     // 合并配置：现有配置 + 新配置
     // 策略：遍历现有配置，保留所有非 UI 字段
     // 然后将新配置的值覆盖到合并结果中
-    let merged = if let Some(existing) = existing_config {
-        merge_configs_preserving_fields(&existing, &config)
+    let merged = if let Some(existing) = existing_config.as_ref() {
+        merge_configs_preserving_fields(existing, &config)
     } else {
         config.clone()
     };
 
     // 清理 UI 专属字段，避免 CLI schema 校验失败
     let cleaned = strip_ui_fields(merged);
-    validate_model_provider_env_refs(&cleaned)?;
+    validate_model_provider_env_refs(&cleaned, existing_config.as_ref())?;
+    validate_openclaw_model_candidate(&cleaned)?;
 
-    // 写入
-    let json = serde_json::to_string_pretty(&cleaned).map_err(|e| format!("序列化失败: {e}"))?;
-    fs::write(&path, &json).map_err(|e| format!("写入失败: {e}"))?;
+    // 候选文件写入、备份、替换并回读验证。失败时保持或恢复最后有效配置。
+    write_verified_json_with_backup(&path, &cleaned)?;
 
     // 同步 provider 配置到所有 agent 的 models.json（运行时注册表）
     // 必须使用与磁盘一致的 merged+strip 结果，而非前端原始 payload：
@@ -1719,6 +1934,10 @@ pub fn calibrate_openclaw_config(mode: String) -> Result<Value, String> {
 /// 清理的字段：
 /// - UI 专属字段（通过 strip_ui_fields 处理）
 fn merge_configs_preserving_fields(existing: &Value, new: &Value) -> Value {
+    merge_configs_preserving_fields_at(existing, new, "")
+}
+
+fn merge_configs_preserving_fields_at(existing: &Value, new: &Value, path: &str) -> Value {
     use serde_json::Value;
 
     match (existing, new) {
@@ -1726,6 +1945,16 @@ fn merge_configs_preserving_fields(existing: &Value, new: &Value) -> Value {
             let mut merged = existing_obj.clone();
 
             for (key, new_value) in new_obj {
+                // models.providers.<id> = null 是显式删除墓碑；省略键仍表示保留。
+                if path == "models.providers" && new_value.is_null() {
+                    merged.remove(key);
+                    continue;
+                }
+                let child_path = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
                 if let Some(existing_value) = existing_obj.get(key) {
                     if let (Value::Object(existing_sub), Value::Object(new_sub)) =
                         (existing_value, new_value)
@@ -1733,9 +1962,10 @@ fn merge_configs_preserving_fields(existing: &Value, new: &Value) -> Value {
                         // 两边都是对象：递归合并（新值覆盖，旧值保留未覆盖的 key）
                         merged.insert(
                             key.clone(),
-                            merge_configs_preserving_fields(
+                            merge_configs_preserving_fields_at(
                                 &Value::Object(existing_sub.clone()),
                                 &Value::Object(new_sub.clone()),
+                                &child_path,
                             ),
                         );
                     } else {
@@ -2185,9 +2415,31 @@ fn strip_ui_fields(mut val: Value) -> Value {
                     if let Some(providers_obj) = providers_val.as_object_mut() {
                         for (_provider_name, provider_val) in providers_obj.iter_mut() {
                             if let Some(provider_obj) = provider_val.as_object_mut() {
+                                if let Some(api) = provider_obj.get("api").and_then(Value::as_str) {
+                                    provider_obj.insert(
+                                        "api".into(),
+                                        Value::String(normalize_model_api_type(api)),
+                                    );
+                                }
                                 if let Some(Value::Array(arr)) = provider_obj.get_mut("models") {
                                     for model in arr.iter_mut() {
+                                        if let Some(id) = model
+                                            .as_str()
+                                            .map(str::trim)
+                                            .filter(|id| !id.is_empty())
+                                            .map(str::to_string)
+                                        {
+                                            *model = json!({ "id": id, "name": id });
+                                        }
                                         if let Some(mobj) = model.as_object_mut() {
+                                            if let Some(api) =
+                                                mobj.get("api").and_then(Value::as_str)
+                                            {
+                                                mobj.insert(
+                                                    "api".into(),
+                                                    Value::String(normalize_model_api_type(api)),
+                                                );
+                                            }
                                             mobj.remove("lastTestAt");
                                             mobj.remove("latency");
                                             mobj.remove("testStatus");
@@ -3515,7 +3767,60 @@ fn verify_standalone_install(
             "standalone 安装校验失败：目标 CLI 版本为 {verified_version}，清单版本为 {remote_version}"
         ));
     }
+    verify_standalone_runtime_dependencies(staging_dir)?;
     Ok(verified_version)
+}
+
+fn verify_standalone_runtime_dependencies(staging_dir: &std::path::Path) -> Result<(), String> {
+    let package_dir = [
+        staging_dir
+            .join("node_modules")
+            .join("@qingchencloud")
+            .join("openclaw-zh"),
+        staging_dir.join("node_modules").join("openclaw"),
+    ]
+    .into_iter()
+    .find(|dir| dir.join("package.json").exists())
+    .ok_or_else(|| "standalone 解压后未找到 OpenClaw 主包".to_string())?;
+
+    let package_json_path = package_dir.join("package.json");
+    let package_json: Value = serde_json::from_slice(
+        &std::fs::read(&package_json_path)
+            .map_err(|e| format!("standalone 主包 package.json 无法读取: {e}"))?,
+    )
+    .map_err(|e| format!("standalone 主包 package.json 无法解析: {e}"))?;
+
+    let mut missing = package_json
+        .get("dependencies")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter_map(|(dependency, _)| {
+            let dependency_path = dependency
+                .split('/')
+                .filter(|part| !part.is_empty())
+                .fold(PathBuf::new(), |path, part| path.join(part));
+            let nested = package_dir
+                .join("node_modules")
+                .join(&dependency_path)
+                .join("package.json");
+            let hoisted = staging_dir
+                .join("node_modules")
+                .join(&dependency_path)
+                .join("package.json");
+            (!nested.exists() && !hoisted.exists()).then(|| dependency.to_string())
+        })
+        .collect::<Vec<_>>();
+    missing.sort();
+
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "standalone 安装校验失败：缺少运行时依赖：{}",
+            missing.join(", ")
+        ))
+    }
 }
 
 fn replace_standalone_install(
@@ -5721,120 +6026,37 @@ pub fn delete_backup(name: String) -> Result<(), String> {
     fs::remove_file(&path).map_err(|e| format!("删除失败: {e}"))
 }
 
-/// 获取当前用户 UID（macOS/Linux 用 id -u，Windows 返回 0）
-#[allow(dead_code)]
-fn get_uid() -> Result<u32, String> {
-    #[cfg(target_os = "windows")]
-    {
-        Ok(0)
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let output = Command::new("id")
-            .arg("-u")
-            .output()
-            .map_err(|e| format!("获取 UID 失败: {e}"))?;
-        String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .parse::<u32>()
-            .map_err(|e| format!("解析 UID 失败: {e}"))
-    }
+const OPENCLAW_NATIVE_CONFIG_RELOAD_VERSION_FLOOR: &str = "2026.7.1";
+
+fn supports_native_config_reload(version: &str) -> bool {
+    let version = parse_version(&base_version(version));
+    !version.is_empty() && version >= parse_version(OPENCLAW_NATIVE_CONFIG_RELOAD_VERSION_FLOOR)
 }
 
-/// 重载 Gateway 配置（热重载，不重启进程）
-/// 通过 HTTP POST 向 Gateway 发送 reload 信号，避免触发完整的服务重启循环
-#[allow(dead_code)]
-async fn reload_gateway_via_http() -> Result<String, String> {
-    // 读取 gateway 端口和 token
-    let config_path = crate::commands::openclaw_dir().join("openclaw.json");
-    let content =
-        std::fs::read_to_string(&config_path).map_err(|e| format!("读取配置失败: {e}"))?;
-    let config: serde_json::Value =
-        serde_json::from_str(&content).map_err(|e| format!("解析配置失败: {e}"))?;
-
-    let gw_port = config
-        .get("gateway")
-        .and_then(|g| g.get("port"))
-        .and_then(|p| p.as_u64())
-        .unwrap_or(18789) as u16;
-
-    let token = config
-        .get("gateway")
-        .and_then(|g| g.get("auth"))
-        .and_then(|a| a.get("token"))
-        .and_then(|t| t.as_str())
-        .unwrap_or("");
-
-    // 尝试两个可能的 control UI 端口
-    let control_ports = [gw_port + 2, 18792];
-
-    for ctrl_port in control_ports {
-        let url = format!("http://127.0.0.1:{}/__api/reload", ctrl_port);
-        let client = crate::commands::build_http_client(
-            std::time::Duration::from_secs(5),
-            Some("ClawPanel"),
-        )?;
-
-        let mut req = client.post(&url);
-        if !token.is_empty() {
-            req = req.header("Authorization", format!("Bearer {}", token));
-        }
-
-        match req.send().await {
-            Ok(resp) if resp.status().is_success() => {
-                return Ok("Gateway 配置已热重载".to_string());
-            }
-            Ok(resp) => {
-                eprintln!(
-                    "[reload_gateway] 端口 {ctrl_port} 返回状态: {}",
-                    resp.status()
-                );
-            }
-            Err(e) => {
-                eprintln!("[reload_gateway] 端口 {ctrl_port} 请求失败: {e}");
-            }
-        }
-    }
-
-    // 所有 HTTP 重载方式都失败，回退到进程重启
-    eprintln!("[reload_gateway] HTTP 热重载不可用，将触发进程重启");
-    Err("Gateway HTTP 重载不可用".to_string())
+async fn restart_gateway_internal(app: Option<&tauri::AppHandle>) -> Result<String, String> {
+    crate::commands::service::restart_service(
+        app.cloned()
+            .ok_or_else(|| "缺少 AppHandle，无法重启 Gateway".to_string())?,
+        "ai.openclaw.gateway".into(),
+    )
+    .await
+    .map(|_| "Gateway 已重启".to_string())
 }
 
-/// 重载 Gateway 服务
-/// Windows/Linux: 优先尝试 HTTP 热重载（不重启进程）
-/// 如果 HTTP 重载失败，回退到 restart_service（会触发 Guardian 重启循环）
-#[allow(unused_variables)]
+/// 让 Gateway 应用最新配置。
+/// OpenClaw 2026.7.1 起由内核文件监听器按变更类型执行热更新或安全重启；
+/// ClawPanel 不再探测面板自身的 HTTP 端口，也不重复打断正在运行的 Gateway。
 async fn reload_gateway_internal(app: Option<&tauri::AppHandle>) -> Result<String, String> {
-    #[cfg(target_os = "macos")]
-    {
-        let uid = get_uid()?;
-        let target = format!("gui/{uid}/ai.openclaw.gateway");
-        let output = tokio::process::Command::new("launchctl")
-            .args(["kickstart", "-k", &target])
-            .output()
-            .await
-            .map_err(|e| format!("重载失败: {e}"))?;
-        if output.status.success() {
-            Ok("Gateway 已重载".to_string())
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(format!("重载失败: {stderr}"))
+    if let Some(version) = get_local_version().await {
+        if supports_native_config_reload(&version) {
+            return Ok(format!(
+                "OpenClaw {version} 已接收配置变更，将由内核自动应用"
+            ));
         }
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        match reload_gateway_via_http().await {
-            Ok(msg) => Ok(msg),
-            Err(_) => crate::commands::service::restart_service(
-                app.cloned()
-                    .ok_or_else(|| "缺少 AppHandle，无法回退到 Gateway 进程重启".to_string())?,
-                "ai.openclaw.gateway".into(),
-            )
-            .await
-            .map(|_| "Gateway 已重启".to_string()),
-        }
-    }
+
+    // 旧内核没有统一的配置监听契约，保留显式重启兼容路径。
+    restart_gateway_internal(app).await
 }
 
 /// 全局 Gateway 重启 mutex（单飞行锁）
@@ -5863,7 +6085,7 @@ async fn restart_gateway_guarded(app: Option<&tauri::AppHandle>) -> Result<Strin
         }
     }
 
-    let result = reload_gateway_internal(app).await;
+    let result = restart_gateway_internal(app).await;
 
     // 无论成功失败都记录时间，避免失败后被重试风暴压爆
     {
@@ -5876,10 +6098,10 @@ async fn restart_gateway_guarded(app: Option<&tauri::AppHandle>) -> Result<Strin
 
 #[tauri::command]
 pub async fn reload_gateway(app: tauri::AppHandle) -> Result<String, String> {
-    restart_gateway_guarded(Some(&app)).await
+    reload_gateway_internal(Some(&app)).await
 }
 
-/// 重启 Gateway 服务（与 reload_gateway 相同实现）
+/// 用户显式请求重启时才执行进程级 stop/start。
 #[tauri::command]
 pub async fn restart_gateway(app: tauri::AppHandle) -> Result<String, String> {
     restart_gateway_guarded(Some(&app)).await
@@ -5971,25 +6193,28 @@ fn normalize_base_url(raw: &str) -> String {
     base
 }
 
-fn normalize_model_api_type(raw: &str) -> &'static str {
-    match raw.trim() {
-        "anthropic" | "anthropic-messages" => "anthropic-messages",
-        "google-gemini" | "google-generative-ai" => "google-gemini",
-        "openai" | "openai-completions" | "openai-responses" | "" => "openai-completions",
-        _ => "openai-completions",
+fn normalize_model_api_type(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" | "openai" | "openai-chat" | "openai-completions" => "openai-completions".into(),
+        "openai-codex-responses" => "openai-chatgpt-responses".into(),
+        "anthropic" | "anthropic-messages" => "anthropic-messages".into(),
+        "google-gemini" | "gemini" | "google" | "google-generative-ai" => {
+            "google-generative-ai".into()
+        }
+        other => other.to_string(),
     }
 }
 
 fn normalize_base_url_for_api(raw: &str, api_type: &str) -> String {
     let mut base = normalize_base_url(raw);
-    match normalize_model_api_type(api_type) {
+    match normalize_model_api_type(api_type).as_str() {
         "anthropic-messages" => {
             if !base.ends_with("/v1") {
                 base.push_str("/v1");
             }
             base
         }
-        "google-gemini" => base,
+        "google-generative-ai" | "google-vertex" => base,
         _ => {
             // 不再强制追加 /v1，尊重用户填写的 URL（火山引擎等第三方用 /v3 等路径）
             // 仅 Ollama (端口 11434) 自动补 /v1
@@ -6442,7 +6667,7 @@ pub fn scan_model_client_configs() -> Result<Value, String> {
     Ok(json!({ "candidates": candidates }))
 }
 
-fn resolve_model_api_key(api_key: &str) -> Result<String, String> {
+pub(super) fn resolve_model_api_key(api_key: &str) -> Result<String, String> {
     let Some(key) = model_api_key_env_ref(api_key)? else {
         return Ok(api_key.to_string());
     };
@@ -6460,6 +6685,40 @@ fn resolve_model_api_key(api_key: &str) -> Result<String, String> {
     ))
 }
 
+fn resolve_model_api_key_value(api_key: &Value) -> Result<String, String> {
+    if let Some(api_key) = api_key.as_str() {
+        return resolve_model_api_key(api_key);
+    }
+    let Some(secret_ref) = api_key.as_object() else {
+        return Err("API Key 必须是字符串或 OpenClaw SecretRef".into());
+    };
+    let source = secret_ref
+        .get("source")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    let id = secret_ref
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if source != "env" || !is_valid_env_key(id) {
+        return Err("该 SecretRef 需要由 OpenClaw 运行时解析，请使用 OpenClaw 模型探测".into());
+    }
+    let values = model_env_values();
+    if let Some(value) = values.get(id).filter(|value| !value.trim().is_empty()) {
+        return Ok(value.clone());
+    }
+    if let Ok(value) = std::env::var(id) {
+        if !value.trim().is_empty() {
+            return Ok(value);
+        }
+    }
+    Err(format!(
+        "API Key 引用了环境变量 {id}，但未在 openclaw.json env、~/.openclaw/.env 或当前进程环境中找到"
+    ))
+}
+
 fn extract_error_message(text: &str, status: reqwest::StatusCode) -> String {
     serde_json::from_str::<serde_json::Value>(text)
         .ok()
@@ -6473,23 +6732,27 @@ fn extract_error_message(text: &str, status: reqwest::StatusCode) -> String {
         .unwrap_or_else(|| format!("HTTP {status}"))
 }
 
+fn unsupported_direct_model_test(api_type: &str) -> String {
+    format!("该 API 类型需要由 OpenClaw 运行时验证: {api_type}")
+}
+
 /// 测试模型连通性：向 provider 发送一个简单的 chat completion 请求
 #[tauri::command]
 pub async fn test_model(
     base_url: String,
-    api_key: String,
+    api_key: Value,
     model_id: String,
     api_type: Option<String>,
 ) -> Result<String, String> {
     let api_type = normalize_model_api_type(api_type.as_deref().unwrap_or("openai-completions"));
-    let base = normalize_base_url_for_api(&base_url, api_type);
-    let api_key = resolve_model_api_key(&api_key)?;
+    let base = normalize_base_url_for_api(&base_url, &api_type);
+    let api_key = resolve_model_api_key_value(&api_key)?;
 
     let client =
         crate::commands::build_http_client_no_proxy(std::time::Duration::from_secs(30), None)
             .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
 
-    let resp = match api_type {
+    let resp = match api_type.as_str() {
         "anthropic-messages" => {
             let url = format!("{}/messages", base);
             let body = json!({
@@ -6506,7 +6769,7 @@ pub async fn test_model(
             }
             req.send()
         }
-        "google-gemini" => {
+        "google-generative-ai" => {
             let url = format!(
                 "{}/models/{}:generateContent?key={}",
                 base, model_id, api_key
@@ -6516,7 +6779,24 @@ pub async fn test_model(
             });
             client.post(&url).json(&body).send()
         }
-        _ => {
+        "openai-responses" | "azure-openai-responses" => {
+            let url = format!("{}/responses", base);
+            let body = json!({
+                "model": model_id,
+                "input": "Hi",
+                "max_output_tokens": 16
+            });
+            let mut req = client.post(&url).json(&body);
+            if !api_key.is_empty() {
+                req = if api_type == "azure-openai-responses" {
+                    req.header("api-key", api_key.clone())
+                } else {
+                    req.header("Authorization", format!("Bearer {api_key}"))
+                };
+            }
+            req.send()
+        }
+        "openai-completions" | "ollama" => {
             let url = format!("{}/chat/completions", base);
             let body = json!({
                 "model": model_id,
@@ -6530,6 +6810,7 @@ pub async fn test_model(
             }
             req.send()
         }
+        _ => return Err(unsupported_direct_model_test(&api_type)),
     }
     .await
     .map_err(|e| {
@@ -6547,75 +6828,13 @@ pub async fn test_model(
 
     if !status.is_success() {
         let msg = extract_error_message(&text, status);
-        // 401/403 是认证错误，一定要报错
-        if status.as_u16() == 401 || status.as_u16() == 403 {
-            return Err(msg);
-        }
-        // 其他错误（400/422/429 等）：服务器可达、认证通过，仅模型对简单测试不兼容
-        // 返回成功但带提示和完整错误信息，方便前端展示
-        return Ok(format!(
-            "⚠ 连接正常（API 返回 {status}，部分模型对简单测试不兼容，不影响实际使用）\n{msg}"
-        ));
+        return Err(format!("API 返回 {status}: {msg}"));
     }
 
-    // 提取回复内容（兼容多种响应格式）
-    let reply = serde_json::from_str::<serde_json::Value>(&text)
-        .ok()
-        .and_then(|v| {
-            if let Some(arr) = v.get("content").and_then(|c| c.as_array()) {
-                let text = arr
-                    .iter()
-                    .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
-                    .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-                    .collect::<Vec<_>>()
-                    .join("");
-                if !text.is_empty() {
-                    return Some(text);
-                }
-            }
-            if let Some(t) = v
-                .get("candidates")
-                .and_then(|c| c.get(0))
-                .and_then(|c| c.get("content"))
-                .and_then(|c| c.get("parts"))
-                .and_then(|p| p.get(0))
-                .and_then(|p| p.get("text"))
-                .and_then(|t| t.as_str())
-                .filter(|s| !s.is_empty())
-            {
-                return Some(t.to_string());
-            }
-            // 标准 OpenAI 格式: choices[0].message.content
-            if let Some(msg) = v
-                .get("choices")
-                .and_then(|c| c.get(0))
-                .and_then(|c| c.get("message"))
-            {
-                let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
-                if !content.is_empty() {
-                    return Some(content.to_string());
-                }
-                // reasoning 模型
-                if let Some(rc) = msg
-                    .get("reasoning_content")
-                    .and_then(|c| c.as_str())
-                    .filter(|s| !s.is_empty())
-                {
-                    return Some(format!("[reasoning] {rc}"));
-                }
-            }
-            // DashScope 格式: output.text
-            if let Some(t) = v
-                .get("output")
-                .and_then(|o| o.get("text"))
-                .and_then(|t| t.as_str())
-                .filter(|s| !s.is_empty())
-            {
-                return Some(t.to_string());
-            }
-            None
-        })
-        .unwrap_or_else(|| "（模型已响应）".into());
+    let reply = extract_single_json_reply(&text);
+    if reply.is_empty() {
+        return Err("API 已响应但未解析出内容".to_string());
+    }
 
     Ok(reply)
 }
@@ -6685,6 +6904,31 @@ fn extract_single_json_reply(text: &str) -> String {
     serde_json::from_str::<serde_json::Value>(text)
         .ok()
         .and_then(|v| {
+            if let Some(t) = v
+                .get("output_text")
+                .and_then(|t| t.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                return Some(t.to_string());
+            }
+            if let Some(output) = v.get("output").and_then(|o| o.as_array()) {
+                let text = output
+                    .iter()
+                    .filter_map(|item| item.get("content").and_then(|c| c.as_array()))
+                    .flatten()
+                    .filter(|part| {
+                        matches!(
+                            part.get("type").and_then(|t| t.as_str()),
+                            Some("output_text") | Some("text")
+                        )
+                    })
+                    .filter_map(|part| part.get("text").and_then(|t| t.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("");
+                if !text.is_empty() {
+                    return Some(text);
+                }
+            }
             if let Some(arr) = v.get("content").and_then(|c| c.as_array()) {
                 let text = arr
                     .iter()
@@ -6749,15 +6993,15 @@ fn extract_single_json_reply(text: &str) -> String {
 #[tauri::command]
 pub async fn test_model_verbose(
     base_url: String,
-    api_key: String,
+    api_key: Value,
     model_id: String,
     api_type: Option<String>,
 ) -> Result<serde_json::Value, String> {
     use std::time::Instant;
     let api_type_norm =
         normalize_model_api_type(api_type.as_deref().unwrap_or("openai-completions"));
-    let base = normalize_base_url_for_api(&base_url, api_type_norm);
-    let api_key = resolve_model_api_key(&api_key)?;
+    let base = normalize_base_url_for_api(&base_url, &api_type_norm);
+    let api_key = resolve_model_api_key_value(&api_key)?;
     let start = Instant::now();
 
     let client =
@@ -6768,7 +7012,7 @@ pub async fn test_model_verbose(
     // - reqwest 未启用 brotli feature 时，provider 返回 Content-Encoding: br 导致 text() 失败
     // - 某些 CDN 会根据默认 UA 自动压缩响应
     // 测试请求的响应体很小（几百字节），不压缩的性能损失可忽略
-    let (used_api, req_url, req_body_json, req_builder) = match api_type_norm {
+    let (used_api, req_url, req_body_json, req_builder) = match api_type_norm.as_str() {
         "anthropic-messages" => {
             let url = format!("{}/messages", base);
             let body = json!({
@@ -6786,7 +7030,7 @@ pub async fn test_model_verbose(
             }
             ("Anthropic Messages", url, body, req)
         }
-        "google-gemini" => {
+        "google-generative-ai" => {
             let url_display = format!("{}/models/{}:generateContent?key=***", base, model_id);
             let url_real = format!(
                 "{}/models/{}:generateContent?key={}",
@@ -6801,7 +7045,27 @@ pub async fn test_model_verbose(
                 .json(&body);
             ("Gemini", url_display, body, req)
         }
-        _ => {
+        "openai-responses" | "azure-openai-responses" => {
+            let url = format!("{}/responses", base);
+            let body = json!({
+                "model": model_id,
+                "input": "你好，请用一句话回复",
+                "max_output_tokens": 200
+            });
+            let mut req = client
+                .post(&url)
+                .header("Accept-Encoding", "identity")
+                .json(&body);
+            if !api_key.is_empty() {
+                req = if api_type_norm == "azure-openai-responses" {
+                    req.header("api-key", api_key.clone())
+                } else {
+                    req.header("Authorization", format!("Bearer {api_key}"))
+                };
+            }
+            ("Responses", url, body, req)
+        }
+        "openai-completions" | "ollama" => {
             let url = format!("{}/chat/completions", base);
             // 关键：测试请求用 stream: true 而非 stream: false
             // 理由：部分兼容网关的 non-streaming 分支对某些模型会返回 200 + 空 body，
@@ -6823,6 +7087,7 @@ pub async fn test_model_verbose(
             }
             ("Chat Completions (SSE)", url, body, req)
         }
+        _ => return Err(unsupported_direct_model_test(&api_type_norm)),
     };
 
     let resp_result = req_builder.send().await;
@@ -6982,18 +7247,18 @@ pub async fn test_model_verbose(
 #[tauri::command]
 pub async fn list_remote_models(
     base_url: String,
-    api_key: String,
+    api_key: Value,
     api_type: Option<String>,
 ) -> Result<Vec<String>, String> {
     let api_type = normalize_model_api_type(api_type.as_deref().unwrap_or("openai-completions"));
-    let base = normalize_base_url_for_api(&base_url, api_type);
-    let api_key = resolve_model_api_key(&api_key)?;
+    let base = normalize_base_url_for_api(&base_url, &api_type);
+    let api_key = resolve_model_api_key_value(&api_key)?;
 
     let client =
         crate::commands::build_http_client_no_proxy(std::time::Duration::from_secs(15), None)
             .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
 
-    let resp = match api_type {
+    let resp = match api_type.as_str() {
         "anthropic-messages" => {
             let url = format!("{}/models", base);
             let mut req = client.get(&url).header("anthropic-version", "2023-06-01");
@@ -7002,11 +7267,11 @@ pub async fn list_remote_models(
             }
             req.send()
         }
-        "google-gemini" => {
+        "google-generative-ai" => {
             let url = format!("{}/models?key={}", base, api_key);
             client.get(&url).send()
         }
-        _ => {
+        "openai-completions" | "openai-responses" | "ollama" => {
             let url = format!("{}/models", base);
             let mut req = client.get(&url);
             if !api_key.is_empty() {
@@ -7014,6 +7279,15 @@ pub async fn list_remote_models(
             }
             req.send()
         }
+        "azure-openai-responses" => {
+            let url = format!("{}/models", base);
+            let mut req = client.get(&url);
+            if !api_key.is_empty() {
+                req = req.header("api-key", api_key.clone());
+            }
+            req.send()
+        }
+        _ => return Err(unsupported_direct_model_test(&api_type)),
     }
     .await
     .map_err(|e| {
@@ -7847,9 +8121,11 @@ mod write_openclaw_config_merge_tests {
     use super::fallback_openclaw_node_requirement;
     use super::merge_configs_preserving_fields;
     use super::node_version_satisfies_requirement;
+    use super::normalize_model_api_type;
     use super::path_without_curdir_string;
     use super::promote_nested_standalone_dir;
     use super::replace_standalone_install;
+    use super::resolve_model_api_key_value;
     #[cfg(target_os = "windows")]
     use super::resolve_openclaw_cli_input_path;
     use super::select_calibration_source;
@@ -7858,7 +8134,11 @@ mod write_openclaw_config_merge_tests {
     use super::standalone_install_dir_impl;
     use super::standalone_install_version;
     use super::strip_ui_fields;
-    use serde_json::json;
+    use super::supports_native_config_reload;
+    use super::validate_model_provider_env_refs;
+    use super::verify_standalone_install;
+    use super::write_verified_json_with_backup;
+    use serde_json::{json, Value};
     use std::path::{Path, PathBuf};
 
     fn unique_temp_dir(name: &str) -> PathBuf {
@@ -7912,6 +8192,40 @@ mod write_openclaw_config_merge_tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn standalone_validation_rejects_missing_runtime_dependency() {
+        let root = unique_temp_dir("standalone-runtime-missing");
+        #[cfg(target_os = "windows")]
+        let cli_name = "openclaw.cmd";
+        #[cfg(not(target_os = "windows"))]
+        let cli_name = "openclaw";
+        let package_dir = root
+            .join("node_modules")
+            .join("@qingchencloud")
+            .join("openclaw-zh");
+        std::fs::create_dir_all(&package_dir).unwrap();
+        std::fs::write(root.join(cli_name), "").unwrap();
+        std::fs::write(root.join("VERSION"), "openclaw_version=2026.7.1-zh.2\n").unwrap();
+        std::fs::write(
+            package_dir.join("package.json"),
+            serde_json::to_vec(&json!({
+                "name": "@qingchencloud/openclaw-zh",
+                "version": "2026.7.1-zh.2",
+                "dependencies": {
+                    "@openclaw/ai": "2026.7.1"
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let error = verify_standalone_install(&root, "2026.7.1-zh.2").unwrap_err();
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(error.contains("缺少运行时依赖"));
+        assert!(error.contains("@openclaw/ai"));
+    }
+
     /// Regression guard: Issue #127 merge keeps full provider map when the UI payload
     /// only touches one provider — `sync_providers_to_agent_models` must use the same
     /// merged view (see `write_openclaw_config`), not the raw `config` argument.
@@ -7946,6 +8260,90 @@ mod write_openclaw_config_merge_tests {
             "merged config must retain provider b when the write payload omits it"
         );
         assert_eq!(prov["a"]["baseUrl"], json!("http://example"));
+    }
+
+    #[test]
+    fn provider_null_tombstone_deletes_only_target_provider() {
+        let existing = json!({
+            "models": { "providers": {
+                "a": { "models": [{ "id": "m1" }] },
+                "b": { "models": [{ "id": "m2" }] }
+            }},
+            "browser": { "profiles": { "keep": {} } }
+        });
+        let patch = json!({ "models": { "providers": { "a": null } } });
+        let merged = merge_configs_preserving_fields(&existing, &patch);
+        assert!(merged["models"]["providers"].get("a").is_none());
+        assert_eq!(
+            merged["models"]["providers"]["b"]["models"][0]["id"],
+            json!("m2")
+        );
+        assert!(merged["browser"]["profiles"].get("keep").is_some());
+    }
+
+    #[test]
+    fn model_api_normalization_keeps_real_transport_identity() {
+        assert_eq!(
+            normalize_model_api_type("openai-responses"),
+            "openai-responses"
+        );
+        assert_eq!(
+            normalize_model_api_type("openai-codex-responses"),
+            "openai-chatgpt-responses"
+        );
+        assert_eq!(normalize_model_api_type("ollama"), "ollama");
+        assert_eq!(normalize_model_api_type("future-adapter"), "future-adapter");
+    }
+
+    #[test]
+    fn strip_ui_fields_migrates_retired_api_at_provider_and_model_level() {
+        let cleaned = strip_ui_fields(json!({
+            "models": { "providers": { "legacy": {
+                "api": "openai-codex-responses",
+                "models": [
+                    { "id": "gpt-test", "api": "openai-codex-responses" },
+                    "legacy-string-model"
+                ]
+            }}}
+        }));
+        assert_eq!(
+            cleaned["models"]["providers"]["legacy"]["api"],
+            json!("openai-chatgpt-responses")
+        );
+        assert_eq!(
+            cleaned["models"]["providers"]["legacy"]["models"][0]["api"],
+            json!("openai-chatgpt-responses")
+        );
+        assert_eq!(
+            cleaned["models"]["providers"]["legacy"]["models"][1],
+            json!({ "id": "legacy-string-model", "name": "legacy-string-model" })
+        );
+    }
+
+    #[test]
+    fn verified_writer_round_trips_and_preserves_last_good_backup() {
+        let root = unique_temp_dir("verified-config-write");
+        let path = root.join("openclaw.json");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&path, r#"{"models":{"mode":"merge"}}"#).unwrap();
+        let next = json!({
+            "models": { "mode": "merge", "providers": {
+                "custom": { "api": "openai-responses", "models": [{ "id": "gpt-test", "name": "GPT Test" }] }
+            }}
+        });
+
+        write_verified_json_with_backup(&path, &next).unwrap();
+
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let backup: Value =
+            serde_json::from_str(&std::fs::read_to_string(root.join("openclaw.json.bak")).unwrap())
+                .unwrap();
+        assert_eq!(written, next);
+        assert_eq!(backup["models"]["mode"], json!("merge"));
+        assert!(backup["models"].get("providers").is_none());
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -8357,5 +8755,55 @@ mod write_openclaw_config_merge_tests {
         let _ = std::fs::remove_dir_all(&dir);
 
         assert_eq!(resolved, Some(node_bin));
+    }
+
+    #[test]
+    fn unchanged_external_env_reference_does_not_block_unrelated_save() {
+        let previous = json!({
+            "models": { "providers": { "external": {
+                "apiKey": "${CLAWPANEL_TEST_EXTERNAL_ONLY}"
+            } } }
+        });
+        let unchanged = json!({
+            "models": { "providers": { "external": {
+                "apiKey": "${CLAWPANEL_TEST_EXTERNAL_ONLY}"
+            } } },
+            "gateway": { "port": 18789 }
+        });
+        assert!(validate_model_provider_env_refs(&unchanged, Some(&previous)).is_ok());
+
+        let changed = json!({
+            "models": { "providers": { "external": {
+                "apiKey": "${CLAWPANEL_TEST_NEW_MISSING}"
+            } } }
+        });
+        let error = validate_model_provider_env_refs(&changed, Some(&previous)).unwrap_err();
+        assert!(error.contains("CLAWPANEL_TEST_NEW_MISSING"));
+    }
+
+    #[test]
+    fn structured_secret_ref_never_becomes_fake_plaintext() {
+        let missing_env = json!({
+            "source": "env",
+            "provider": "default",
+            "id": "CLAWPANEL_TEST_SECRET_REF_MISSING"
+        });
+        let error = resolve_model_api_key_value(&missing_env).unwrap_err();
+        assert!(error.contains("CLAWPANEL_TEST_SECRET_REF_MISSING"));
+
+        let file_ref = json!({
+            "source": "file",
+            "provider": "default",
+            "id": "providers/openai/apiKey"
+        });
+        let error = resolve_model_api_key_value(&file_ref).unwrap_err();
+        assert!(error.contains("OpenClaw") && error.contains("运行时"));
+    }
+
+    #[test]
+    fn native_config_reload_starts_at_openclaw_2026_7_1() {
+        assert!(!supports_native_config_reload("2026.6.5"));
+        assert!(supports_native_config_reload("2026.7.1"));
+        assert!(supports_native_config_reload("2026.7.1-zh.2"));
     }
 }

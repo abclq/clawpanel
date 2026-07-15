@@ -1702,6 +1702,10 @@ mod platform {
         if cli.to_ascii_lowercase().ends_with(".js") {
             return format!("node {} gateway", quote_batch_path(cli));
         }
+        if cli.to_ascii_lowercase().ends_with(".cmd") || cli.to_ascii_lowercase().ends_with(".bat")
+        {
+            return format!("call {} gateway", quote_batch_path(cli));
+        }
         format!("{} gateway", quote_batch_path(cli))
     }
 
@@ -1709,7 +1713,7 @@ mod platform {
         fs::create_dir_all(openclaw_dir).map_err(|e| format!("创建 OpenClaw 目录失败: {e}"))?;
         let runner_path = openclaw_dir.join("clawpanel-gateway.cmd");
         let content = format!(
-            "@echo off\r\ntitle {GATEWAY_WINDOW_TITLE}\r\necho Starting OpenClaw Gateway. Keep this window open after it starts.\r\necho Close this window to stop Gateway.\r\necho.\r\n{}\r\necho.\r\necho Gateway exited. You can close this window.\r\n",
+            "@echo off\r\ntitle {GATEWAY_WINDOW_TITLE}\r\necho Starting OpenClaw Gateway. Keep this window open after it starts.\r\necho Close this window to stop Gateway.\r\necho.\r\n{}\r\nexit /b %errorlevel%\r\n",
             gateway_terminal_command(cli)
         );
         fs::write(&runner_path, content).map_err(|e| format!("写入 Gateway 启动脚本失败: {e}"))?;
@@ -1756,6 +1760,7 @@ mod platform {
 
         // 外层 cmd /c 自身用 CREATE_NO_WINDOW 隐藏（短命桥接进程），
         // 内部 `start` 会创建一个真正可见的新控制台窗口运行 runner.cmd。
+        // 使用 /C 保证 Gateway 无论以何种状态退出，包装终端都会关闭；错误由面板状态和日志展示。
         let mut cmd = StdCommand::new("cmd");
         cmd.args([
             "/c",
@@ -1765,7 +1770,7 @@ mod platform {
             openclaw_dir_str.as_str(),
             "cmd",
             "/D",
-            "/K",
+            "/C",
             runner_path_str.as_str(),
         ])
         .creation_flags(CREATE_NO_WINDOW)

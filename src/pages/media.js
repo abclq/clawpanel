@@ -23,6 +23,15 @@ const MEDIA_PROVIDERS = [
   { id: 'newapi', icon: 'globe', defaultBaseUrl: 'https://your-newapi.example.com/v1' },
 ]
 
+let activeMediaState = null
+
+export function cleanup() {
+  if (!activeMediaState) return
+  if (activeMediaState.refreshTimer) clearInterval(activeMediaState.refreshTimer)
+  activeMediaState.previewObserver?.disconnect?.()
+  activeMediaState = null
+}
+
 function providerMeta(providerId) {
   return MEDIA_PROVIDERS.find(item => item.id === providerId) || MEDIA_PROVIDERS[0]
 }
@@ -95,6 +104,7 @@ function outputDirLabel(config) {
 }
 
 export async function render() {
+  cleanup()
   const page = document.createElement('div')
   page.className = 'page media-page'
   const state = {
@@ -111,7 +121,10 @@ export async function render() {
     modelFetch: null,
     modelFetchBusy: false,
     busy: '',
+    refreshBusy: false,
+    refreshTimer: null,
   }
+  activeMediaState = state
 
   page.innerHTML = `
     <style>
@@ -166,6 +179,7 @@ export async function render() {
       .media-page .media-status.succeeded{color:var(--success);border-color:color-mix(in srgb,var(--success) 35%,var(--border-primary))}
       .media-page .media-status.failed{color:var(--error);border-color:color-mix(in srgb,var(--error) 35%,var(--border-primary))}
       .media-page .media-status.running{color:var(--primary);border-color:color-mix(in srgb,var(--primary) 35%,var(--border-primary))}
+      .media-page .media-status.queued{color:var(--warning);border-color:color-mix(in srgb,var(--warning) 35%,var(--border-primary))}
       .media-page .media-meta{font-size:12px;color:var(--text-tertiary);display:flex;gap:12px;flex-wrap:wrap}
       .media-page .media-prompt{margin:10px 0;color:var(--text-secondary);font-size:13px;line-height:1.6;white-space:pre-wrap}
       .media-page .media-job-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
@@ -230,6 +244,7 @@ function renderTabs(active) {
   const tabs = [
     ['image', 'image', t('media.tabImage')],
     ['video', 'film', t('media.tabVideo')],
+    ['queue', 'list', t('media.tabQueue')],
     ['history', 'list', t('media.tabHistory')],
     ['settings', 'gear', t('media.tabSettings')],
   ]
@@ -250,6 +265,7 @@ async function loadInitial(page, state) {
       : 'volcengine'
     applyJobsResponse(state, jobsDoc)
     renderAll(page, state)
+    startAutoRefresh(page, state)
   } catch (error) {
     console.error('[media] load failed', error)
     page.querySelector('#media-body').innerHTML = `<div class="media-empty">${esc(error?.message || String(error))}</div>`
@@ -295,6 +311,50 @@ async function refreshJobs(page, state, { append = false } = {}) {
   renderAll(page, state)
 }
 
+function startAutoRefresh(page, state) {
+  if (state.refreshTimer) clearInterval(state.refreshTimer)
+  state.refreshTimer = setInterval(() => {
+    refreshLiveJobs(page, state).catch(error => console.warn('[media] auto refresh failed', error))
+  }, 2000)
+}
+
+async function refreshLiveJobs(page, state) {
+  if (state.refreshBusy || !page.isConnected) return
+  state.refreshBusy = true
+  try {
+    const filter = state.tab === 'history'
+      ? { type: state.filter.type, status: state.filter.status, limit: state.filter.limit, offset: 0 }
+      : { limit: 100, offset: 0 }
+    const jobsDoc = await api.listMediaJobs(filter)
+    applyJobsResponse(state, jobsDoc)
+    if (state.lastImageJob?.id) {
+      state.lastImageJob = state.jobs.find(job => job.id === state.lastImageJob.id) || state.lastImageJob
+    } else {
+      state.lastImageJob = state.jobs.find(job => job.type === 'image') || null
+    }
+    renderLiveJobs(page, state)
+  } finally {
+    state.refreshBusy = false
+  }
+}
+
+function renderLiveJobs(page, state) {
+  renderSummary(page, state)
+  if (state.tab === 'queue' || state.tab === 'history') {
+    renderBody(page, state)
+    hydratePreviews(page, state)
+    return
+  }
+  if (state.tab === 'image') {
+    const result = page.querySelector('#media-image-result')
+    if (result && state.lastImageJob) result.innerHTML = `<div class="media-job-list">${renderJobCard(state.lastImageJob)}</div>`
+  } else if (state.tab === 'video') {
+    const result = page.querySelector('#media-video-result')
+    if (result) result.innerHTML = renderRunningVideos(state)
+  }
+  hydratePreviews(page, state)
+}
+
 function renderAll(page, state) {
   page.querySelector('#media-tabs').innerHTML = renderTabs(state.tab)
   renderSummary(page, state)
@@ -306,7 +366,7 @@ function renderSummary(page, state) {
   const provider = providerConfig(state)
   const saved = !!provider.apiKeySaved
   const activeProvider = activeProviderId(state)
-  const running = state.jobs.filter(job => job.status === 'running').length
+  const running = state.jobs.filter(job => job.status === 'queued' || job.status === 'running').length
   const totalJobs = Math.max(state.historyTotal || 0, state.jobs.length)
   page.querySelector('#media-summary').innerHTML = `
     <div class="media-summary-card">
@@ -340,6 +400,7 @@ function renderBody(page, state) {
   const body = page.querySelector('#media-body')
   if (state.tab === 'settings') body.innerHTML = renderSettings(state)
   else if (state.tab === 'video') body.innerHTML = renderVideoWorkbench(state)
+  else if (state.tab === 'queue') body.innerHTML = renderQueue(state)
   else if (state.tab === 'history') body.innerHTML = renderHistory(state)
   else body.innerHTML = renderImageWorkbench(state)
 }
@@ -594,9 +655,26 @@ function renderFetchedModels(state) {
   `
 }
 
+function renderQueue(state) {
+  const active = state.jobs.filter(job => job.status === 'queued' || job.status === 'running')
+  const recent = state.jobs.filter(job => job.status !== 'queued' && job.status !== 'running').slice(0, 12)
+  return `
+    <div class="media-history-toolbar">
+      <div>
+        <div class="media-panel-title" style="margin-bottom:4px">${icon('list', 16)} ${t('media.queueTitle')}</div>
+        <div class="media-history-count" style="margin:0">${t('media.queueCount', { active: active.length, total: state.jobs.length })}</div>
+      </div>
+      <button class="btn btn-secondary btn-sm" type="button" data-action="refresh">${icon('refresh-cw', 13)} ${t('media.refresh')}</button>
+    </div>
+    <div class="media-panel-title">${t('media.queueActive')}</div>
+    ${active.length ? `<div class="media-job-list">${active.map(renderJobCard).join('')}</div>` : `<div class="media-empty">${t('media.queueEmpty')}</div>`}
+    ${recent.length ? `<div class="media-panel-title" style="margin-top:20px">${t('media.queueRecent')}</div><div class="media-job-list">${recent.map(renderJobCard).join('')}</div>` : ''}
+  `
+}
+
 function renderHistory(state) {
   const typeOptions = [['', t('media.all')], ['image', t('media.tabImage')], ['video', t('media.tabVideo')]]
-  const statusOptions = [['', t('media.all')], ['running', t('media.running')], ['succeeded', t('media.succeeded')], ['failed', t('media.failed')], ['canceled', t('media.canceled')]]
+  const statusOptions = [['', t('media.all')], ['queued', t('media.queued')], ['running', t('media.running')], ['succeeded', t('media.succeeded')], ['failed', t('media.failed')], ['canceled', t('media.canceled')]]
   const items = historyItems(state.jobs)
   const total = Math.max(state.historyTotal || 0, state.jobs.length)
   return `
@@ -661,13 +739,15 @@ function renderHistoryCard(item) {
 function renderJobActions(job, assetPath, assetRoot, className) {
   const canPoll = job.type === 'video' && job.providerTaskId
     && (job.status === 'running' || job.status === 'failed')
+  const canCancel = job.status === 'queued' || (job.type === 'video' && job.status === 'running')
+  const canDelete = job.status !== 'queued' && job.status !== 'running'
   return `
     <div class="${className}">
       ${canPoll ? `<button class="btn btn-xs btn-primary" type="button" data-action="poll" data-job-id="${attr(job.id)}">${icon('refresh-cw', 12)} ${t('media.poll')}</button>` : ''}
-      ${job.type === 'video' && job.status === 'running' ? `<button class="btn btn-xs btn-secondary" type="button" data-action="cancel" data-job-id="${attr(job.id)}">${icon('stop', 12)} ${t('media.cancel')}</button>` : ''}
+      ${canCancel ? `<button class="btn btn-xs btn-secondary" type="button" data-action="cancel" data-job-id="${attr(job.id)}">${icon('stop', 12)} ${t('media.cancel')}</button>` : ''}
       <button class="btn btn-xs btn-secondary" type="button" data-action="copy-prompt" data-prompt="${attr(job.prompt || '')}">${icon('copy', 12)} ${t('media.copyPrompt')}</button>
       ${assetPath ? `<button class="btn btn-xs btn-secondary" type="button" data-action="reveal" data-path="${attr(assetPath)}" data-root="${attr(assetRoot)}">${icon('folder', 12)} ${t('media.openFolder')}</button>` : ''}
-      <button class="btn btn-xs btn-secondary" type="button" data-action="delete" data-job-id="${attr(job.id)}">${icon('trash', 12)} ${t('media.delete')}</button>
+      ${canDelete ? `<button class="btn btn-xs btn-secondary" type="button" data-action="delete" data-job-id="${attr(job.id)}">${icon('trash', 12)} ${t('media.delete')}</button>` : ''}
     </div>
   `
 }
@@ -736,6 +816,7 @@ function bindEvents(page, state) {
     if (tab) {
       state.tab = tab.dataset.tab
       renderAll(page, state)
+      if (state.tab === 'queue') await refreshLiveJobs(page, state)
       return
     }
 
@@ -822,13 +903,14 @@ async function submitImage(page, state) {
     const job = await api.generateImage(request)
     mergeJob(state, job)
     state.lastImageJob = job
-    toast(t('media.imageSuccess'), 'success')
-    renderAll(page, state)
+    toast(t('media.imageQueued'), 'success')
+    renderLiveJobs(page, state)
   } catch (error) {
     toast(error?.message || String(error), 'error')
   } finally {
     state.busy = ''
-    if (btn) btn.disabled = false
+    const currentBtn = page.querySelector('#media-image-form button[type="submit"]')
+    if (currentBtn) currentBtn.disabled = false
   }
 }
 
@@ -848,14 +930,14 @@ async function submitVideo(page, state) {
   try {
     const job = await api.createVideoTask(request)
     mergeJob(state, job)
-    toast(t('media.videoTaskCreated'), 'success')
-    state.tab = 'history'
-    renderAll(page, state)
+    toast(t('media.videoQueued'), 'success')
+    renderLiveJobs(page, state)
   } catch (error) {
     toast(error?.message || String(error), 'error')
   } finally {
     state.busy = ''
-    if (btn) btn.disabled = false
+    const currentBtn = page.querySelector('#media-video-form button[type="submit"]')
+    if (currentBtn) currentBtn.disabled = false
   }
 }
 

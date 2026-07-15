@@ -23,10 +23,31 @@ test('Vite 使用修复开发服务器漏洞的 6.4.3 或更高 6.x 版本', () 
   assert.ok(minor > 4 || (minor === 4 && patch >= 3))
 })
 
-test('未打标签前 0.18.6 不伪装成已发布版本', () => {
+test('当前待发布版本必须有正式更新日志且保留 Unreleased 入口', () => {
+  const pkg = JSON.parse(read('package.json'))
   const changelog = read('CHANGELOG.md')
-  assert.doesNotMatch(changelog, /^## \[0\.18\.6\] - \d{4}-\d{2}-\d{2}$/m)
-  assert.match(changelog, /^## \[0\.18\.6 候选\] - 尚未发布$/m)
+  const releaseHeading = new RegExp(`^## \\[${pkg.version.replaceAll('.', '\\.')}\\] - \\d{4}-\\d{2}-\\d{2}$`, 'm')
+  assert.match(changelog, releaseHeading)
+  assert.doesNotMatch(changelog, new RegExp(`^## \\[${pkg.version.replaceAll('.', '\\.')} 候选\\]`, 'm'))
+  assert.ok(changelog.indexOf('## [未发布 (Unreleased)]') < changelog.search(releaseHeading))
+})
+
+test('OpenClaw 7.1 发布与容器基线不低于 Node.js 22.22.3', () => {
+  for (const file of [
+    '.github/workflows/ci.yml',
+    '.github/workflows/release.yml',
+    'Dockerfile',
+    'docker-compose.yml',
+    'README.md',
+    'docs/docker-deploy.md',
+    'docs/linux-deploy.md',
+  ]) {
+    assert.doesNotMatch(read(file), /node(?:-version:|:)\s*22\.19\.0/i, `${file} 仍引用旧 Node.js 基线`)
+  }
+
+  assert.match(read('.github/workflows/ci.yml'), /node-version:\s*22\.22\.3/)
+  assert.match(read('.github/workflows/release.yml'), /node-version:\s*22\.22\.3/)
+  assert.match(read('Dockerfile'), /FROM node:22\.22\.3-alpine AS production/)
 })
 
 test('Hermes Rust 与 Web 关键 Provider 注册表保持一致', () => {

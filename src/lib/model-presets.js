@@ -6,14 +6,43 @@
 // API 接口类型选项
 export const API_TYPES = [
   { value: 'openai-completions', label: 'OpenAI Chat Completions (最常用)' },
-  { value: 'anthropic-messages', label: 'Anthropic Messages' },
   { value: 'openai-responses', label: 'OpenAI Responses' },
-  { value: 'openai-codex-responses', label: 'OpenAI Codex Responses' },
+  { value: 'openai-chatgpt-responses', label: 'OpenAI ChatGPT Responses' },
+  { value: 'anthropic-messages', label: 'Anthropic Messages' },
   { value: 'google-generative-ai', label: 'Google Gemini' },
+  { value: 'google-vertex', label: 'Google Vertex AI' },
   { value: 'github-copilot', label: 'GitHub Copilot' },
   { value: 'bedrock-converse-stream', label: 'AWS Bedrock' },
   { value: 'ollama', label: 'Ollama 本地模型' },
+  { value: 'azure-openai-responses', label: 'Azure OpenAI Responses' },
 ]
+
+const API_TYPE_ALIASES = new Map([
+  ['openai-codex-responses', 'openai-chatgpt-responses'],
+  ['google-gemini', 'google-generative-ai'],
+  ['gemini', 'google-generative-ai'],
+  ['google', 'google-generative-ai'],
+  ['anthropic', 'anthropic-messages'],
+  ['openai', 'openai-completions'],
+  ['openai-chat', 'openai-completions'],
+])
+
+export function normalizeModelApiType(value) {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (!normalized) return 'openai-completions'
+  return API_TYPE_ALIASES.get(normalized) || normalized
+}
+
+export function isSupportedModelApiType(value) {
+  const normalized = normalizeModelApiType(value)
+  return API_TYPES.some(item => item.value === normalized)
+}
+
+export function modelApiTypeOptions(value) {
+  const normalized = normalizeModelApiType(value)
+  if (isSupportedModelApiType(normalized)) return API_TYPES
+  return [{ value: normalized, label: `${normalized} (OpenClaw)` }, ...API_TYPES]
+}
 
 // 服务商快捷预设
 export const PROVIDER_PRESETS = [

@@ -7,7 +7,16 @@ import { toast } from '../components/toast.js'
 import { humanizeError } from '../lib/humanize-error.js'
 import { showModal, showConfirm } from '../components/modal.js'
 import { icon, statusIcon } from '../lib/icons.js'
-import { API_TYPES, PROVIDER_PRESETS, QTCOOL, MODEL_PRESETS, fetchQtcoolModels } from '../lib/model-presets.js'
+import {
+  API_TYPES,
+  PROVIDER_PRESETS,
+  QTCOOL,
+  MODEL_PRESETS,
+  fetchQtcoolModels,
+  isSupportedModelApiType,
+  modelApiTypeOptions,
+  normalizeModelApiType,
+} from '../lib/model-presets.js'
 import { t } from '../lib/i18n.js'
 import { scheduleGatewayRestart, fireRestartNow, cancelPendingRestart, onRestartState } from '../lib/gateway-restart-queue.js'
 import { termHelpHtml, attachTermTooltips } from '../lib/term-tooltip.js'
@@ -748,17 +757,6 @@ function autoSave(state) {
   _saveTimer = setTimeout(() => doAutoSave(state), 300)
 }
 
-/** 已知的 API 类型错误→正确映射,自动修复用户手动编辑或旧版本配置 */
-const API_TYPE_FIXES = {
-  'google-gemini': 'google-generative-ai',
-  'gemini': 'google-generative-ai',
-  'google': 'google-generative-ai',
-  'anthropic': 'anthropic-messages',
-  'openai': 'openai-completions',
-  'openai-chat': 'openai-completions',
-}
-const VALID_API_TYPES = new Set(API_TYPES.map(t => t.value))
-
 /** 保存前规范化所有服务商的 baseUrl 和 API 类型,确保 Gateway 能正确调用 */
 function normalizeProviderUrls(config) {
   const providers = config?.models?.providers
@@ -767,11 +765,10 @@ function normalizeProviderUrls(config) {
     // 修复 API 类型
     if (p.api) {
       const lower = p.api.toLowerCase().trim()
-      if (API_TYPE_FIXES[lower]) {
-        p.api = API_TYPE_FIXES[lower]
-      } else if (!VALID_API_TYPES.has(lower)) {
-        console.warn(`[models] 未知 API 类型「${p.api}」,自动修正为 openai-completions`)
-        p.api = 'openai-completions'
+      p.api = normalizeModelApiType(lower)
+      if (!isSupportedModelApiType(p.api)) {
+        console.warn(`[models] 保留当前 OpenClaw 提供的未知 API 类型「${p.api}」`)
+        continue
       }
     }
 
@@ -1045,12 +1042,17 @@ async function handleAction(action, btn, card, section, providerKey, provider, p
     case 'delete-provider': {
       const yes = await showConfirm(t('models.confirmDeleteProvider', { name: providerKey }))
       if (!yes) return
+      await api.deleteOpenclawModelProvider(providerKey, { noReload: true })
       pushUndo(state)
       delete state.config.models.providers[providerKey]
       renderProviders(page, state)
       renderDefaultBar(page, state)
       updateUndoBtn(page, state)
-      autoSave(state)
+      const gwRunning = await api.probeGatewayPort().catch(() => false)
+      if (gwRunning) {
+        showRestartPendingToast()
+        scheduleGatewayRestart({ reason: 'models-page-delete-provider' })
+      }
       toast(t('models.providerDeleted', { name: providerKey }), 'info')
       break
     }
@@ -1513,23 +1515,25 @@ function addProvider(page, state) {
 // 编辑服务商
 function editProvider(page, state, providerKey) {
   const p = state.config.models.providers[providerKey]
+  const existingApiKey = p.apiKey
+  const hasStructuredApiKey = existingApiKey && typeof existingApiKey === 'object' && !Array.isArray(existingApiKey)
   // showModal 不返回 overlay，需要异步扫 document.body 给 ⓘ 按钮绑定 click（attachTermTooltips 内部已去重）
   setTimeout(() => attachTermTooltips(document.body), 0)
   showModal({
     title: t('models.editProviderTitle', { name: providerKey }),
     fields: [
       { name: 'baseUrl', label: t('models.baseUrl'), value: p.baseUrl || '', hint: t('models.baseUrlHint') },
-      { name: 'apiKey', label: t('models.apiKey') + termHelpHtml('apikey'), value: p.apiKey || '', hint: t('models.apiKeyEditHint') },
+      { name: 'apiKey', label: t('models.apiKey') + termHelpHtml('apikey'), value: hasStructuredApiKey ? '' : (p.apiKey || ''), hint: t('models.apiKeyEditHint') },
       {
         name: 'api', label: t('models.apiType'), type: 'select', value: p.api || 'openai-completions',
-        options: API_TYPES,
+        options: modelApiTypeOptions(p.api),
         hint: t('models.apiTypeHint'),
       },
     ],
     onConfirm: ({ baseUrl, apiKey, api: apiType }) => {
       pushUndo(state)
       p.baseUrl = baseUrl
-      p.apiKey = apiKey
+      p.apiKey = hasStructuredApiKey && !String(apiKey || '').trim() ? existingApiKey : apiKey
       p.api = apiType
       renderProviders(page, state)
       updateUndoBtn(page, state)

@@ -3,7 +3,9 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { replaceStandaloneInstall } from '../scripts/dev-api.js'
+import * as devApiModule from '../scripts/dev-api.js'
+
+const { replaceStandaloneInstall } = devApiModule
 
 const setup = readFileSync(new URL('../src/pages/setup.js', import.meta.url), 'utf8')
 const tauriApi = readFileSync(new URL('../src/lib/tauri-api.js', import.meta.url), 'utf8')
@@ -61,6 +63,33 @@ test('standalone installation validates a staging directory before replacing the
     rustInstall.indexOf('verify_standalone_install') < rustInstall.indexOf('replace_standalone_install'),
     'Desktop standalone archive must be verified before activation',
   )
+})
+
+test('standalone validation rejects a version-matching archive with missing runtime dependencies', () => {
+  assert.equal(typeof devApiModule.verifyStandaloneInstall, 'function')
+
+  const root = mkdtempSync(join(tmpdir(), 'clawpanel-standalone-runtime-'))
+  const cliName = process.platform === 'win32' ? 'openclaw.cmd' : 'openclaw'
+  const packageDir = join(root, 'node_modules', '@qingchencloud', 'openclaw-zh')
+  try {
+    mkdirSync(packageDir, { recursive: true })
+    writeFileSync(join(root, cliName), '')
+    writeFileSync(join(root, 'VERSION'), 'openclaw_version=2026.7.1-zh.2\n')
+    writeFileSync(join(packageDir, 'package.json'), JSON.stringify({
+      name: '@qingchencloud/openclaw-zh',
+      version: '2026.7.1-zh.2',
+      dependencies: {
+        '@openclaw/ai': '2026.7.1',
+      },
+    }))
+
+    assert.throws(
+      () => devApiModule.verifyStandaloneInstall(root, '2026.7.1-zh.2'),
+      /standalone.*缺少运行时依赖.*@openclaw\/ai/i,
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('GitHub standalone fallback can resolve a pinned version without the CDN manifest', () => {

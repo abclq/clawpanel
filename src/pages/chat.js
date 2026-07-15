@@ -63,6 +63,7 @@ let _sessionListEl = null, _cmdPanelEl = null, _attachPreviewEl = null, _fileInp
 let _modelSelectEl = null
 let _currentAiBubble = null, _currentAiText = '', _currentAiImages = [], _currentAiVideos = [], _currentAiAudios = [], _currentAiFiles = [], _currentAiTools = [], _currentRunId = null
 let _isStreaming = false, _isSending = false, _messageQueue = [], _streamStartTime = 0
+let _isAwaitingResponse = false
 let _lastRenderTime = 0, _renderPending = false, _lastHistoryHash = ''
 let _autoScrollEnabled = true, _lastScrollTop = 0, _touchStartY = 0
 let _isLoadingHistory = false
@@ -405,7 +406,7 @@ function bindEvents(page) {
   })
 
   _sendBtn.addEventListener('click', () => {
-    if (_isStreaming) stopGeneration()
+    if (_isStreaming || _isAwaitingResponse) stopGeneration()
     else sendMessage()
   })
 
@@ -1676,7 +1677,7 @@ function sendMessage() {
   const attachments = [..._attachments]
   _attachments = []
   renderAttachments()
-  if (_isSending || _isStreaming) { _messageQueue.push({ text, attachments }); return }
+  if (_isSending || _isStreaming || _isAwaitingResponse) { _messageQueue.push({ text, attachments }); return }
   doSend(text, attachments)
 }
 
@@ -1692,10 +1693,14 @@ async function doSend(text, attachments = []) {
   })
   showTyping(true)
   _isSending = true
+  _isAwaitingResponse = true
+  updateSendState()
   _startResponseWatchdog()
   try {
-    await wsClient.chatSend(_sessionKey, text, attachments.length ? attachments : undefined)
+    const result = await wsClient.chatSend(_sessionKey, text, attachments.length ? attachments : undefined)
+    if (result?.runId) _currentRunId = result.runId
   } catch (err) {
+    _isAwaitingResponse = false
     showTyping(false)
     _cancelResponseWatchdog()
     _sendTimestamp = 0
@@ -1707,14 +1712,19 @@ async function doSend(text, attachments = []) {
 }
 
 function processMessageQueue() {
-  if (_messageQueue.length === 0 || _isSending || _isStreaming) return
+  if (_messageQueue.length === 0 || _isSending || _isStreaming || _isAwaitingResponse) return
   const msg = _messageQueue.shift()
   if (typeof msg === 'string') doSend(msg, [])
   else doSend(msg.text, msg.attachments || [])
 }
 
 function stopGeneration() {
-  if (_currentRunId) wsClient.chatAbort(_sessionKey, _currentRunId).catch(() => {})
+  if (!_sessionKey || (!_currentRunId && !_isStreaming && !_isAwaitingResponse)) return
+  wsClient.chatAbort(_sessionKey, _currentRunId || undefined).catch((err) => {
+    console.warn('[chat] 停止生成失败:', err)
+  })
+  _cancelResponseWatchdog()
+  resetStreamState()
 }
 
 // ── 事件处理（参照 clawapp 实现） ──
@@ -1872,6 +1882,7 @@ function handleChatEvent(payload) {
 
   if (state === 'delta') {
     _cancelResponseWatchdog()
+    _isAwaitingResponse = false
     const c = extractChatContent(payload.message)
     if (c?.images?.length) _currentAiImages = c.images
     if (c?.videos?.length) _currentAiVideos = c.videos
@@ -2382,6 +2393,7 @@ function resetStreamState() {
   _currentAiTools = []
   _currentRunId = null
   _isStreaming = false
+  _isAwaitingResponse = false
   _streamStartTime = 0
   _lastErrorMsg = null
   _errorTimer = null
@@ -2949,7 +2961,7 @@ function isAtBottom() {
 
 function updateSendState() {
   if (!_sendBtn || !_textarea) return
-  if (_isStreaming) {
+  if (_isStreaming || _isAwaitingResponse) {
     _sendBtn.disabled = false
     _sendBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>'
     _sendBtn.title = t('chat.cmdStopGen')
@@ -3451,6 +3463,7 @@ export function cleanup() {
   _currentRunId = null
   _isStreaming = false
   _isSending = false
+  _isAwaitingResponse = false
   _messageQueue = []
   _lastHistoryHash = ''
   _hostedBtn = null
