@@ -57,6 +57,14 @@ test('macOS Gateway 服务操作保留 launchctl 所需的用户 UID helper', ()
   assert.match(config, /format!\("gui\/\{uid\}\/ai\.openclaw\.gateway"\)/)
 })
 
+test('Rust 锁文件包含 Tauri 与 tar 的安全修复版本', () => {
+  const lock = read('src-tauri/Cargo.lock')
+  assert.match(lock, /name = "tauri"\r?\nversion = "2\.11\.1"/)
+  assert.match(lock, /name = "tar"\r?\nversion = "0\.4\.46"/)
+  assert.doesNotMatch(lock, /name = "tauri"\r?\nversion = "2\.10\./)
+  assert.doesNotMatch(lock, /name = "tar"\r?\nversion = "0\.4\.45"/)
+})
+
 test('Hermes Rust 与 Web 关键 Provider 注册表保持一致', () => {
   const rust = read('src-tauri/src/commands/hermes_providers.rs')
   const web = read('scripts/dev-api.js')

@@ -38,6 +38,7 @@
 
 ### 安全 (Security)
 
+- **桌面运行时安全升级** — Tauri 升级到 `2.11.1`，修复远程页面可能混淆 Origin 并调用本地 IPC 的问题；`tar` 升级到 `0.4.46`，修复 PAX header 解析不同步问题
 - **OpenClaw 配置安全写入** — 配置修改使用备份、同目录临时文件、fsync、原子替换和回读校验；失败保留最后有效备份，避免模型配置保存导致主配置损坏
 - **外部密钥引用保护** — 未改动的环境变量和结构化 SecretRef 不再阻断无关保存，也不会被当作明文写回；`file` / `exec` 引用不会被模型测试误当 API Key
 - **媒体 API Key 防泄漏** — 下载产物时仅向与服务商 Base URL 同源的地址携带 Authorization，跨源重定向自动剥离密钥，并限制响应体大小与读取超时
@@ -62,7 +63,7 @@
 
 ### 测试与验证 (Testing)
 
-- Node.js `22.22.3` 下 `node --test tests/*.test.js`：504 passed
+- Node.js `22.22.3` 下 `node --test tests/*.test.js`：505 passed
 - Node.js `22.22.3` 下 `npm run build`：通过
 - `cargo fmt --all -- --check`：通过
 - `cargo check --locked`：通过
