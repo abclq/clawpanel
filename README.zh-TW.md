@@ -32,20 +32,24 @@ ClawPanel 是支援多 AI Agent 框架的視覺化管理面板，目前支援 [O
 
 > 🌐 **官網**: [claw.qt.cool](https://claw.qt.cool/) | 📦 **下載**: [官網下載中心](https://claw.qt.cool/download) | 備用: [GitHub Releases](https://github.com/qingchencloud/clawpanel/releases/latest) | 國內鏡像: [AtomGit](https://atomgit.com/qingchencloud/clawpanel)
 
-### 🎁 晴辰雲 AI 介面
+### 🧪 免費測試：晴辰雲
 
-> 內部技術測試平台，面向部分使用者開放體驗。簽到領額度，邀請得更多。
+[晴辰雲](https://gpt.qt.cool/)是 ClawPanel 配套的免費簽到測試平台，適合模型體驗與功能驗證。ClawPanel 不內建或自動讀取晴辰雲金鑰；請自行註冊並前往[簽到頁](https://gpt.qt.cool/checkin)取得測試額度與 API Key，再手動貼到 ClawPanel 選擇模型並一鍵設定。具體開放狀態和額度規則以晴辰雲頁面為準。
+
+### 🤝 贊助推廣：詞元 API
+
+> 第三方贊助推廣，具體規則以詞元 API 頁面為準。
 
 <p align="center">
-  <a href="https://gpt.qt.cool"><img src="https://img.shields.io/badge/🔑 晴辰雲 AI-gpt.qt.cool-6366f1?style=for-the-badge" alt="晴辰雲 AI"></a>
+  <a href="https://ciyapi.79tian.com" rel="sponsored noopener noreferrer"><img src="https://img.shields.io/badge/🤝 詞元 API-贊助推廣-6366f1?style=for-the-badge" alt="詞元 API 贊助推廣"></a>
 </p>
 
-- **簽到領測試額度** — 每日簽到 + 邀請好友，持續獲取測試額度
-- **相容 OpenAI 介面** — 無縫對接 OpenClaw，即開即用
-- **資源策略** — 限速 + 請求上限，高峰期可能排隊
-- **模型可用性** — 模型/介面以實際頁面為準，可能灰度或版本切換
+- **主流前沿模型** — 支援 GPT、Claude、Gemini、Grok、Kimi 等模型
+- **儲值福利** — 儲值 ¥1 到帳 $1 平台額度
+- **模型折扣** — 部分線路按折扣計費，具體以模型廣場為準
+- **OpenAI Compatible** — 取得 API Key 後可在 ClawPanel 中一鍵接入
 
-> ⚠️ **合規與責任邊界**：本平台僅提供技術測試，禁止用於違法違規、繞過安全機制等用途。妥善保管 API Key。具體規則以平台最新政策為準。
+在[詞元 API](https://ciyapi.79tian.com/sign-up)註冊並取得 API Key，OpenAI-compatible Base URL 填寫 `https://ciyapi.79tian.com/v1`。模型與價格以[模型廣場](https://ciyapi.79tian.com/pricing/)為準。
 
 ### 🔥 開發板 / 嵌入式裝置支援
 
@@ -86,7 +90,7 @@ ClawPanel 是支援多 AI Agent 框架的視覺化管理面板，目前支援 [O
 - **定時任務** — Cron 定時執行，多頻道投遞
 - **日誌檢視** — 多來源即時日誌與關鍵字搜尋
 - **記憶管理** — 記憶檔案檢視/編輯、ZIP 匯出、Agent 切換
-- **晴辰雲 AI 介面** — 內部測試平台，相容 OpenAI
+- **詞元 API 贊助推廣** — 支援 GPT、Claude 等模型，儲值 ¥1 到帳 $1 平台額度
 - **擴充工具** — cftunnel 隧道管理、ClawApp 狀態監控
 - **關於** — 版本資訊、社群入口、相關專案連結
 

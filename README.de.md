@@ -32,20 +32,24 @@ ClawPanel ist ein visuelles Verwaltungspanel, das mehrere AI-Agent-Frameworks un
 
 > 🌐 **Website**: [claw.qt.cool](https://claw.qt.cool/) | 📦 **Download**: [Offizielles Download-Center](https://claw.qt.cool/download) | Fallback: [GitHub Releases](https://github.com/qingchencloud/clawpanel/releases/latest)
 
-### 🎁 QingchenCloud AI API
+### 🧪 Kostenlos testen: QingChen Cloud
 
-> Interne technische Testplattform, für ausgewählte Benutzer zugänglich. Tägliches Anmelden für Credits.
+[QingChen Cloud](https://gpt.qt.cool/) ist die Check-in-Testplattform für ClawPanel. ClawPanel enthält keinen QingChen-Cloud-Schlüssel und liest vorhandene Schlüssel nicht automatisch ein. Registrieren Sie sich, holen Sie Testguthaben und Ihren eigenen API Key über die [Check-in-Seite](https://gpt.qt.cool/checkin) und fügen Sie ihn anschließend zur Modellkonfiguration in ClawPanel ein. Verfügbarkeit und aktuelle Regeln stehen auf QingChen Cloud.
+
+### 🤝 Gesponsert: CiyAPI
+
+> Gesponserte Werbung eines Drittanbieters; es gelten die aktuellen CiyAPI-Regeln.
 
 <p align="center">
-  <a href="https://gpt.qt.cool"><img src="https://img.shields.io/badge/🔑 QingchenCloud AI-gpt.qt.cool-6366f1?style=for-the-badge" alt="QingchenCloud AI"></a>
+  <a href="https://ciyapi.79tian.com" rel="sponsored noopener noreferrer"><img src="https://img.shields.io/badge/🤝 CiyAPI-Sponsored-6366f1?style=for-the-badge" alt="Gesponserter CiyAPI-Dienst"></a>
 </p>
 
-- **Tägliche Anmelde-Credits** — Tägliches Anmelden + Freunde einladen für Test-Credits
-- **OpenAI-kompatible API** — Nahtlose Integration mit OpenClaw
-- **Ressourcenrichtlinie** — Ratenbegrenzung + Anfragelimit, mögliche Warteschlange zu Stoßzeiten
-- **Modellverfügbarkeit** — Modelle/APIs gemäß aktueller Seitenanzeige, Versionsrotation möglich
+- **Führende Modelle** — GPT, Claude, Gemini, Grok, Kimi und weitere
+- **Aufladevorteil** — ¥1 Aufladung ergibt $1 Nutzungsguthaben
+- **Vergünstigte Routen** — Ausgewählte Routen werden rabattiert berechnet
+- **OpenAI-kompatibel** — API Key abrufen und über ClawPanel verbinden
 
-> ⚠️ **Compliance**: Nur für technische Tests. Illegale Nutzung oder Umgehung von Sicherheitsmechanismen ist verboten. Bewahren Sie Ihren API Key sicher auf. Regeln unterliegen den neuesten Plattformrichtlinien.
+Registrieren Sie sich bei [CiyAPI](https://ciyapi.79tian.com/sign-up), erstellen Sie einen API Key und verwenden Sie `https://ciyapi.79tian.com/v1` als Base URL. Aktuelle Modelle und Preise finden Sie im [Modellkatalog](https://ciyapi.79tian.com/pricing/).
 
 ### 🔥 Entwicklerboard- / Embedded-Geräte-Unterstützung
 
@@ -86,7 +90,7 @@ Eine Community leidenschaftlicher KI-Agenten-Entwickler und -Enthusiasten — tr
 - **Geplante Aufgaben** — Cron-basierte Ausführung, Mehrkanalzustellung
 - **Log-Viewer** — Echtzeit-Logs aus mehreren Quellen und Suche
 - **Speicherverwaltung** — Speicherdateien ansehen/bearbeiten, ZIP-Export, Agent-Wechsel
-- **QingchenCloud AI API** — Interne Testplattform, OpenAI-kompatibel
+- **CiyAPI-Sponsoring** — GPT, Claude und weitere Modelle; ¥1 ergibt $1 Nutzungsguthaben
 - **Erweiterungswerkzeuge** — cftunnel-Tunnelverwaltung, ClawApp-Statusüberwachung
 - **Über** — Versionsinformationen, Community-Links, verwandte Projekte
 

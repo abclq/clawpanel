@@ -86,22 +86,24 @@ ClawPanel 是支持多 AI Agent 框架的可视化管理面板，目前支持 [O
 - **人格可维护** — 把 Agent 的表达风格、价值观和偏好固化为可编辑资产。
 - **渠道可扩展** — 面向 QQ、Telegram、Discord 等外部渠道集中管理连接能力。
 
-### 🎁 晴辰云 AI 接口
+### 🧪 免费测试：晴辰云
 
-> 内部技术测试平台，面向部分用户开放体验。签到领额度，邀请得更多。
+[晴辰云](https://gpt.qt.cool/)是 ClawPanel 配套的免费签到测试平台，适合模型体验和功能验证。ClawPanel 不内置或自动读取晴辰云密钥；请自行注册并前往[签到页](https://gpt.qt.cool/checkin)领取测试额度与 API Key，再手动粘贴到 ClawPanel 选择模型并一键配置。具体开放状态和额度规则以晴辰云页面为准。
+
+### 🤝 赞助推广：词元 API
+
+> 第三方赞助推广，具体规则以词元 API 页面为准。
 
 <p align="center">
-  <a href="https://gpt.qt.cool"><img src="https://img.shields.io/badge/🔑 晴辰云 AI-gpt.qt.cool-6366f1?style=for-the-badge" alt="晴辰云 AI"></a>
+  <a href="https://ciyapi.79tian.com" rel="sponsored noopener noreferrer"><img src="https://img.shields.io/badge/🤝 词元 API-赞助推广-6366f1?style=for-the-badge" alt="词元 API 赞助推广"></a>
 </p>
 
-- **签到领测试额度** — 每日签到 + 邀请好友，持续获取测试额度
-- **兼容 OpenAI 接口** — 无缝对接 OpenClaw，即开即用
-- **资源策略** — 限速 + 请求上限，高峰期可能排队
-- **模型可用性** — 模型/接口以实际页面为准，可能灰度或版本切换
+- **主流前沿模型** — 支持 GPT、Claude、Gemini、Grok、Kimi 等模型
+- **充值福利** — 充值 ¥1 到账 $1 平台额度
+- **模型折扣** — 部分线路按折扣计费，具体以模型广场为准
+- **OpenAI Compatible** — 获取 API Key 后可在 ClawPanel 中一键接入
 
-配合 OpenClaw 使用：在 [gpt.qt.cool](https://gpt.qt.cool) 注册并签到领取测试额度，获取 API Key 后，初始化 OpenClaw 时选择 **OpenAI Compatible** 提供商，填入地址和 Key 即可使用。
-
-> ⚠️ **合规与责任边界**：本平台仅提供技术测试，禁止用于违法违规、绕过安全机制等用途。违规将限制访问并保留处置权。妥善保管 API Key，勿在截图/日志/代码库中泄露。具体规则以平台最新政策与页面展示为准。
+配合 OpenClaw 使用：在 [词元 API](https://ciyapi.79tian.com/sign-up) 注册并获取 API Key，选择 **OpenAI Compatible** 提供商，Base URL 填写 `https://ciyapi.79tian.com/v1`。可前往[模型广场](https://ciyapi.79tian.com/pricing/)查看实时模型和价格。
 
 ### 🔥 开发板 / 嵌入式设备支持
 
@@ -444,7 +446,8 @@ docker rmi $(docker images --filter "reference=*clawpanel*" -q) 2>/dev/null
 - **定时任务** — Cron 定时执行，支持多渠道投递
 - **日志查看** — 多日志源实时查看与关键词搜索
 - **记忆管理** — 记忆文件查看/编辑、分类管理、ZIP 导出、Agent 切换
-- **晴辰云 AI 接口** — 内部技术测试平台，兼容 OpenAI 接口，签到领测试额度
+- **晴辰云免费测试** — 签到领取测试额度，支持获取模型并一键配置
+- **词元 API 赞助推广** — 支持 GPT、Claude 等模型，充值 ¥1 到账 $1 平台额度
 - **扩展工具** — cftunnel 内网穿透管理、ClawApp 状态监控
 - **关于** — 版本信息、社群入口、相关项目链接、一键升级
 
@@ -465,9 +468,9 @@ docker rmi $(docker images --filter "reference=*clawpanel*" -q) 2>/dev/null
 <p align="center"><em>仪表盘 — Gateway / 隧道 / 服务实时状态，版本信息、Agent 数量、模型池一屏掌握</em></p>
 
 <p align="center">
-  <img src="docs/02.png" width="800" alt="AI 助手设置 — 公益 AI 接口">
+  <img src="docs/02.png" width="800" alt="AI 助手设置 — 晴辰云免费测试与词元 API 赞助推广">
 </p>
-<p align="center"><em>⚙️ AI 设置 — 独立模型配置 + 公益 AI 接口一键接入，GPT-5 全系列免费可用</em></p>
+<p align="center"><em>⚙️ AI 设置 — 晴辰云免费测试与词元 API 赞助服务均可一键接入</em></p>
 
 <p align="center">
   <img src="docs/05.png" width="800" alt="AI 助手人设 — Agent 灵魂">

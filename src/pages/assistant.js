@@ -10,7 +10,14 @@ import { showConfirm } from '../components/modal.js'
 import { api } from '../lib/tauri-api.js'
 import { OPENCLAW_KB } from '../lib/openclaw-kb.js'
 import { icon, statusIcon } from '../lib/icons.js'
-import { QTCOOL, PROVIDER_PRESETS, API_TYPES as SHARED_API_TYPES, fetchQtcoolModels } from '../lib/model-presets.js'
+import {
+  QTCOOL,
+  CIYAPI,
+  PROVIDER_PRESETS,
+  API_TYPES as SHARED_API_TYPES,
+  fetchQtcoolModels,
+  fetchCiyapiModels,
+} from '../lib/model-presets.js'
 import { t } from '../lib/i18n.js'
 import { getActiveEngineId } from '../lib/engine-manager.js'
 import { enhanceModelCallError } from '../lib/model-error-diagnosis.js'
@@ -4139,42 +4146,46 @@ function showSettings() {
           </div>
           <div class="form-hint" id="ast-api-hint" style="margin-top:-4px">${apiHintText(c.apiType)}</div>
 
-          <div id="ast-qtcool-promo" style="margin-top:14px;border-radius:var(--radius-lg);border:1px solid var(--border-primary);border-left:3px solid var(--primary);background:var(--bg-secondary);overflow:hidden">
+          <div id="ast-quick-provider" style="margin-top:14px;border-radius:var(--radius-lg);border:1px solid var(--border-primary);background:var(--bg-secondary);overflow:hidden">
             <div style="padding:14px 16px 12px">
+              <div style="margin-bottom:10px">
+                <div style="font-weight:700;font-size:var(--font-size-sm);margin-bottom:3px">${t('assistant.quickProviderTitle')}</div>
+                <div style="font-size:11px;color:var(--text-tertiary);line-height:1.4">${t('assistant.quickProviderDesc')}</div>
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:12px">
+                <button type="button" class="btn btn-primary btn-sm" data-quick-provider="qtcool">${icon('gift', 12)} ${t('assistant.qtcoolName')} · ${t('assistant.qtcoolRecommend')}</button>
+                <button type="button" class="btn btn-secondary btn-sm" data-quick-provider="ciyapi">${icon('external-link', 12)} ${t('assistant.ciyapiName')} · ${t('assistant.ciyapiRecommend')}</button>
+              </div>
               <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:10px">
                 <div>
                   <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
-                    <span style="font-weight:700;font-size:var(--font-size-sm)">${icon('zap', 14)} ${t('assistant.qtcoolName')}</span>
-                    <span style="font-size:10px;background:var(--primary);color:#fff;padding:1px 7px;border-radius:8px">${t('assistant.qtcoolRecommend')}</span>
+                    <span id="ast-quick-name" style="font-weight:700;font-size:var(--font-size-sm)">${icon('zap', 14)} ${t('assistant.qtcoolName')}</span>
+                    <span id="ast-quick-badge" style="font-size:10px;background:var(--success, #22c55e);color:#fff;padding:1px 7px;border-radius:8px">${t('assistant.qtcoolRecommend')}</span>
                   </div>
-                  <div style="font-size:11px;color:var(--text-tertiary);line-height:1.4">
-                    ${t('assistant.qtcoolDesc')}
-                  </div>
+                  <div id="ast-quick-desc" style="font-size:11px;color:var(--text-tertiary);line-height:1.4">${t('assistant.qtcoolDesc')}</div>
                 </div>
-                <a href="${QTCOOL.checkinUrl}" target="_blank" class="btn btn-primary btn-xs" style="flex-shrink:0">${icon('gift', 11)} ${t('assistant.qtcoolCheckin')}</a>
+                <a id="ast-quick-action" href="${QTCOOL.checkinUrl}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-xs" style="flex-shrink:0">${icon('gift', 11)} ${t('assistant.qtcoolCheckin')}</a>
               </div>
-              <div style="font-size:var(--font-size-xs);color:var(--text-secondary);margin-bottom:8px">
-                ${t('assistant.qtcoolInstructions')}
-              </div>
+              <div id="ast-quick-instructions" style="font-size:var(--font-size-xs);color:var(--text-secondary);margin-bottom:8px">${t('assistant.qtcoolInstructions')}</div>
               <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
-                <input class="form-input" id="ast-qtcool-key" placeholder="${t('assistant.qtcoolKeyPlaceholder')}" style="font-size:12px;padding:5px 10px;flex:1;min-width:120px">
-                <input type="checkbox" id="ast-qtcool-customkey" style="display:none">
+                <input class="form-input" id="ast-quick-key" placeholder="${t('assistant.qtcoolKeyPlaceholder')}" style="font-size:12px;padding:5px 10px;flex:1;min-width:120px">
+                <button class="btn btn-sm btn-secondary" id="ast-quick-fetch">${icon('download', 12)} ${t('assistant.qtcoolFetchModels')}</button>
               </div>
               <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-                <select id="ast-qtcool-model" class="form-input" style="font-size:12px;padding:5px 10px;min-width:130px;flex:1">
+                <select id="ast-quick-model" class="form-input" style="font-size:12px;padding:5px 10px;min-width:130px;flex:1">
                   <option value="" disabled selected>${t('assistant.qtcoolLoadingModels')}</option>
                 </select>
-                <button class="btn btn-sm btn-secondary" id="ast-qtcool-test">${icon('search', 12)} ${t('assistant.testBtn')}</button>
-                <button class="btn btn-sm btn-primary" id="ast-qtcool-apply">${icon('zap', 12)} ${t('assistant.qtcoolApply')}</button>
+                <button class="btn btn-sm btn-secondary" id="ast-quick-test">${icon('search', 12)} ${t('assistant.testBtn')}</button>
+                <button class="btn btn-sm btn-primary" id="ast-quick-apply">${icon('zap', 12)} ${t('assistant.qtcoolApply')}</button>
               </div>
-              <div id="ast-qtcool-status" style="margin-top:8px;font-size:11px;min-height:16px;line-height:1.5"></div>
+              <div id="ast-quick-status" style="margin-top:8px;font-size:11px;min-height:16px;line-height:1.5"></div>
             </div>
             <div style="border-top:1px solid var(--border-primary);padding:6px 16px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;background:var(--bg-tertiary)">
               ${!isHermes ? `<div style="display:flex;gap:8px;align-items:center">
-                <button class="btn btn-xs btn-secondary" id="ast-qtcool-sync-to" title="${t('assistant.qtcoolSyncToTitle')}">${icon('upload', 11)} ${t('assistant.qtcoolSyncTo')}</button>
-                <button class="btn btn-xs btn-secondary" id="ast-qtcool-sync-from" title="${t('assistant.qtcoolSyncFromTitle')}">${icon('download', 11)} ${t('assistant.qtcoolSyncFrom')}</button>
+                <button class="btn btn-xs btn-secondary" id="ast-quick-sync-to" title="${t('assistant.qtcoolSyncToTitle')}">${icon('upload', 11)} ${t('assistant.qtcoolSyncTo')}</button>
+                <button class="btn btn-xs btn-secondary" id="ast-quick-sync-from" title="${t('assistant.ciyapiSyncFromTitle')}" style="display:none">${icon('download', 11)} ${t('assistant.ciyapiSyncFrom')}</button>
               </div>` : '<div></div>'}
-              <a href="${QTCOOL.site}" target="_blank" style="color:var(--primary);text-decoration:none;font-size:11px">${icon('external-link', 11)} ${t('assistant.qtcoolLearnMore')}</a>
+              <a id="ast-quick-learn" href="${QTCOOL.site}" target="_blank" rel="noopener noreferrer" style="color:var(--primary);text-decoration:none;font-size:11px">${icon('external-link', 11)} ${t('assistant.qtcoolLearnMore')}</a>
             </div>
           </div>
 
@@ -4485,8 +4496,8 @@ function showSettings() {
       last?.select()
     }, 30)
   }
-  // 渲染厂商预设按钮（6 个最常用 + 从主模型复制 + 自定义 + 更多）
-  const TOP_PRESETS = ['qtcool', 'openai', 'anthropic', 'deepseek', 'google', 'ollama']
+  // 渲染厂商预设按钮（免费测试与赞助入口分开，其余保留常用厂商）
+  const TOP_PRESETS = ['qtcool', 'ciyapi', 'openai', 'anthropic', 'deepseek', 'google', 'ollama']
   let showAllPresets = false
   const renderPresetButtons = () => {
     const shown = showAllPresets
@@ -4778,194 +4789,302 @@ function showSettings() {
     }
   })
 
-  // ── gpt.qt.cool 一键配置 ──
-  const qtcoolModelSelect = overlay.querySelector('#ast-qtcool-model')
-  const qtcoolCustomKeyCheckbox = overlay.querySelector('#ast-qtcool-customkey')
-  const qtcoolKeyInput = overlay.querySelector('#ast-qtcool-key')
-
-  // 动态获取模型列表（共享逻辑）
-  ;(async () => {
-    const models = await fetchQtcoolModels()
-    qtcoolModelSelect.innerHTML = models.map((m, i) =>
-      `<option value="${m.id}" style="color:#333"${i === 0 ? ' selected' : ''}>${m.name || m.id}${i === 0 ? ' ★' : ''}</option>`
-    ).join('')
-  })()
-
-  // key input is always visible now (no more built-in key)
-  const qtcoolStatus = overlay.querySelector('#ast-qtcool-status')
-
-  // 测试按钮：快速验证接口可用性
-  overlay.querySelector('#ast-qtcool-test').onclick = async (e) => {
-    const btn = e.target
-    const selectedModel = qtcoolModelSelect.value
-    if (!selectedModel) { qtcoolStatus.innerHTML = `<span style="color:#fbbf24">${statusIcon('warn', 14)} ${t('assistant.qtcoolSelectModel')}</span>`; return }
-    const key = qtcoolKeyInput.value.trim()
-    if (!key) { qtcoolStatus.innerHTML = `<span style="color:#fbbf24">${statusIcon('warn', 14)} ${t('assistant.qtcoolEnterKey')}</span>`; return }
-
-    btn.disabled = true
-    btn.textContent = t('assistant.testing')
-    qtcoolStatus.innerHTML = `<span style="color:rgba(255,255,255,0.5)">${t('assistant.qtcoolConnecting')}</span>`
-    const t0 = Date.now()
-    try {
-      const resp = await fetch(QTCOOL.baseUrl + '/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
-        body: JSON.stringify({ model: selectedModel, messages: [{ role: 'user', content: 'Hi' }], max_tokens: 10 }),
-        signal: AbortSignal.timeout(15000)
-      })
-      const ms = Date.now() - t0
-      if (resp.ok) {
-        const data = await resp.json()
-        const reply = data.choices?.[0]?.message?.content || ''
-        qtcoolStatus.innerHTML = `<span style="color:#34d399">${statusIcon('ok', 14)} ${t('assistant.qtcoolTestPass', { time: (ms/1000).toFixed(1) })}</span><span style="color:rgba(255,255,255,0.4);margin-left:6px">${selectedModel} OK</span>`
-      } else {
-        const errText = await resp.text().catch(() => '')
-        let errMsg = `HTTP ${resp.status}`
-        try {
-          const errJson = JSON.parse(errText)
-          if (errJson.error?.message) errMsg = errJson.error.message
-        } catch { if (errText) errMsg += ' — ' + errText.slice(0, 200) }
-        // 将 URL 转为可点击链接
-        const errHtml = errMsg.replace(/(https?:\/\/[^\s,，。）)]+)/g, '<a href="$1" target="_blank" style="color:var(--primary)">$1</a>')
-        qtcoolStatus.innerHTML = `<div style="color:#f87171;line-height:1.5">${statusIcon('err', 14)} <strong>${t('assistant.qtcoolTestFail')}</strong></div><div style="color:var(--text-secondary);font-size:11px;line-height:1.5;margin-top:4px;word-break:break-all">${errHtml}</div>`
-      }
-    } catch (err) {
-      qtcoolStatus.innerHTML = `<div style="color:#f87171">${statusIcon('err', 14)} ${t('assistant.qtcoolConnectFail')}: ${err.message}</div>`
-    }
-    btn.disabled = false
-    btn.innerHTML = `${icon('search', 12)} ${t('assistant.testBtn')}`
+  // ── 晴辰云免费测试 / 词元 API 赞助推广快捷配置 ──
+  const quickProviderDefinitions = {
+    qtcool: {
+      provider: QTCOOL,
+      fetchModels: fetchQtcoolModels,
+      actionUrl: QTCOOL.checkinUrl,
+      learnUrl: QTCOOL.site,
+      actionIcon: 'gift',
+      sponsored: false,
+      allowConfigImport: false,
+    },
+    ciyapi: {
+      provider: CIYAPI,
+      fetchModels: fetchCiyapiModels,
+      actionUrl: CIYAPI.signupUrl,
+      learnUrl: CIYAPI.pricingUrl,
+      actionIcon: 'external-link',
+      sponsored: true,
+      allowConfigImport: true,
+    },
   }
-
-  // 一键接入：填充配置 + 提示设为 OpenClaw 主模型
-  overlay.querySelector('#ast-qtcool-apply').onclick = async () => {
-    const selectedModel = qtcoolModelSelect.value
-    if (!selectedModel) { qtcoolStatus.innerHTML = `<span style="color:#fbbf24">${statusIcon('warn', 14)} ${t('assistant.qtcoolSelectModel')}</span>`; return }
-    const key = qtcoolKeyInput.value.trim()
-    if (!key) { qtcoolStatus.innerHTML = `<span style="color:#fbbf24">${statusIcon('warn', 14)} ${t('assistant.qtcoolEnterKey')}</span>`; return }
-
-    // 1) 填充助手配置
-    overlay.querySelector('#ast-baseurl').value = QTCOOL.baseUrl
-    overlay.querySelector('#ast-apikey').value = key
-    overlay.querySelector('#ast-model').value = selectedModel
-    overlay.querySelector('#ast-apitype').value = 'openai-completions'
-    qtcoolStatus.innerHTML = `<span style="color:#34d399">${statusIcon('ok', 14)} ${t('assistant.qtcoolConfigured', { model: selectedModel })}</span>`
-    toast(t('assistant.qtcoolConfigured', { model: selectedModel }), 'success')
-
-    // 2) 提示是否同步写入 OpenClaw 配置（设为主模型）
-    const yes = await showConfirm(
-      t('assistant.qtcoolSyncTitle'),
-      t('assistant.qtcoolSyncDesc', { model: selectedModel }),
-      { confirmText: t('assistant.qtcoolSetMain'), cancelText: t('assistant.qtcoolAssistantOnly') }
-    )
-    if (yes) {
-      try {
-        let config = {}
-        try { config = await api.readOpenclawConfig() } catch {}
-        if (!config.models) config.models = {}
-        if (!config.models.providers) config.models.providers = {}
-
-        // 添加/更新 qtcool provider
-        if (!config.models.providers.qtcool) {
-          config.models.providers.qtcool = {
-            baseUrl: QTCOOL.baseUrl,
-            apiKey: key,
-            api: 'openai-completions',
-            models: [{ id: selectedModel, name: selectedModel, contextWindow: 128000, reasoning: selectedModel.includes('codex') }]
-          }
-        } else {
-          config.models.providers.qtcool.apiKey = key
-        }
-
-        // 设为主模型
-        if (!config.agents) config.agents = {}
-        if (!config.agents.defaults) config.agents.defaults = {}
-        if (!config.agents.defaults.model) config.agents.defaults.model = {}
-        config.agents.defaults.model.primary = 'qtcool/' + selectedModel
-
-        await api.writeOpenclawConfig(config)
-        qtcoolStatus.innerHTML = `<span style="color:#34d399">${statusIcon('ok', 14)} ${t('assistant.qtcoolSetMainDone', { model: selectedModel })}</span>`
-        try {
-          await api.restartGateway()
-          toast(t('assistant.qtcoolMainSwitched', { model: selectedModel }), 'success')
-          qtcoolStatus.innerHTML = `<span style="color:#34d399">${statusIcon('ok', 14)} ${t('assistant.qtcoolAllDone', { model: selectedModel })}</span>`
-        } catch (e) {
-          toast(humanizeError(e, t('assistant.qtcoolGatewayFail')), 'warning')
-        }
-      } catch (e) {
-        toast(humanizeError(e, t('assistant.qtcoolWriteFail')), 'error')
-      }
-    }
+  const quickKeyInput = overlay.querySelector('#ast-quick-key')
+  const quickModelSelect = overlay.querySelector('#ast-quick-model')
+  const quickStatus = overlay.querySelector('#ast-quick-status')
+  const quickFetchBtn = overlay.querySelector('#ast-quick-fetch')
+  const quickAction = overlay.querySelector('#ast-quick-action')
+  const quickLearn = overlay.querySelector('#ast-quick-learn')
+  const quickDrafts = {
+    qtcool: { key: '', model: '', models: [] },
+    ciyapi: { key: '', model: '', models: [] },
   }
+  let activeQuickProvider = 'qtcool'
 
-  // 同步到 OpenClaw：将助手的 baseUrl/apiKey/model 写入 openclaw.json
-  overlay.querySelector('#ast-qtcool-sync-to')?.addEventListener('click', async () => {
-    const baseUrl = overlay.querySelector('#ast-baseurl').value.trim()
-    const apiKey = overlay.querySelector('#ast-apikey').value.trim()
-    const model = overlay.querySelector('#ast-model').value.trim()
-    if (!baseUrl || !apiKey || !model) {
-      toast(t('assistant.qtcoolFillFirst'), 'warning')
+  const quickDefinition = () => quickProviderDefinitions[activeQuickProvider]
+  const quickText = suffix => t(`assistant.${activeQuickProvider}${suffix}`)
+  const quickModelId = item => typeof item === 'string' ? item : item?.id
+  const makeQuickModel = model => ({
+    id: model,
+    name: model,
+    contextWindow: 128000,
+    reasoning: /codex|thinking|reasoner|reasoning/i.test(model),
+  })
+
+  function renderQuickModelOptions(models, preferred = '') {
+    const unique = [...new Map((models || []).filter(item => quickModelId(item)).map(item => {
+      const id = quickModelId(item)
+      return [id, typeof item === 'string' ? { id, name: id } : item]
+    })).values()]
+    if (!unique.length) {
+      quickModelSelect.innerHTML = `<option value="" disabled selected>${t('assistant.quickEnterKeyFirst')}</option>`
       return
     }
+    quickModelSelect.innerHTML = unique.map((model, index) => {
+      const id = quickModelId(model)
+      const selected = preferred ? id === preferred : index === 0
+      return `<option value="${escHtml(id)}" style="color:#333"${selected ? ' selected' : ''}>${escHtml(model.name || id)}${index === 0 ? ' ★' : ''}</option>`
+    }).join('')
+  }
+
+  function upsertQuickProvider(config, definition, apiKey, model) {
+    if (!config.models) config.models = {}
+    if (!config.models.providers) config.models.providers = {}
+    const providerKey = definition.provider.providerKey
+    const existingProvider = config.models.providers[providerKey] || {}
+    const existingModels = Array.isArray(existingProvider.models) ? existingProvider.models : []
+    const modelExists = existingModels.some(item => quickModelId(item) === model)
+    config.models.providers[providerKey] = {
+      ...existingProvider,
+      baseUrl: definition.provider.baseUrl,
+      apiKey,
+      api: definition.provider.api,
+      models: modelExists ? existingModels : [...existingModels, makeQuickModel(model)],
+    }
+  }
+
+  function setQuickPrimary(config, providerKey, model) {
+    if (!config.agents) config.agents = {}
+    if (!config.agents.defaults) config.agents.defaults = {}
+    if (!config.agents.defaults.model) config.agents.defaults.model = {}
+    config.agents.defaults.model.primary = `${providerKey}/${model}`
+  }
+
+  async function refreshQuickModels({ quiet = false } = {}) {
+    const definition = quickDefinition()
+    const key = quickKeyInput.value.trim()
+    if (!key) {
+      if (!quiet) quickStatus.innerHTML = `<span style="color:#fbbf24">${statusIcon('warn', 14)} ${quickText('EnterKey')}</span>`
+      quickKeyInput.focus()
+      return
+    }
+    const preferred = quickModelSelect.value || quickDrafts[activeQuickProvider].model
+    quickFetchBtn.disabled = true
+    quickFetchBtn.textContent = quickText('Fetching')
+    if (!quiet) quickStatus.innerHTML = `<span style="color:var(--text-tertiary)">${quickText('LoadingModels')}</span>`
+    try {
+      const models = await definition.fetchModels(key)
+      if (!models.length) {
+        if (!quiet) quickStatus.innerHTML = `<span style="color:#f87171">${statusIcon('err', 14)} ${quickText('ConnectFail')}</span>`
+        return
+      }
+      renderQuickModelOptions(models, preferred)
+      quickDrafts[activeQuickProvider].models = models
+      quickDrafts[activeQuickProvider].model = quickModelSelect.value
+      if (!quiet) quickStatus.innerHTML = `<span style="color:#34d399">${statusIcon('ok', 14)} ${t('assistant.modelsFound', { count: models.length })}</span>`
+    } catch (error) {
+      if (!quiet) quickStatus.innerHTML = `<span style="color:#f87171">${statusIcon('err', 14)} ${quickText('ConnectFail')}: ${escHtml(error.message)}</span>`
+    } finally {
+      quickFetchBtn.disabled = false
+      quickFetchBtn.innerHTML = `${icon('download', 12)} ${quickText('FetchModels')}`
+    }
+  }
+
+  async function activateQuickProvider(providerKey) {
+    quickDrafts[activeQuickProvider] = {
+      key: quickKeyInput.value.trim(),
+      model: quickModelSelect.value || quickDrafts[activeQuickProvider].model,
+      models: quickDrafts[activeQuickProvider].models,
+    }
+    activeQuickProvider = providerKey
+    const definition = quickDefinition()
+    const rel = definition.sponsored ? 'noopener noreferrer sponsored' : 'noopener noreferrer'
+    overlay.querySelectorAll('[data-quick-provider]').forEach(button => {
+      const active = button.dataset.quickProvider === providerKey
+      button.className = `btn ${active ? 'btn-primary' : 'btn-secondary'} btn-sm`
+    })
+    overlay.querySelector('#ast-quick-name').innerHTML = `${icon('zap', 14)} ${quickText('Name')}`
+    const badge = overlay.querySelector('#ast-quick-badge')
+    badge.textContent = quickText('Recommend')
+    badge.style.background = definition.sponsored ? 'var(--primary)' : 'var(--success, #22c55e)'
+    overlay.querySelector('#ast-quick-desc').textContent = quickText('Desc')
+    overlay.querySelector('#ast-quick-instructions').textContent = quickText('Instructions')
+    quickKeyInput.placeholder = quickText('KeyPlaceholder')
+    quickAction.href = definition.actionUrl
+    quickAction.rel = rel
+    quickAction.className = `btn ${definition.sponsored ? 'btn-primary' : 'btn-secondary'} btn-xs`
+    quickAction.innerHTML = `${icon(definition.actionIcon, 11)} ${quickText('Checkin')}`
+    quickLearn.href = definition.learnUrl
+    quickLearn.rel = rel
+    quickLearn.innerHTML = `${icon('external-link', 11)} ${quickText('LearnMore')}`
+    quickFetchBtn.innerHTML = `${icon('download', 12)} ${quickText('FetchModels')}`
+    overlay.querySelector('#ast-quick-sync-to')?.setAttribute('title', quickText('SyncToTitle'))
+    const syncFromButton = overlay.querySelector('#ast-quick-sync-from')
+    if (syncFromButton) {
+      if (definition.allowConfigImport) {
+        syncFromButton.setAttribute('title', quickText('SyncFromTitle'))
+        syncFromButton.innerHTML = `${icon('download', 11)} ${quickText('SyncFrom')}`
+      }
+      syncFromButton.style.display = definition.allowConfigImport ? '' : 'none'
+    }
+    quickStatus.innerHTML = ''
+    quickKeyInput.value = quickDrafts[providerKey].key
+    renderQuickModelOptions(quickDrafts[providerKey].models, quickDrafts[providerKey].model)
+  }
+
+  overlay.querySelectorAll('[data-quick-provider]').forEach(button => {
+    button.addEventListener('click', () => { void activateQuickProvider(button.dataset.quickProvider) })
+  })
+  quickFetchBtn.onclick = () => { void refreshQuickModels() }
+
+  // 快速验证接口可用性，统一走后端测试接口以兼容 Web 与 Tauri。
+  overlay.querySelector('#ast-quick-test').onclick = async (event) => {
+    const definition = quickDefinition()
+    const model = quickModelSelect.value
+    const key = quickKeyInput.value.trim()
+    if (!model) { quickStatus.innerHTML = `<span style="color:#fbbf24">${statusIcon('warn', 14)} ${quickText('SelectModel')}</span>`; return }
+    if (!key) { quickStatus.innerHTML = `<span style="color:#fbbf24">${statusIcon('warn', 14)} ${quickText('EnterKey')}</span>`; return }
+    const button = event.currentTarget
+    button.disabled = true
+    button.textContent = t('assistant.testing')
+    quickStatus.innerHTML = `<span style="color:var(--text-tertiary)">${quickText('Connecting')}</span>`
+    try {
+      const result = await api.testModelVerbose(definition.provider.baseUrl, key, model, definition.provider.api)
+      if (result.success) {
+        quickStatus.innerHTML = `<span style="color:#34d399">${statusIcon('ok', 14)} ${quickText('TestPass')}</span><span style="color:var(--text-tertiary);margin-left:6px">${escHtml(model)} OK</span>`
+      } else {
+        const detail = result.error || result.respBody || `HTTP ${result.status || 0}`
+        quickStatus.innerHTML = `<div style="color:#f87171">${statusIcon('err', 14)} <strong>${quickText('TestFail')}</strong></div><div style="color:var(--text-secondary);font-size:11px;margin-top:4px;word-break:break-all">${escHtml(detail)}</div>`
+      }
+    } catch (error) {
+      quickStatus.innerHTML = `<div style="color:#f87171">${statusIcon('err', 14)} ${quickText('ConnectFail')}: ${escHtml(error.message)}</div>`
+    } finally {
+      button.disabled = false
+      button.innerHTML = `${icon('search', 12)} ${t('assistant.testBtn')}`
+    }
+  }
+
+  // 一键接入：先填充助手配置，再由用户决定是否同步为 OpenClaw 主模型。
+  overlay.querySelector('#ast-quick-apply').onclick = async () => {
+    const definition = quickDefinition()
+    const model = quickModelSelect.value
+    const key = quickKeyInput.value.trim()
+    if (!model) { quickStatus.innerHTML = `<span style="color:#fbbf24">${statusIcon('warn', 14)} ${quickText('SelectModel')}</span>`; return }
+    if (!key) { quickStatus.innerHTML = `<span style="color:#fbbf24">${statusIcon('warn', 14)} ${quickText('EnterKey')}</span>`; return }
+
+    overlay.querySelector('#ast-baseurl').value = definition.provider.baseUrl
+    overlay.querySelector('#ast-apikey').value = key
+    overlay.querySelector('#ast-model').value = model
+    overlay.querySelector('#ast-apitype').value = definition.provider.api
+    quickStatus.innerHTML = `<span style="color:#34d399">${statusIcon('ok', 14)} ${quickText('Configured')}</span>`
+    toast(quickText('Configured'), 'success')
+
     const yes = await showConfirm(
-      t('assistant.qtcoolSyncTo'),
-      t('assistant.qtcoolSyncToDesc', { model }),
-      { confirmText: t('assistant.qtcoolConfirmSync'), cancelText: t('common.cancel') }
+      quickText('SyncTitle'),
+      quickText('SyncDesc'),
+      { confirmText: quickText('SetMain'), cancelText: quickText('AssistantOnly') }
     )
     if (!yes) return
     try {
       let config = {}
       try { config = await api.readOpenclawConfig() } catch {}
-      if (!config.models) config.models = {}
-      if (!config.models.providers) config.models.providers = {}
-      config.models.providers.qtcool = {
-        baseUrl,
-        apiKey,
-        api: 'openai-completions',
-        models: [{ id: model, name: model, contextWindow: 128000, reasoning: model.includes('codex') }]
-      }
-      if (!config.agents) config.agents = {}
-      if (!config.agents.defaults) config.agents.defaults = {}
-      if (!config.agents.defaults.model) config.agents.defaults.model = {}
-      config.agents.defaults.model.primary = 'qtcool/' + model
+      upsertQuickProvider(config, definition, key, model)
+      setQuickPrimary(config, definition.provider.providerKey, model)
       await api.writeOpenclawConfig(config)
-      toast(t('assistant.qtcoolSyncToDone', { model }), 'success')
+      quickStatus.innerHTML = `<span style="color:#34d399">${statusIcon('ok', 14)} ${quickText('SetMainDone')}</span>`
+      try {
+        await api.restartGateway()
+        toast(t(`assistant.${activeQuickProvider}MainSwitched`, { model }), 'success')
+        quickStatus.innerHTML = `<span style="color:#34d399">${statusIcon('ok', 14)} ${quickText('AllDone')}</span>`
+      } catch (error) {
+        toast(humanizeError(error, quickText('GatewayFail')), 'warning')
+      }
+    } catch (error) {
+      toast(humanizeError(error, quickText('WriteFail')), 'error')
+    }
+  }
+
+  overlay.querySelector('#ast-quick-sync-to')?.addEventListener('click', async () => {
+    const definition = quickDefinition()
+    const apiKey = quickKeyInput.value.trim()
+    const model = quickModelSelect.value
+    if (!apiKey || !model) {
+      toast(quickText('FillFirst'), 'warning')
+      return
+    }
+    const yes = await showConfirm(
+      quickText('SyncTo'),
+      t(`assistant.${activeQuickProvider}SyncToDesc`, { model }),
+      { confirmText: quickText('ConfirmSync'), cancelText: t('common.cancel') }
+    )
+    if (!yes) return
+    try {
+      let config = {}
+      try { config = await api.readOpenclawConfig() } catch {}
+      upsertQuickProvider(config, definition, apiKey, model)
+      setQuickPrimary(config, definition.provider.providerKey, model)
+      await api.writeOpenclawConfig(config)
+      toast(t(`assistant.${activeQuickProvider}SyncToDone`, { model }), 'success')
       try { await api.restartGateway() } catch {}
-    } catch (e) {
-      toast(humanizeError(e, t('assistant.qtcoolSyncFail')), 'error')
+    } catch (error) {
+      toast(humanizeError(error, quickText('SyncFail')), 'error')
     }
   })
 
-  // 从 OpenClaw 读取：将 openclaw.json 的 qtcool provider 配置填入助手
-  overlay.querySelector('#ast-qtcool-sync-from')?.addEventListener('click', async () => {
+  overlay.querySelector('#ast-quick-sync-from')?.addEventListener('click', async () => {
+    const definition = quickDefinition()
+    if (!definition.allowConfigImport) return
     try {
       const config = await api.readOpenclawConfig()
-      const qtProvider = config?.models?.providers?.qtcool
-      if (!qtProvider?.baseUrl) {
-        toast(t('assistant.qtcoolNoProvider'), 'info')
+      const configured = config?.models?.providers?.[definition.provider.providerKey]
+      if (!configured?.baseUrl) {
+        toast(quickText('NoProvider'), 'info')
         return
       }
       const primary = config?.agents?.defaults?.model?.primary || ''
-      const primaryModel = primary.startsWith('qtcool/') ? primary.slice(7) : ''
-      const firstModel = (qtProvider.models || [])[0]
-      const modelId = primaryModel || (typeof firstModel === 'string' ? firstModel : firstModel?.id) || ''
+      const prefix = `${definition.provider.providerKey}/`
+      const primaryModel = primary.startsWith(prefix) ? primary.slice(prefix.length) : ''
+      const firstModel = quickModelId((configured.models || [])[0]) || ''
+      const model = primaryModel || firstModel
       const yes = await showConfirm(
-        t('assistant.qtcoolSyncFrom'),
-        t('assistant.qtcoolSyncFromDesc', { baseUrl: qtProvider.baseUrl, apiKey: qtProvider.apiKey ? '****' + qtProvider.apiKey.slice(-6) : '(—)', model: modelId }),
-        { confirmText: t('assistant.qtcoolConfirmRead'), cancelText: t('common.cancel') }
+        quickText('SyncFrom'),
+        t(`assistant.${activeQuickProvider}SyncFromDesc`, {
+          baseUrl: configured.baseUrl,
+          apiKey: configured.apiKey ? '****' + configured.apiKey.slice(-6) : '(—)',
+          model,
+        }),
+        { confirmText: quickText('ConfirmRead'), cancelText: t('common.cancel') }
       )
       if (!yes) return
-      overlay.querySelector('#ast-baseurl').value = qtProvider.baseUrl
-      if (qtProvider.apiKey) {
-        overlay.querySelector('#ast-apikey').value = qtProvider.apiKey
-        qtcoolKeyInput.value = qtProvider.apiKey
+      quickKeyInput.value = configured.apiKey || ''
+      renderQuickModelOptions(configured.models || [], model)
+      quickDrafts[activeQuickProvider] = {
+        key: configured.apiKey || '',
+        model,
+        models: configured.models || [],
       }
-      overlay.querySelector('#ast-apitype').value = qtProvider.api || 'openai-completions'
-      if (modelId) overlay.querySelector('#ast-model').value = modelId
-      toast(t('assistant.qtcoolSyncFromDone'), 'success')
-    } catch (e) {
-      toast(humanizeError(e, t('assistant.qtcoolReadFail')), 'error')
+      overlay.querySelector('#ast-baseurl').value = configured.baseUrl
+      overlay.querySelector('#ast-apikey').value = configured.apiKey || ''
+      overlay.querySelector('#ast-apitype').value = configured.api || definition.provider.api
+      if (model) overlay.querySelector('#ast-model').value = model
+      toast(quickText('SyncFromDone'), 'success')
+    } catch (error) {
+      toast(humanizeError(error, quickText('ReadFail')), 'error')
     }
   })
+
+  void activateQuickProvider('qtcool')
 
   const resultEl = overlay.querySelector('#ast-test-result')
   const modelInput = overlay.querySelector('#ast-model')

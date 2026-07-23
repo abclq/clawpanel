@@ -46,7 +46,8 @@ export function modelApiTypeOptions(value) {
 
 // 服务商快捷预设
 export const PROVIDER_PRESETS = [
-  { key: 'qtcool', label: '晴辰云', badge: '推荐', baseUrl: 'https://gpt.qt.cool/v1', api: 'openai-completions', site: 'https://gpt.qt.cool/', desc: '每日签到领免费模型测试额度，邀请好友再送额度，付费低至官方价 2-3 折' },
+  { key: 'qtcool', label: '晴辰云', badge: '免费测试', baseUrl: 'https://gpt.qt.cool/v1', api: 'openai-completions', site: 'https://gpt.qt.cool/', desc: 'ClawPanel 配套免费签到测试平台，适合体验和功能验证' },
+  { key: 'ciyapi', label: '词元 API', badge: '赞助', sponsored: true, baseUrl: 'https://ciyapi.79tian.com/v1', api: 'openai-completions', site: 'https://ciyapi.79tian.com/', desc: '支持 GPT、Claude 等主流前沿模型；充值 ¥1 到账 $1 平台额度，部分线路按折扣计费' },
   { key: 'shengsuanyun', label: '胜算云', baseUrl: 'https://router.shengsuanyun.com/api/v1', api: 'openai-completions', site: 'https://www.shengsuanyun.com/?from=CH_4BVI0BM2', desc: '国内知名 AI 模型聚合平台，支持多种主流模型' },
   { key: 'siliconflow', label: '硅基流动', baseUrl: 'https://api.siliconflow.cn/v1', api: 'openai-completions', site: 'https://cloud.siliconflow.cn/i/PFrw2an5', desc: '高性价比推理平台，支持 DeepSeek、Qwen 等开源模型' },
   { key: 'volcengine', label: '火山引擎', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', api: 'openai-completions', site: 'https://volcengine.com/L/Ph1OP5I3_GY', desc: '字节跳动旗下云平台，支持豆包等模型' },
@@ -65,15 +66,33 @@ export const PROVIDER_PRESETS = [
   { key: 'ollama', label: 'Ollama (本地)', baseUrl: 'http://127.0.0.1:11434/v1', api: 'openai-completions', site: 'https://ollama.com/' },
 ]
 
-// 晴辰云配置
+// 晴辰云免费签到测试平台配置
 export const QTCOOL = {
   baseUrl: 'https://gpt.qt.cool/v1',
   defaultKey: '',
   site: 'https://gpt.qt.cool/',
   checkinUrl: 'https://gpt.qt.cool/checkin',
-  usageUrl: 'https://gpt.qt.cool/user?key=',
+  keyUrl: 'https://gpt.qt.cool/user',
+  docsUrl: 'https://gpt.qt.cool/api-doc.html',
+  statusUrl: 'https://gpt.qt.cool/status.html',
   providerKey: 'qtcool',
   brandName: '晴辰云',
+  api: 'openai-completions',
+  models: []
+}
+
+// 词元 API 第三方赞助推广配置
+export const CIYAPI = {
+  baseUrl: 'https://ciyapi.79tian.com/v1',
+  defaultKey: '',
+  site: 'https://ciyapi.79tian.com/',
+  signupUrl: 'https://ciyapi.79tian.com/sign-up',
+  keyUrl: 'https://ciyapi.79tian.com/keys/',
+  pricingUrl: 'https://ciyapi.79tian.com/pricing/',
+  walletUrl: 'https://ciyapi.79tian.com/wallet/',
+  docsUrl: 'https://ciyapi.com/docs/',
+  providerKey: 'ciyapi',
+  brandName: '词元 API',
   api: 'openai-completions',
   models: []  // 始终从 API 动态获取最新模型列表
 }
@@ -132,24 +151,15 @@ export const MODEL_PRESETS = {
 }
 
 /**
- * 动态获取 QTCOOL 模型列表
- * @param {string} [apiKey] - 自定义密钥；未传时尝试从已有配置读取
- * @returns {Promise<Array<{id:string, name:string, contextWindow:number, reasoning?:boolean}>>}
+ * 从 OpenAI Compatible 服务动态获取模型列表。
+ * 密钥必须由当前操作显式传入，不从本地配置自动读取，避免旧密钥被静默复用。
  */
-export async function fetchQtcoolModels(apiKey) {
-  let key = apiKey || QTCOOL.defaultKey
-  // 没有 key 时尝试从已有的 qtcool provider 配置读取
-  if (!key) {
-    try {
-      const { api } = await import('../lib/tauri-api.js')
-      const cfg = await api.readOpenclawConfig()
-      key = cfg?.models?.providers?.qtcool?.apiKey || ''
-    } catch { /* ignore */ }
-  }
+async function fetchCompatibleModels(provider, apiKey) {
+  const key = (apiKey || provider.defaultKey || '').trim()
+  if (!key) return provider.models
   try {
-    const headers = key ? { 'Authorization': 'Bearer ' + key } : {}
-    const resp = await fetch(QTCOOL.baseUrl + '/models', {
-      headers,
+    const resp = await fetch(provider.baseUrl + '/models', {
+      headers: { 'Authorization': 'Bearer ' + key },
       signal: AbortSignal.timeout(8000)
     })
     if (resp.ok) {
@@ -157,10 +167,26 @@ export async function fetchQtcoolModels(apiKey) {
       if (data.data && data.data.length) {
         return data.data.map(m => ({
           id: m.id, name: m.id, contextWindow: 128000,
-          reasoning: m.id.includes('codex')
+          reasoning: /codex|thinking|reasoner|reasoning/i.test(m.id)
         })).sort((a, b) => b.id.localeCompare(a.id))
       }
     }
   } catch { /* use fallback */ }
-  return QTCOOL.models
+  return provider.models
+}
+
+/**
+ * 动态获取晴辰云模型列表。
+ * @param {string} [apiKey]
+ */
+export function fetchQtcoolModels(apiKey) {
+  return fetchCompatibleModels(QTCOOL, apiKey)
+}
+
+/**
+ * 动态获取词元 API 模型列表。
+ * @param {string} [apiKey]
+ */
+export function fetchCiyapiModels(apiKey) {
+  return fetchCompatibleModels(CIYAPI, apiKey)
 }

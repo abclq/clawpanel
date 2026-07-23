@@ -32,20 +32,24 @@ ClawPanel là bảng quản lý trực quan hỗ trợ nhiều AI Agent framewor
 
 > 🌐 **Website**: [claw.qt.cool](https://claw.qt.cool/) | 📦 **Tải xuống**: [Trung tâm tải xuống chính thức](https://claw.qt.cool/download) | Dự phòng: [GitHub Releases](https://github.com/qingchencloud/clawpanel/releases/latest)
 
-### 🎁 QingchenCloud AI API
+### 🧪 Thử nghiệm miễn phí: QingChen Cloud
 
-> Nền tảng kiểm thử kỹ thuật nội bộ, mở cho một số người dùng. Điểm danh hàng ngày để nhận tín dụng.
+[QingChen Cloud](https://gpt.qt.cool/) là nền tảng thử nghiệm điểm danh dành cho ClawPanel. ClawPanel không tích hợp hoặc tự đọc khóa QingChen Cloud. Hãy tự đăng ký, truy cập [trang điểm danh](https://gpt.qt.cool/checkin) để nhận hạn mức thử nghiệm và API Key của bạn, rồi dán vào ClawPanel để cấu hình mô hình. Trạng thái và quy tắc hiện hành được hiển thị trên QingChen Cloud.
+
+### 🤝 Tài trợ: CiyAPI
+
+> Nội dung quảng bá được tài trợ bởi bên thứ ba; áp dụng các quy tắc mới nhất trên trang CiyAPI.
 
 <p align="center">
-  <a href="https://gpt.qt.cool"><img src="https://img.shields.io/badge/🔑 QingchenCloud AI-gpt.qt.cool-6366f1?style=for-the-badge" alt="QingchenCloud AI"></a>
+  <a href="https://ciyapi.79tian.com" rel="sponsored noopener noreferrer"><img src="https://img.shields.io/badge/🤝 CiyAPI-Sponsored-6366f1?style=for-the-badge" alt="CiyAPI sponsored service"></a>
 </p>
 
-- **Tín dụng điểm danh** — Điểm danh hàng ngày + mời bạn bè để nhận tín dụng kiểm thử
-- **API tương thích OpenAI** — Tích hợp liền mạch với OpenClaw
-- **Chính sách tài nguyên** — Giới hạn tốc độ + giới hạn yêu cầu, có thể xếp hàng giờ cao điểm
-- **Khả dụng mô hình** — Mô hình/API theo hiển thị thực tế, có thể chuyển phiên bản
+- **Mô hình tiên tiến** — GPT, Claude, Gemini, Grok, Kimi và nhiều mô hình khác
+- **Ưu đãi nạp tiền** — Nạp ¥1 nhận $1 tín dụng sử dụng trên nền tảng
+- **Tuyến giảm giá** — Một số tuyến có giá chiết khấu; xem bảng giá mô hình
+- **Tương thích OpenAI** — Lấy API Key và kết nối qua ClawPanel
 
-> ⚠️ **Tuân thủ**: Chỉ dành cho kiểm thử kỹ thuật. Cấm sử dụng bất hợp pháp. Bảo quản API Key an toàn. Quy tắc theo chính sách mới nhất của nền tảng.
+Đăng ký tại [CiyAPI](https://ciyapi.79tian.com/sign-up), tạo API Key và dùng `https://ciyapi.79tian.com/v1` làm Base URL. Xem [bảng giá mô hình](https://ciyapi.79tian.com/pricing/) để biết danh sách và giá hiện tại.
 
 ### 🔥 Hỗ trợ Bo mạch phát triển / Thiết bị nhúng
 
@@ -86,7 +90,7 @@ Cộng đồng các nhà phát triển và người dùng đam mê AI Agent — 
 - **Tác vụ định kỳ** — Thực thi theo lịch Cron, gửi đa kênh
 - **Xem nhật ký** — Nhật ký thời gian thực đa nguồn và tìm kiếm
 - **Quản lý bộ nhớ** — Xem/sửa tệp bộ nhớ, xuất ZIP, chuyển Agent
-- **QingchenCloud AI API** — Nền tảng kiểm thử nội bộ, tương thích OpenAI
+- **Tài trợ CiyAPI** — GPT, Claude và các mô hình khác; nạp ¥1 nhận $1 tín dụng sử dụng
 - **Công cụ mở rộng** — Quản lý tunnel cftunnel, giám sát ClawApp
 - **Giới thiệu** — Thông tin phiên bản, liên kết cộng đồng, dự án liên quan
 

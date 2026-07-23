@@ -32,20 +32,24 @@ ClawPanel est un panneau de gestion visuel supportant plusieurs frameworks d'age
 
 > 🌐 **Site web** : [claw.qt.cool](https://claw.qt.cool/) | 📦 **Télécharger** : [Centre de téléchargement officiel](https://claw.qt.cool/download) | Secours : [GitHub Releases](https://github.com/qingchencloud/clawpanel/releases/latest)
 
-### 🎁 QingchenCloud AI API
+### 🧪 Test gratuit : QingChen Cloud
 
-> Plateforme interne de tests techniques, ouverte à certains utilisateurs. Connectez-vous quotidiennement pour gagner des crédits.
+[QingChen Cloud](https://gpt.qt.cool/) est la plateforme de test avec pointage de ClawPanel. ClawPanel n'intègre ni ne lit automatiquement de clé QingChen Cloud. Inscrivez-vous, consultez la [page de pointage](https://gpt.qt.cool/checkin) pour obtenir du crédit de test et votre propre API Key, puis collez-la dans ClawPanel pour configurer les modèles. La disponibilité et les règles actuelles sont affichées sur QingChen Cloud.
+
+### 🤝 Sponsorisé : CiyAPI
+
+> Promotion sponsorisée par un tiers ; les règles actuelles publiées par CiyAPI s'appliquent.
 
 <p align="center">
-  <a href="https://gpt.qt.cool"><img src="https://img.shields.io/badge/🔑 QingchenCloud AI-gpt.qt.cool-6366f1?style=for-the-badge" alt="QingchenCloud AI"></a>
+  <a href="https://ciyapi.79tian.com" rel="sponsored noopener noreferrer"><img src="https://img.shields.io/badge/🤝 CiyAPI-Sponsored-6366f1?style=for-the-badge" alt="Service sponsorisé CiyAPI"></a>
 </p>
 
-- **Crédits de connexion quotidienne** — Connexion quotidienne + invitation d'amis pour gagner des crédits de test
-- **API compatible OpenAI** — Intégration transparente avec OpenClaw
-- **Politique de ressources** — Limitation de débit + plafond de requêtes, file d'attente possible aux heures de pointe
-- **Disponibilité des modèles** — Modèles/APIs selon l'affichage réel de la page, rotation de versions possible
+- **Modèles de pointe** — GPT, Claude, Gemini, Grok, Kimi et plus
+- **Avantage de recharge** — ¥1 rechargé donne $1 de crédit d'utilisation
+- **Routes à prix réduit** — Certaines routes bénéficient de tarifs réduits
+- **Compatible OpenAI** — Obtenez une API Key et connectez-la via ClawPanel
 
-> ⚠️ **Conformité** : Uniquement pour les tests techniques. L'utilisation illégale ou le contournement des mécanismes de sécurité sont interdits. Gardez votre API Key en sécurité. Les règles sont soumises aux dernières politiques de la plateforme.
+Inscrivez-vous sur [CiyAPI](https://ciyapi.79tian.com/sign-up), créez une API Key et utilisez `https://ciyapi.79tian.com/v1` comme Base URL. Consultez le [catalogue des modèles](https://ciyapi.79tian.com/pricing/) pour les modèles et tarifs actuels.
 
 ### 🔥 Support cartes de développement / Appareils embarqués
 
@@ -86,7 +90,7 @@ Une communauté de développeurs et d'enthousiastes passionnés par les agents I
 - **Tâches planifiées** — Exécution planifiée par Cron, livraison multicanal
 - **Visionneuse de logs** — Logs en temps réel multi-sources et recherche par mots-clés
 - **Gestion de la mémoire** — Voir/éditer les fichiers mémoire, export ZIP, changement d'Agent
-- **QingchenCloud AI API** — Plateforme de tests interne, compatible OpenAI
+- **Sponsoring CiyAPI** — GPT, Claude et autres modèles ; ¥1 donne $1 de crédit d'utilisation
 - **Outils d'extension** — Gestion de tunnels cftunnel, surveillance ClawApp
 - **À propos** — Informations de version, liens communautaires, projets associés
 

@@ -35,20 +35,24 @@ ClawPanel is a visual management panel supporting multiple AI Agent frameworks, 
 
 > 🌐 **Website**: [claw.qt.cool](https://claw.qt.cool/) | 📦 **Download**: [Official Download Center](https://claw.qt.cool/download) | Fallback: [GitHub Releases](https://github.com/qingchencloud/clawpanel/releases/latest)
 
-### 🎁 QingchenCloud AI API
+### 🧪 Free Testing: QingChen Cloud
 
-> Internal technical testing platform, open for selected users. Sign in daily to earn credits.
+[QingChen Cloud](https://gpt.qt.cool/) is ClawPanel's companion check-in testing platform for trials and functional verification. ClawPanel does not include or auto-read a QingChen Cloud key. Sign up and visit the [check-in page](https://gpt.qt.cool/checkin) to obtain testing credits and your own API Key, then paste it into ClawPanel to select and configure models. Current availability and credit rules are shown on QingChen Cloud.
+
+### 🤝 Sponsored: CiyAPI
+
+> Third-party sponsored placement; CiyAPI's current terms apply.
 
 <p align="center">
-  <a href="https://gpt.qt.cool"><img src="https://img.shields.io/badge/🔑 QingchenCloud AI-gpt.qt.cool-6366f1?style=for-the-badge" alt="QingchenCloud AI"></a>
+  <a href="https://ciyapi.79tian.com" rel="sponsored noopener noreferrer"><img src="https://img.shields.io/badge/🤝 CiyAPI-Sponsored-6366f1?style=for-the-badge" alt="CiyAPI sponsored service"></a>
 </p>
 
-- **Daily Sign-in Credits** — Sign in daily + invite friends to earn test credits
-- **OpenAI-Compatible API** — Seamless integration with OpenClaw, plug and play
-- **Resource Policy** — Rate limiting + request caps, may queue during peak hours
-- **Model Availability** — Models/APIs subject to actual page display, may rotate versions
+- **Frontier Models** — GPT, Claude, Gemini, Grok, Kimi, and more
+- **Top-up Benefit** — ¥1 funds $1 in platform usage credit
+- **Discounted Routes** — Selected routes use discounted pricing; see the model marketplace
+- **OpenAI Compatible** — Get an API Key and connect through ClawPanel
 
-> ⚠️ **Compliance**: This platform is for technical testing only. Illegal use or circumventing security mechanisms is prohibited. Keep your API Key secure. Rules subject to latest platform policies.
+Register at [CiyAPI](https://ciyapi.79tian.com/sign-up), create an API Key, and use `https://ciyapi.79tian.com/v1` as the OpenAI-compatible Base URL. See the [model marketplace](https://ciyapi.79tian.com/pricing/) for current models and pricing.
 
 ### 🔥 Dev Board / Embedded Device Support
 
@@ -93,7 +97,7 @@ A community of passionate AI Agent developers and enthusiasts — join us!
 - **Cron Jobs** — Cron-based scheduled execution, multi-channel delivery
 - **Log Viewer** — Multi-source real-time logs with keyword search
 - **Memory Management** — Memory file view/edit, categorized management, ZIP export, Agent switching
-- **QingchenCloud AI API** — Internal testing platform, OpenAI-compatible, daily sign-in credits
+- **CiyAPI Sponsorship** — GPT, Claude, and other models; ¥1 funds $1 in platform usage credit
 - **Extensions** — cftunnel tunnel management, ClawApp status monitoring
 - **About** — Version info, community links, related projects, one-click upgrade
 
