@@ -29,6 +29,7 @@
 ### 安全 (Security)
 
 - **PostCSS 构建依赖升级** — 锁定到 `8.5.25`，修复受控 `sourceMappingURL` 在缺少 `from` 时可能读取任意 `.map` 文件的问题；`npm audit` 当前为 0 vulnerabilities
+- **Rust 网络与序列化依赖升级** — `quinn-proto` 更新到 `0.11.15`，修复乱序流重组可能造成的远程内存耗尽；`serde_with` 更新到 `3.21.0`，修复空序列或 Map 条目序列化 panic
 
 ### 测试与验证 (Testing)
 
