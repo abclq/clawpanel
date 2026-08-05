@@ -8,7 +8,7 @@
  * - 助手：一次性拷贝到 localStorage（clawpanel-assistant）
  * 本模块自身不直接写任何引擎配置文件。
  */
-import { api } from './tauri-api.js'
+import { api, isTauriRuntime } from './tauri-api.js'
 import { normalizeModelApiType } from './model-presets.js'
 
 export const ASSISTANT_STORAGE_KEY = 'clawpanel-assistant'
@@ -90,6 +90,18 @@ function matchesSubset(expected, actual) {
   return Object.is(expected, actual)
 }
 
+async function applyOpenclawModelConfig() {
+  if (isTauriRuntime()) {
+    await api.reloadGateway()
+    return
+  }
+
+  // Web 版没有 Tauri 的 native config reload；同步 models.json 后，
+  // 运行中的 Gateway 需要完整重启才能重新加载 Agent 模型注册表。
+  const running = await api.probeGatewayPort().catch(() => false)
+  if (running) await api.restartGateway()
+}
+
 /**
  * 同步到 OpenClaw：只 upsert 渠道对应的 models.providers.{key}，
  * 展开旧对象保留未知字段；渠道模型为准但保留目标已有模型的测试元数据。
@@ -135,7 +147,7 @@ export async function syncChannelToOpenclaw(channel, { setDefault = false } = {}
     patch.agents = { defaults: { model: { primary: `${providerKey}/${channel.defaultModel}` } } }
   }
 
-  await api.writeOpenclawConfig(patch)
+  await api.writeOpenclawConfig(patch, { noReload: true })
   const readback = asObject(await api.readOpenclawConfig())
   const savedProvider = asObject(asObject(readback.models).providers)[providerKey]
   const expectedProvider = {
@@ -154,6 +166,7 @@ export async function syncChannelToOpenclaw(channel, { setDefault = false } = {}
       throw new Error(`OpenClaw 默认模型写入后回读核对失败: ${providerKey}/${channel.defaultModel}`)
     }
   }
+  await applyOpenclawModelConfig()
   return { providerKey, modelCount: models.length, verified: true }
 }
 

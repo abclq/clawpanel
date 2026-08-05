@@ -16555,37 +16555,54 @@ pub async fn hermes_profiles_list() -> Result<Value, String> {
     let mut profiles: Vec<Value> = Vec::new();
     for line in output.lines() {
         let trimmed = line.trim();
+        let lower = trimmed.to_ascii_lowercase();
         if trimmed.is_empty()
-            || trimmed.contains("Profile")
             || trimmed.starts_with('─')
             || trimmed.starts_with('-')
+            || lower == "profiles:"
+            || lower == "available profiles:"
+            || lower.starts_with("name ")
+            || lower.starts_with("profile ")
         {
             continue;
         }
-        let is_active = trimmed.starts_with('◆');
-        let row = trimmed.trim_start_matches('◆').trim();
+        let is_active = trimmed.starts_with('◆') || trimmed.starts_with('*');
+        let row = if is_active {
+            let marker_len = trimmed.chars().next().unwrap().len_utf8();
+            trimmed[marker_len..].trim()
+        } else {
+            trimmed
+        };
         let parts: Vec<&str> = row.split_whitespace().collect();
-        if parts.len() < 3 {
+        if parts.is_empty() {
             continue;
         }
         let name = parts[0];
-        if name != "default"
-            && !name
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
-        {
+        let valid_name = name.chars().enumerate().all(|(index, c)| {
+            if index == 0 {
+                c.is_ascii_lowercase() || c.is_ascii_digit()
+            } else {
+                c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-'
+            }
+        });
+        if !valid_name {
             continue;
         }
         let gateway_idx = parts
             .iter()
-            .position(|p| *p == "running" || *p == "stopped")
-            .unwrap_or(2);
-        if gateway_idx <= 1 || gateway_idx >= parts.len() {
-            continue;
-        }
-        let model = parts[1..gateway_idx].join(" ");
-        let gateway = parts[gateway_idx];
-        let alias = parts.get(gateway_idx + 1).copied().unwrap_or("—");
+            .position(|p| *p == "running" || *p == "stopped");
+        let (model, gateway_running, alias) = match gateway_idx {
+            Some(index) if index >= 1 => (
+                if index > 1 {
+                    parts[1..index].join(" ")
+                } else {
+                    String::new()
+                },
+                parts[index] == "running",
+                parts.get(index + 1).copied().unwrap_or("—").to_string(),
+            ),
+            _ => (String::new(), false, String::new()),
+        };
         if is_active {
             active = name.to_string();
         }
@@ -16593,8 +16610,8 @@ pub async fn hermes_profiles_list() -> Result<Value, String> {
             "name": name,
             "active": is_active,
             "model": if model == "—" { "" } else { &model },
-            "gatewayRunning": gateway == "running",
-            "alias": if alias == "—" { "" } else { alias },
+            "gatewayRunning": gateway_running,
+            "alias": if alias == "—" { "" } else { &alias },
         }));
     }
     if !profiles

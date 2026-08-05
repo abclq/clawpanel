@@ -19,6 +19,22 @@ import { createBackgroundJobQueue } from './media-background-queue.js'
 import { normalizeModelApiType } from '../src/lib/model-presets.js'
 const DOCKER_TASK_TIMEOUT_MS = 10 * 60 * 1000
 
+export function probeTcpPort(port, host = '127.0.0.1', timeoutMs = 3000) {
+  return new Promise(resolve => {
+    let settled = false
+    const socket = net.createConnection({ host, port, timeout: timeoutMs })
+    const finish = reachable => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      resolve(reachable)
+    }
+    socket.once('connect', () => finish(true))
+    socket.once('error', () => finish(false))
+    socket.once('timeout', () => finish(false))
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Hermes Agent — 路径 / 工具函数
 // ---------------------------------------------------------------------------
@@ -114,6 +130,69 @@ const HERMES_PROVIDER_REGISTRY = [
 
 function hermesHome() {
   return process.env.HERMES_HOME || HERMES_HOME
+}
+
+const HERMES_PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
+
+function stripAnsi(text) {
+  return String(text || '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+}
+
+/**
+ * 兼容 Hermes 新旧版本的 profile list 输出。
+ * 新版只输出 profile 名称并用 * 标记当前项，旧版还会输出模型和 Gateway 状态。
+ */
+export function parseHermesProfileListOutput(output = '') {
+  const profiles = []
+  const byName = new Map()
+  let active = 'default'
+
+  for (const line of String(output || '').split(/\r?\n/)) {
+    let row = stripAnsi(line).trim()
+    if (!row || /^[-─=]+$/.test(row)) continue
+    if (/^(?:available\s+)?profiles?:?$/i.test(row) || /^(?:name|profile)\s+/i.test(row)) continue
+
+    const isActive = /^[*◆]/.test(row)
+    if (isActive) row = row.slice(1).trim()
+
+    const parts = row.split(/\s+/)
+    const name = parts[0]
+    if (!name || !HERMES_PROFILE_NAME_RE.test(name)) continue
+
+    const gatewayIdx = parts.findIndex(part => part === 'running' || part === 'stopped')
+    const hasLegacyMeta = gatewayIdx >= 1
+    const model = gatewayIdx > 1 ? parts.slice(1, gatewayIdx).join(' ') : ''
+    const alias = hasLegacyMeta ? (parts[gatewayIdx + 1] || '') : ''
+    const profile = byName.get(name)
+
+    if (isActive) active = name
+    if (profile) {
+      profile.active ||= isActive
+      if (!profile.model && model && model !== '—') profile.model = model
+      if (!profile.alias && alias && alias !== '—') profile.alias = alias
+      profile.gatewayRunning ||= hasLegacyMeta && parts[gatewayIdx] === 'running'
+      continue
+    }
+
+    const next = {
+      name,
+      active: isActive,
+      model: model === '—' ? '' : model,
+      gatewayRunning: hasLegacyMeta && parts[gatewayIdx] === 'running',
+      alias: alias === '—' ? '' : alias,
+    }
+    profiles.push(next)
+    byName.set(name, next)
+  }
+
+  if (!profiles.some(profile => profile.active)) {
+    const defaultProfile = profiles.find(profile => profile.name === 'default')
+    if (defaultProfile) {
+      defaultProfile.active = true
+      active = 'default'
+    }
+  }
+  return { active, profiles }
 }
 
 export function validateHermesConfigYamlText(yamlText = '') {
@@ -3109,12 +3188,163 @@ function validateOpenclawModelCandidate(config) {
   }
 }
 
+function modelEntryId(entry) {
+  if (typeof entry === 'string') return entry.trim()
+  return String(entry?.id || '').trim()
+}
+
+function cloneJsonValue(value) {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value))
+}
+
+function syncProviderModels(dstProvider, srcProvider) {
+  if (!Array.isArray(srcProvider?.models)) return false
+  if (!Array.isArray(dstProvider.models)) {
+    dstProvider.models = cloneJsonValue(srcProvider.models)
+    return true
+  }
+
+  let changed = false
+  const dstIndexes = new Map()
+  dstProvider.models.forEach((entry, index) => {
+    const id = modelEntryId(entry)
+    if (id && !dstIndexes.has(id)) dstIndexes.set(id, index)
+  })
+
+  for (const srcModel of srcProvider.models) {
+    const id = modelEntryId(srcModel)
+    if (!id) continue
+    const index = dstIndexes.get(id)
+    if (index === undefined) {
+      dstProvider.models.push(cloneJsonValue(srcModel))
+      dstIndexes.set(id, dstProvider.models.length - 1)
+      changed = true
+      continue
+    }
+
+    // openclaw.json 是面板的模型配置来源；同步同 ID 模型的能力元数据，
+    // 尤其是 contextWindow/contextTokens，避免 Agent 继续使用旧的 50000 上限。
+    const dstModel = dstProvider.models[index]
+    const nextModel = srcModel && typeof srcModel === 'object' && !Array.isArray(srcModel)
+      && dstModel && typeof dstModel === 'object' && !Array.isArray(dstModel)
+      ? { ...dstModel, ...cloneJsonValue(srcModel) }
+      : cloneJsonValue(srcModel)
+    if (JSON.stringify(nextModel) !== JSON.stringify(dstModel)) {
+      dstProvider.models[index] = nextModel
+      changed = true
+    }
+  }
+  return changed
+}
+
+function syncProviderModelOverrides(dstProvider, srcProvider) {
+  const overrides = dstProvider?.modelOverrides
+  if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) return false
+  if (!Array.isArray(srcProvider?.models)) return false
+
+  let changed = false
+  for (const srcModel of srcProvider.models) {
+    if (!srcModel || typeof srcModel !== 'object' || Array.isArray(srcModel)) continue
+    const id = modelEntryId(srcModel)
+    const override = id ? overrides[id] : null
+    if (!override || typeof override !== 'object' || Array.isArray(override)) continue
+    for (const field of ['contextWindow', 'contextTokens', 'maxTokens']) {
+      if (!Object.hasOwn(srcModel, field)) continue
+      if (JSON.stringify(override[field]) !== JSON.stringify(srcModel[field])) {
+        override[field] = cloneJsonValue(srcModel[field])
+        changed = true
+      }
+    }
+  }
+  return changed
+}
+
+/**
+ * Web 模式下把全局 providers 同步到 OpenClaw 每个 Agent 的运行时注册表。
+ * OpenClaw 会优先读取 agents/<id>/agent/models.json；只写 openclaw.json 会导致
+ * Web 面板显示已保存，但 Gateway 仍使用旧的 Provider、模型能力和上下文上限。
+ */
+export function syncProvidersToAgentModels(config, openclawDir = OPENCLAW_DIR) {
+  const srcProviders = config?.models?.providers
+  if (!srcProviders || typeof srcProviders !== 'object' || Array.isArray(srcProviders)) {
+    return { updated: [], skipped: [] }
+  }
+
+  const agentIds = ['main']
+  for (const agent of Array.isArray(config?.agents?.list) ? config.agents.list : []) {
+    const id = String(agent?.id || '').trim()
+    if (id && id !== 'main') agentIds.push(id)
+  }
+
+  const result = { updated: [], skipped: [] }
+  const agentsDir = path.join(openclawDir, 'agents')
+  for (const agentId of agentIds) {
+    const modelsPath = path.join(agentsDir, agentId, 'agent', 'models.json')
+    if (!fs.existsSync(modelsPath)) continue
+
+    let modelsJson
+    try {
+      modelsJson = JSON.parse(fs.readFileSync(modelsPath, 'utf8'))
+    } catch {
+      result.skipped.push({ path: modelsPath, reason: 'invalid-json' })
+      continue
+    }
+    if (!modelsJson || typeof modelsJson !== 'object' || Array.isArray(modelsJson)) {
+      result.skipped.push({ path: modelsPath, reason: 'invalid-root' })
+      continue
+    }
+
+    let changed = false
+    if (!modelsJson.providers || typeof modelsJson.providers !== 'object' || Array.isArray(modelsJson.providers)) {
+      modelsJson.providers = {}
+      changed = true
+    }
+
+    const dstProviders = modelsJson.providers
+    for (const providerName of Object.keys(dstProviders)) {
+      if (!Object.hasOwn(srcProviders, providerName)) {
+        delete dstProviders[providerName]
+        changed = true
+      }
+    }
+
+    for (const [providerName, srcProvider] of Object.entries(srcProviders)) {
+      if (!srcProvider || typeof srcProvider !== 'object' || Array.isArray(srcProvider)) continue
+      const dstProvider = dstProviders[providerName]
+      if (!dstProvider || typeof dstProvider !== 'object' || Array.isArray(dstProvider)) {
+        dstProviders[providerName] = cloneJsonValue(srcProvider)
+        changed = true
+        continue
+      }
+
+      // 同步连接信息及结构化 SecretRef；源配置缺少字段时保留 Agent 现有值。
+      for (const field of ['baseUrl', 'apiKey', 'api']) {
+        if (!Object.hasOwn(srcProvider, field)) continue
+        const srcValue = srcProvider[field]
+        if (JSON.stringify(dstProvider[field]) !== JSON.stringify(srcValue)) {
+          dstProvider[field] = cloneJsonValue(srcValue)
+          changed = true
+        }
+      }
+      if (syncProviderModels(dstProvider, srcProvider)) changed = true
+      if (syncProviderModelOverrides(dstProvider, srcProvider)) changed = true
+    }
+
+    if (changed) {
+      writeJsonAtomic(modelsPath, modelsJson)
+      result.updated.push(modelsPath)
+    }
+  }
+  return result
+}
+
 function writeOpenclawConfigFile(config) {
   const cleaned = stripUiFields(config)
   const previous = fs.existsSync(CONFIG_PATH) ? readJsonFileRelaxed(CONFIG_PATH) : null
   validateModelProviderEnvRefs(cleaned, previous)
   validateOpenclawModelCandidate(cleaned)
   writeJsonAtomic(CONFIG_PATH, cleaned, { backup: true })
+  syncProvidersToAgentModels(cleaned)
 }
 
 function ensureAgentsList(config) {
@@ -12460,13 +12690,7 @@ const handlers = {
 
   async probe_gateway_port() {
     const port = readGatewayPort()
-    return new Promise(resolve => {
-      const net = require('net')
-      const sock = net.createConnection({ host: '127.0.0.1', port, timeout: 3000 })
-      sock.on('connect', () => { sock.destroy(); resolve(true) })
-      sock.on('error', () => resolve(false))
-      sock.on('timeout', () => { sock.destroy(); resolve(false) })
-    })
+    return probeTcpPort(port)
   },
 
   // @homebridge/ciao windowsHide bug — Windows only. Linux/macOS stubs return false.
@@ -17023,35 +17247,7 @@ const handlers = {
   hermes_profiles_list() {
     const r = runHermesSilent('hermes', ['profile', 'list'])
     if (!r.ok) return { active: 'default', profiles: [] }
-    let active = 'default'
-    const profiles = []
-    for (const line of r.stdout.split('\n')) {
-      const trimmed = line.trim()
-      if (!trimmed || trimmed.includes('Profile') || trimmed.startsWith('─') || trimmed.startsWith('-')) continue
-      const isActive = trimmed.startsWith('◆')
-      const row = trimmed.replace(/^◆/, '').trim()
-      const parts = row.split(/\s+/)
-      if (parts.length < 3) continue
-      const name = parts[0]
-      if (name !== 'default' && !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(name)) continue
-      const gatewayIdx = parts.findIndex(p => p === 'running' || p === 'stopped')
-      if (gatewayIdx <= 1) continue
-      const model = parts.slice(1, gatewayIdx).join(' ')
-      const alias = parts[gatewayIdx + 1] || ''
-      if (isActive) active = name
-      profiles.push({
-        name,
-        active: isActive,
-        model: model === '—' ? '' : model,
-        gatewayRunning: parts[gatewayIdx] === 'running',
-        alias: alias === '—' ? '' : alias,
-      })
-    }
-    if (!profiles.some(p => p.active)) {
-      const d = profiles.find(p => p.name === 'default')
-      if (d) d.active = true
-    }
-    return { active, profiles }
+    return parseHermesProfileListOutput(r.stdout)
   },
 
   hermes_profile_use({ name } = {}) {

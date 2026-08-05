@@ -7,6 +7,37 @@
 
 ## [未发布 (Unreleased)]
 
+## [0.19.2] - 2026-08-05
+
+### 兼容性 (Compatibility)
+
+- **OpenClaw 新版 Web 配置同步恢复** — Web/headless 保存模型 Provider 后，会同步更新 `openclaw.json` 与每个 Agent 的 `models.json`，连接信息、模型能力、上下文长度和结构化密钥保持一致；运行中的 Gateway 会在回读确认后重启加载新配置
+- **Hermes Agent 新版 Profile 适配** — 同时兼容新版纯名称列表和旧版状态表格，Profile 页面可直接配置 Provider/模型，聊天页可在 Gateway 停止时直接启动
+
+### 改进 (Improvements)
+
+- **LM Studio 上下文长度可编辑** — 模型编辑器新增 `contextTokens` 字段，不再固定为 `50000`；保存后同步到主配置和所有 Agent，并在刷新后正确回显
+- **Linux Web 自定义端口** — 原生部署支持 `CLAWPANEL_PORT` / `PANEL_PORT`，Docker 与 Compose 的监听端口和健康检查会跟随 `PORT` 配置
+- **Hermes Profile 移动端布局** — Profile 操作区支持自动换行，按钮满足移动端触控高度并消除横向溢出
+
+### 修复 (Fixes)
+
+- **Web Gateway 探测返回 HTTP 500** — 移除 ESM 运行时残留的 `require('net')`，端口关闭时稳定返回 `false`，不再污染控制台或阻断模型保存流程
+- **Docker 镜像构建和运行失败** — 复用官方 Node 镜像内置用户，避免 Alpine UID/GID 1000 冲突；补齐 Web API、运行时模块和 `public` 静态资源，生产镜像可完整构建并加载页面资源
+- **Hermes Profile 信息缺失** — 修复新版 `profile list` 输出被旧表格解析器过滤的问题，并保持桌面端与 Web 端解析行为一致
+
+### 安全 (Security)
+
+- **PostCSS 构建依赖升级** — 锁定到 `8.5.25`，修复受控 `sourceMappingURL` 在缺少 `from` 时可能读取任意 `.map` 文件的问题；`npm audit` 当前为 0 vulnerabilities
+
+### 测试与验证 (Testing)
+
+- `node --test tests/*.test.js`：537 passed
+- `npm run build`：通过
+- `cargo fmt --all -- --check`、`cargo check --locked`、`cargo clippy --locked --all-targets -- -D warnings`、`cargo test --locked`：通过
+- 本地生产 Web Playwright：OpenClaw 核心路由、LM Studio 配置同步、Hermes Gateway/Profile 和移动端布局全部通过，页面错误、HTTP 500、失败请求和控制台错误均为 0
+- Linux Docker 实测：镜像构建、OpenClaw CLI、LM Studio `50000 → 196608` 写入/Agent 同步/刷新回读、自定义端口及健康检查全部通过
+
 ## [0.19.1] - 2026-07-24
 
 ### 改进 (Improvements)

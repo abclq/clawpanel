@@ -7,7 +7,8 @@ echo "  在 Linux 上通过浏览器管理 OpenClaw"
 echo "=========================================="
 echo ""
 
-PANEL_PORT=1420
+# 可通过 CLAWPANEL_PORT 或 PANEL_PORT 为 Web 面板选择未占用端口。
+PANEL_PORT="${CLAWPANEL_PORT:-${PANEL_PORT:-1420}}"
 REPO_URL="https://github.com/qingchencloud/clawpanel.git"
 REPO_URL_GITEE="https://gitee.com/QtCodeCreators/clawpanel.git"
 DEPLOY_SCRIPT_URL="https://raw.githubusercontent.com/qingchencloud/clawpanel/main/scripts/linux-deploy.sh"
