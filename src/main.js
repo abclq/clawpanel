@@ -25,6 +25,7 @@ import { registerEngine, initEngineManager, getActiveEngine, getActiveEngineId, 
 import { initSiteMessageCenter, refreshSiteMessageCenter } from './components/site-message-center.js'
 import openclawEngine from './engines/openclaw/index.js'
 import hermesEngine from './engines/hermes/index.js'
+import deepseekHarnessEngine from './engines/deepseek-harness/index.js'
 import xintianEngine from './engines/xintian/index.js'
 
 // 样式
@@ -631,6 +632,7 @@ async function boot() {
   // 注册引擎
   registerEngine(openclawEngine)
   registerEngine(hermesEngine)
+  registerEngine(deepseekHarnessEngine)
   registerEngine(xintianEngine)
   registerRoute('/engine-select', () => import('./pages/engine-select.js'))
   registerRoute('/media', () => import('./pages/media.js'))

@@ -327,6 +327,18 @@ export const api = {
   },
   revealModelChannelKey: (channelId) => invoke('reveal_model_channel_key', { channelId }),
 
+  // DeepSeek Harness（回环服务；Web 与 Tauri 使用同名后端命令）
+  dshStatus: (port = 3080) => cachedInvoke('dsh_status', { port }, 2000),
+  dshInstall: () => { invalidate('dsh_status'); return invoke('dsh_install') },
+  dshUninstall: () => { invalidate('dsh_status'); return invoke('dsh_uninstall') },
+  dshEmbedSession: (port = 3080, storage = {}) => invoke('dsh_embed_session', { port, storage }),
+  dshStart: (port = 3080) => { invalidate('dsh_status'); return invoke('dsh_start', { port }) },
+  dshStop: (port = 3080) => { invalidate('dsh_status'); return invoke('dsh_stop', { port }) },
+  dshSyncProvider: ({ channelId, setDefault = false, port = 3080 }) => {
+    invalidate('dsh_status')
+    return invoke('dsh_sync_provider', { channelId, setDefault, port })
+  },
+
   // Agent 管理
   listAgents: () => cachedInvoke('list_agents'),
   getAgentDetail: (id) => cachedInvoke('get_agent_detail', { id }, 5000),

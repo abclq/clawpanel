@@ -17,6 +17,22 @@ import * as YAML from 'yaml'
 import * as skillhubSdk from './lib/skillhub-sdk.js'
 import { createBackgroundJobQueue } from './media-background-queue.js'
 import { normalizeModelApiType } from '../src/lib/model-presets.js'
+import {
+  DSH_DEFAULT_PORT,
+  DSH_PACKAGE_NAME,
+  DSH_PACKAGE_VERSION,
+  dshRpc,
+  normalizeDshPort,
+  readDshSummary,
+  syncDshProvider,
+} from './deepseek-harness.js'
+import {
+  dshEmbedPrefix,
+  dshUpstreamHeaders,
+  parseDshEmbedUrl,
+  rewriteDshProxyText,
+  shouldRewriteDshResponse,
+} from './deepseek-harness-proxy.js'
 const DOCKER_TASK_TIMEOUT_MS = 10 * 60 * 1000
 
 export function probeTcpPort(port, host = '127.0.0.1', timeoutMs = 3000) {
@@ -9320,6 +9336,7 @@ const ALWAYS_LOCAL = new Set([
   'assistant_check_port', 'assistant_web_search', 'assistant_fetch_url',
   'assistant_ensure_data_dir', 'assistant_save_image', 'assistant_load_image', 'assistant_delete_image',
   'read_model_channels', 'write_model_channels', 'reveal_model_channel_key', 'hermes_sync_provider',
+  'dsh_status', 'dsh_install', 'dsh_uninstall', 'dsh_start', 'dsh_stop', 'dsh_sync_provider', 'dsh_embed_session',
   'read_media_config', 'write_media_config', 'test_media_provider', 'fetch_media_models',
   'generate_image', 'create_video_task', 'poll_video_task',
   'cancel_media_job', 'list_media_jobs', 'delete_media_job',
@@ -11033,6 +11050,629 @@ function recoverMediaQueue() {
 }
 
 // === API Handlers ===
+
+// === DeepSeek Harness（只允许回环监听，由 ClawPanel 认证层代管） ===
+const DSH_NODE_REQUIREMENT = '^22.19.0 || >=24.0.0'
+const DSH_PNPM_VERSION = '11.7.0'
+const DSH_BUILD_PACKAGES = [
+  '@deepseek-ai/dsh-subprocess-local',
+  '@google/genai',
+  'koffi',
+  'node-pty',
+  'protobufjs',
+]
+let _dshInstallRunning = false
+let _dshManagedChild = null
+const _dshEmbedSessions = new Map()
+const DSH_EMBED_IDLE_TTL = 30 * 60 * 1000
+const DSH_EMBED_MAX_TTL = 8 * 60 * 60 * 1000
+const DSH_EMBED_MAX_SESSIONS = 32
+const DSH_EMBED_STORAGE_MAX_BYTES = 2 * 1024 * 1024
+// DSH 首屏会并行加载数十个插件；限制并复用回环连接，避免低配机器出现瞬时断链。
+const _dshProxyAgent = new http.Agent({ keepAlive: true, maxSockets: 12, maxFreeSockets: 4 })
+
+function dshRuntimeDir() {
+  return path.join(OPENCLAW_DIR, 'clawpanel', 'deepseek-harness')
+}
+
+function dshManagedEntry() {
+  return path.join(dshRuntimeDir(), 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
+}
+
+function dshPidPath() {
+  return path.join(dshRuntimeDir(), 'web.pid.json')
+}
+
+function dshLogPath() {
+  return path.join(dshRuntimeDir(), 'web.log')
+}
+
+function readDshManagedVersion() {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(dshRuntimeDir(), 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), 'utf8'))
+    return String(pkg.version || '')
+  } catch {
+    return ''
+  }
+}
+
+function readDshPidRecord() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(dshPidPath(), 'utf8'))
+    const pid = Number(parsed?.pid)
+    return Number.isInteger(pid) && pid > 0 ? { ...parsed, pid } : null
+  } catch {
+    return null
+  }
+}
+
+function isProcessAlive(pid) {
+  try { process.kill(pid, 0); return true } catch { return false }
+}
+
+function dshProcessCommandLine(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return ''
+  try {
+    if (isWindows) {
+      const script = `(Get-CimInstance Win32_Process -Filter \"ProcessId = ${pid}\" -ErrorAction SilentlyContinue).CommandLine`
+      return spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+        encoding: 'utf8', windowsHide: true, timeout: 3000,
+      }).stdout || ''
+    }
+    const procPath = `/proc/${pid}/cmdline`
+    if (fs.existsSync(procPath)) return fs.readFileSync(procPath).toString('utf8').replace(/\0/g, ' ')
+    return spawnSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8', timeout: 3000 }).stdout || ''
+  } catch {
+    return ''
+  }
+}
+
+function isManagedDshProcess(record) {
+  if (!record || !isProcessAlive(record.pid)) return false
+  if (_dshManagedChild?.pid === record.pid) return true
+  const commandLine = dshProcessCommandLine(record.pid).toLowerCase().replace(/\\/g, '/')
+  const expectedEntry = String(record.entry || '').toLowerCase().replace(/\\/g, '/')
+  const managedEntry = dshManagedEntry().toLowerCase().replace(/\\/g, '/')
+  return Boolean(expectedEntry && commandLine.includes(expectedEntry))
+    || commandLine.includes(managedEntry)
+}
+
+function clearDshEmbedSessions() {
+  _dshEmbedSessions.clear()
+}
+
+function pruneDshEmbedSessions(now = Date.now()) {
+  for (const [token, session] of _dshEmbedSessions) {
+    if (now > session.expiresAt || now > session.maxExpiresAt) _dshEmbedSessions.delete(token)
+  }
+  while (_dshEmbedSessions.size > DSH_EMBED_MAX_SESSIONS) {
+    const oldest = _dshEmbedSessions.keys().next().value
+    if (!oldest) break
+    _dshEmbedSessions.delete(oldest)
+  }
+}
+
+function resolveDshEmbedSession(token) {
+  const now = Date.now()
+  pruneDshEmbedSessions(now)
+  const session = _dshEmbedSessions.get(String(token || ''))
+  if (!session) return null
+  const record = readDshPidRecord()
+  if (!record || record.pid !== session.pid || Number(record.port) !== session.port || !isManagedDshProcess(record)) {
+    _dshEmbedSessions.delete(token)
+    return null
+  }
+  session.expiresAt = Math.min(now + DSH_EMBED_IDLE_TTL, session.maxExpiresAt)
+  return session
+}
+
+function normalizeDshEmbedStorage(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {}
+  const result = {}
+  let totalBytes = 0
+  for (const [rawKey, rawValue] of Object.entries(input).slice(0, 256)) {
+    if (typeof rawValue !== 'string') continue
+    const key = String(rawKey)
+    if (!key || key.length > 256 || rawValue.length > 512 * 1024) continue
+    totalBytes += Buffer.byteLength(key) + Buffer.byteLength(rawValue)
+    if (totalBytes > DSH_EMBED_STORAGE_MAX_BYTES) break
+    result[key] = rawValue
+  }
+  return result
+}
+
+async function createDshEmbedSession(portValue = DSH_DEFAULT_PORT, storageValue = {}) {
+  const port = normalizeDshPort(portValue)
+  const status = await dshStatus(port)
+  const record = readDshPidRecord()
+  if (!status.running || !status.managed || !record || Number(record.port) !== port) {
+    throw new Error('只有 ClawPanel 启动且正在运行的 DeepSeek Harness 才能内嵌')
+  }
+  pruneDshEmbedSessions()
+  const token = crypto.randomBytes(32).toString('base64url')
+  const now = Date.now()
+  const session = {
+    pid: record.pid,
+    port,
+    storage: normalizeDshEmbedStorage(storageValue),
+    createdAt: now,
+    expiresAt: now + DSH_EMBED_IDLE_TTL,
+    maxExpiresAt: now + DSH_EMBED_MAX_TTL,
+  }
+  _dshEmbedSessions.set(token, session)
+  pruneDshEmbedSessions(now)
+  return {
+    src: `${dshEmbedPrefix(token)}/`,
+    expiresAt: session.expiresAt,
+    sandboxed: true,
+  }
+}
+
+function isDshEmbedRequest(rawUrl) {
+  const pathname = String(rawUrl || '').split('?')[0]
+  return pathname === '/__dsh' || pathname.startsWith('/__dsh/')
+}
+
+function setDshEmbedResponseHeaders(res) {
+  res.setHeader('Access-Control-Allow-Origin', '*')
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+  res.setHeader('Referrer-Policy', 'no-referrer')
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN')
+  res.setHeader('Content-Security-Policy', "frame-ancestors 'self'")
+}
+
+function writeDshProxyError(res, status, message) {
+  if (res.headersSent || res.writableEnded) return
+  res.statusCode = status
+  setDshEmbedResponseHeaders(res)
+  res.setHeader('Cache-Control', 'no-store')
+  res.setHeader('Content-Type', 'application/json; charset=utf-8')
+  res.end(JSON.stringify({ error: message }))
+}
+
+function copyDshProxyResponseHeaders(upstreamHeaders, res, { rewrite, prefix }) {
+  const blocked = new Set([
+    'connection', 'content-encoding', 'content-length', 'content-security-policy',
+    'keep-alive', 'proxy-authenticate', 'set-cookie', 'transfer-encoding',
+    'x-frame-options',
+  ])
+  for (const [rawName, rawValue] of Object.entries(upstreamHeaders || {})) {
+    const name = rawName.toLowerCase()
+    if (blocked.has(name) || rawValue === undefined) continue
+    if (name === 'location' && typeof rawValue === 'string' && rawValue.startsWith('/')) {
+      res.setHeader(rawName, `${prefix}${rawValue}`)
+    } else {
+      res.setHeader(rawName, rawValue)
+    }
+  }
+  if (!rewrite && upstreamHeaders['content-length'] !== undefined) {
+    res.setHeader('Content-Length', upstreamHeaders['content-length'])
+  }
+  setDshEmbedResponseHeaders(res)
+}
+
+function proxyDshEmbedHttp(req, res, route, session) {
+  return new Promise(resolve => {
+    const method = String(req.method || 'GET').toUpperCase()
+    const retryableStatic = (method === 'GET' || method === 'HEAD')
+      && /^\/(?:plugins|assets)\//.test(route.upstreamPathname)
+    const maxAttempts = retryableStatic ? 3 : 1
+    let activeUpstream = null
+    let clientAborted = false
+    let completed = false
+
+    const finish = () => {
+      if (completed) return
+      completed = true
+      resolve()
+    }
+    const fail = error => {
+      if (completed || clientAborted) return finish()
+      writeDshProxyError(res, 502, `DeepSeek Harness 内嵌代理不可达: ${error?.message || error}`)
+      finish()
+    }
+    const requestAttempt = attempt => {
+      if (completed || clientAborted) return finish()
+      let retryHandled = false
+      const retry = error => {
+        if (retryHandled || completed) return
+        retryHandled = true
+        if (attempt < maxAttempts && !res.headersSent && !clientAborted) {
+          setTimeout(() => requestAttempt(attempt + 1), 40 * attempt)
+          return
+        }
+        fail(error)
+      }
+      const upstream = http.request({
+        hostname: '127.0.0.1',
+        port: session.port,
+        path: route.upstreamPath,
+        method,
+        agent: _dshProxyAgent,
+        headers: dshUpstreamHeaders(req.headers, session.port),
+      }, upstreamRes => {
+        const contentType = String(upstreamRes.headers['content-type'] || '')
+        const rewrite = shouldRewriteDshResponse(contentType, route.upstreamPathname)
+        const bufferStatic = retryableStatic && method === 'GET'
+        const shouldBuffer = rewrite || bufferStatic
+
+        if (retryableStatic && (upstreamRes.statusCode || 500) >= 500 && attempt < maxAttempts) {
+          upstreamRes.resume()
+          upstreamRes.once('end', () => retry(new Error(`HTTP ${upstreamRes.statusCode}`)))
+          upstreamRes.once('error', retry)
+          return
+        }
+
+        if (!shouldBuffer || method === 'HEAD') {
+          res.statusCode = upstreamRes.statusCode || 502
+          copyDshProxyResponseHeaders(upstreamRes.headers, res, { rewrite, prefix: route.prefix })
+          upstreamRes.pipe(res)
+          upstreamRes.once('end', finish)
+          upstreamRes.once('error', error => {
+            if (!res.writableEnded) res.destroy(error)
+            finish()
+          })
+          return
+        }
+
+        const chunks = []
+        let size = 0
+        upstreamRes.on('data', chunk => {
+          size += chunk.length
+          if (size > 32 * 1024 * 1024) {
+            upstreamRes.destroy(new Error('DeepSeek Harness 代理响应超过 32MB'))
+            return
+          }
+          chunks.push(chunk)
+        })
+        upstreamRes.once('end', () => {
+          if (completed || clientAborted || res.writableEnded) return finish()
+          const rawBody = Buffer.concat(chunks)
+          const body = rewrite
+            ? Buffer.from(rewriteDshProxyText(rawBody.toString('utf8'), route.prefix, { contentType, storage: session.storage }), 'utf8')
+            : rawBody
+          res.statusCode = upstreamRes.statusCode || 502
+          copyDshProxyResponseHeaders(upstreamRes.headers, res, { rewrite, prefix: route.prefix })
+          res.setHeader('Content-Length', String(body.length))
+          if (contentType.includes('text/html')) res.setHeader('Cache-Control', 'no-store')
+          res.end(body)
+          finish()
+        })
+        upstreamRes.once('error', retry)
+      })
+
+      activeUpstream = upstream
+      upstream.once('error', retry)
+      if (method === 'GET' || method === 'HEAD') upstream.end()
+      else req.pipe(upstream)
+    }
+
+    req.once('aborted', () => {
+      clientAborted = true
+      activeUpstream?.destroy()
+      finish()
+    })
+    requestAttempt(1)
+  })
+}
+
+async function handleDshEmbedHttp(req, res) {
+  const route = parseDshEmbedUrl(req.url)
+  if (!route) {
+    writeDshProxyError(res, 404, 'DeepSeek Harness 内嵌地址无效')
+    return
+  }
+  const session = resolveDshEmbedSession(route.token)
+  if (!session) {
+    writeDshProxyError(res, 401, 'DeepSeek Harness 内嵌会话已失效，请刷新面板')
+    return
+  }
+  if (req.method === 'OPTIONS') {
+    res.statusCode = 204
+    setDshEmbedResponseHeaders(res)
+    res.end()
+    return
+  }
+  await proxyDshEmbedHttp(req, res, route, session)
+}
+
+function rejectDshEmbedUpgrade(socket, status, message) {
+  if (socket.destroyed) return
+  const body = String(message || 'DeepSeek Harness 内嵌连接失败')
+  socket.end(
+    `HTTP/1.1 ${status} ${status === 401 ? 'Unauthorized' : 'Bad Gateway'}\r\n`
+    + 'Content-Type: text/plain; charset=utf-8\r\n'
+    + `Content-Length: ${Buffer.byteLength(body)}\r\n`
+    + 'Connection: close\r\n\r\n'
+    + body,
+  )
+}
+
+export function _handleDshUpgrade(req, socket, head) {
+  if (!isDshEmbedRequest(req.url)) return false
+  const route = parseDshEmbedUrl(req.url)
+  if (!route) {
+    rejectDshEmbedUpgrade(socket, 404, 'DeepSeek Harness 内嵌地址无效')
+    return true
+  }
+  const session = resolveDshEmbedSession(route.token)
+  if (!session) {
+    rejectDshEmbedUpgrade(socket, 401, 'DeepSeek Harness 内嵌会话已失效')
+    return true
+  }
+  const target = net.createConnection(session.port, '127.0.0.1', () => {
+    const headers = dshUpstreamHeaders(req.headers, session.port, { websocket: true })
+    const requestLine = `${req.method || 'GET'} ${route.upstreamPath} HTTP/${req.httpVersion || '1.1'}\r\n`
+    const headerLines = Object.entries(headers)
+      .flatMap(([name, value]) => Array.isArray(value)
+        ? value.map(item => `${name}: ${item}`)
+        : [`${name}: ${value}`])
+      .join('\r\n')
+    target.write(`${requestLine}${headerLines}\r\n\r\n`)
+    if (head?.length) target.write(head)
+    socket.pipe(target)
+    target.pipe(socket)
+  })
+  target.once('error', () => {
+    if (!socket.destroyed) rejectDshEmbedUpgrade(socket, 502, 'DeepSeek Harness WebSocket 不可达')
+  })
+  socket.once('error', () => target.destroy())
+  return true
+}
+
+function findGlobalDshCommand() {
+  try {
+    const found = spawnSync(isWindows ? 'where.exe' : 'which', ['dsh'], {
+      encoding: 'utf8', windowsHide: true, timeout: 3000,
+    })
+    if (found.status !== 0) return ''
+    return String(found.stdout || '').split(/\r?\n/).map(value => value.trim()).find(Boolean) || ''
+  } catch {
+    return ''
+  }
+}
+
+async function dshStatus(portValue = DSH_DEFAULT_PORT) {
+  const port = normalizeDshPort(portValue)
+  const entry = dshManagedEntry()
+  const managedInstalled = fs.existsSync(entry)
+  const globalCommand = managedInstalled ? '' : findGlobalDshCommand()
+  const record = readDshPidRecord()
+  const managed = isManagedDshProcess(record)
+  const nodeCompatible = nodeVersionSatisfiesRequirement(process.version, DSH_NODE_REQUIREMENT)
+  const portOpen = await probeTcpPort(port, '127.0.0.1', 700)
+  let running = false
+  let summary = null
+  let error = ''
+  if (portOpen) {
+    try {
+      summary = await readDshSummary({ port })
+      running = true
+    } catch (cause) {
+      error = cause?.message || String(cause)
+    }
+  }
+  return {
+    installed: managedInstalled || Boolean(globalCommand),
+    managedInstalled,
+    installRunning: _dshInstallRunning,
+    running,
+    managed: running && managed,
+    portOpen,
+    foreignPort: portOpen && !running,
+    port,
+    url: `http://127.0.0.1:${port}`,
+    version: managedInstalled ? readDshManagedVersion() : '',
+    targetVersion: DSH_PACKAGE_VERSION,
+    packageName: DSH_PACKAGE_NAME,
+    path: managedInstalled ? entry : globalCommand,
+    runtimeDir: dshRuntimeDir(),
+    logPath: dshLogPath(),
+    pid: managed ? record.pid : null,
+    nodeVersion: process.version,
+    nodeRequirement: DSH_NODE_REQUIREMENT,
+    nodeCompatible,
+    summary,
+    error,
+  }
+}
+
+function npmCommandSpec(args) {
+  const npmExecPath = String(process.env.npm_execpath || '')
+  if (npmExecPath && fs.existsSync(npmExecPath)) {
+    return { command: process.execPath, args: [npmExecPath, ...args] }
+  }
+  return { command: isWindows ? 'npm.cmd' : 'npm', args }
+}
+
+function commandAvailable(command) {
+  try {
+    const probe = spawnSync(isWindows ? 'cmd.exe' : command, isWindows
+      ? ['/D', '/S', '/C', command, '--version']
+      : ['--version'], {
+      encoding: 'utf8', windowsHide: true, timeout: 5000,
+      env: { ...process.env, PATH: hermesEnhancedPath() },
+    })
+    return probe.status === 0
+  } catch {
+    return false
+  }
+}
+
+function dshInstallCommandSpec(runtimeDir) {
+  const args = [
+    'add', '--dir', runtimeDir, '--save-exact', '--prod',
+    ...DSH_BUILD_PACKAGES.map(packageName => `--allow-build=${packageName}`),
+    `${DSH_PACKAGE_NAME}@${DSH_PACKAGE_VERSION}`,
+  ]
+  if (commandAvailable('pnpm')) {
+    return isWindows
+      ? { command: 'cmd.exe', args: ['/D', '/S', '/C', 'pnpm', ...args] }
+      : { command: 'pnpm', args }
+  }
+  return npmCommandSpec(['exec', '--yes', `pnpm@${DSH_PNPM_VERSION}`, '--', ...args])
+}
+
+function runCaptured(command, args, { timeoutMs = 20 * 60 * 1000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      env: { ...process.env, PATH: hermesEnhancedPath() },
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let output = ''
+    const append = chunk => { output = (output + chunk.toString()).slice(-64 * 1024) }
+    child.stdout?.on('data', append)
+    child.stderr?.on('data', append)
+    const timer = setTimeout(() => {
+      try { child.kill('SIGTERM') } catch {}
+      reject(new Error(`命令执行超时: ${command}`))
+    }, timeoutMs)
+    child.once('error', error => { clearTimeout(timer); reject(error) })
+    child.once('close', code => {
+      clearTimeout(timer)
+      if (code === 0) resolve(output)
+      else reject(new Error(output.trim() || `${command} 退出码 ${code}`))
+    })
+  })
+}
+
+async function installDsh() {
+  if (_dshInstallRunning) throw new Error('DeepSeek Harness 安装任务正在运行')
+  if (!nodeVersionSatisfiesRequirement(process.version, DSH_NODE_REQUIREMENT)) {
+    throw new Error(`DeepSeek Harness ${DSH_PACKAGE_VERSION} 要求 Node.js ${DSH_NODE_REQUIREMENT}，当前为 ${process.version}`)
+  }
+  _dshInstallRunning = true
+  try {
+    fs.mkdirSync(dshRuntimeDir(), { recursive: true })
+    const spec = dshInstallCommandSpec(dshRuntimeDir())
+    await runCaptured(spec.command, spec.args)
+    if (!fs.existsSync(dshManagedEntry())) throw new Error('pnpm 安装完成，但未找到 DeepSeek Harness 入口文件')
+    const version = readDshManagedVersion()
+    if (version !== DSH_PACKAGE_VERSION) throw new Error(`DeepSeek Harness 安装版本回读不一致: ${version || '-'}`)
+    return dshStatus(DSH_DEFAULT_PORT)
+  } finally {
+    _dshInstallRunning = false
+  }
+}
+
+function verifiedDshRuntimeDir() {
+  const expected = path.resolve(OPENCLAW_DIR, 'clawpanel', 'deepseek-harness')
+  const actual = path.resolve(dshRuntimeDir())
+  if (actual !== expected || path.basename(actual) !== 'deepseek-harness') {
+    throw new Error('DeepSeek Harness 运行目录校验失败，未执行卸载')
+  }
+  return actual
+}
+
+async function uninstallDsh() {
+  if (_dshInstallRunning) throw new Error('DeepSeek Harness 安装或卸载任务正在运行')
+  const record = readDshPidRecord()
+  if (isManagedDshProcess(record)) throw new Error('请先停止 ClawPanel 管理的 DeepSeek Harness，再卸载受管运行时')
+  _dshInstallRunning = true
+  try {
+    clearDshEmbedSessions()
+    const runtimeDir = verifiedDshRuntimeDir()
+    if (fs.existsSync(runtimeDir)) fs.rmSync(runtimeDir, { recursive: true, force: true })
+    if (fs.existsSync(runtimeDir)) throw new Error('DeepSeek Harness 运行目录卸载后仍然存在')
+  } finally {
+    _dshInstallRunning = false
+  }
+  return { removedManaged: true, ...(await dshStatus(DSH_DEFAULT_PORT)) }
+}
+
+function spawnDshWeb(port) {
+  fs.mkdirSync(dshRuntimeDir(), { recursive: true })
+  const entry = dshManagedEntry()
+  let command
+  let args
+  let shell = false
+  if (fs.existsSync(entry)) {
+    command = process.execPath
+    args = [entry, 'web', '--host', '127.0.0.1', '--port', String(port), '--no-open']
+  } else {
+    command = findGlobalDshCommand()
+    if (!command) throw new Error('DeepSeek Harness 未安装')
+    args = ['web', '--host', '127.0.0.1', '--port', String(port), '--no-open']
+    shell = isWindows && /\.(cmd|bat)$/i.test(command)
+  }
+  const logFd = fs.openSync(dshLogPath(), 'a')
+  const child = spawn(command, args, {
+    detached: true,
+    shell,
+    cwd: dshRuntimeDir(),
+    env: { ...process.env, PATH: hermesEnhancedPath(), CLAWPANEL_DSH_MANAGED: '1' },
+    windowsHide: true,
+    stdio: ['ignore', logFd, logFd],
+  })
+  fs.closeSync(logFd)
+  child.unref()
+  _dshManagedChild = child
+  writeJsonAtomic(dshPidPath(), {
+    pid: child.pid,
+    port,
+    startedAt: new Date().toISOString(),
+    entry: fs.existsSync(entry) ? entry : command,
+  })
+  return child.pid
+}
+
+async function startDsh(portValue = DSH_DEFAULT_PORT) {
+  const port = normalizeDshPort(portValue)
+  const before = await dshStatus(port)
+  if (before.running) return before
+  if (before.foreignPort) throw new Error(`端口 ${port} 已被其他服务占用`)
+  const existingRecord = readDshPidRecord()
+  if (isManagedDshProcess(existingRecord)) {
+    throw new Error(`ClawPanel 管理的 DeepSeek Harness 已在端口 ${existingRecord.port || '-'} 启动，请先停止后再切换端口`)
+  }
+  if (!before.installed) throw new Error('DeepSeek Harness 未安装，请先安装受管运行时')
+  if (!before.nodeCompatible && before.managedInstalled) {
+    throw new Error(`DeepSeek Harness 要求 Node.js ${DSH_NODE_REQUIREMENT}，当前为 ${process.version}`)
+  }
+  clearDshEmbedSessions()
+  spawnDshWeb(port)
+  for (let i = 0; i < 60; i += 1) {
+    await new Promise(resolve => setTimeout(resolve, 500))
+    const current = await dshStatus(port)
+    if (current.running) return current
+    const record = readDshPidRecord()
+    if (record && !isProcessAlive(record.pid)) break
+  }
+  let tail = ''
+  try { tail = fs.readFileSync(dshLogPath(), 'utf8').slice(-4000).trim() } catch {}
+  throw new Error(`DeepSeek Harness 启动失败${tail ? `: ${tail}` : ''}`)
+}
+
+async function stopDsh(portValue = DSH_DEFAULT_PORT) {
+  const port = normalizeDshPort(portValue)
+  const record = readDshPidRecord()
+  if (!record || !isManagedDshProcess(record)) {
+    const current = await dshStatus(port)
+    if (!current.running) return current
+    throw new Error('当前 DeepSeek Harness 不是由 ClawPanel 启动，未执行停止操作')
+  }
+  clearDshEmbedSessions()
+  if (isWindows) {
+    spawnSync('taskkill.exe', ['/PID', String(record.pid), '/T', '/F'], { windowsHide: true, timeout: 10000 })
+  } else {
+    try { process.kill(record.pid, 'SIGTERM') } catch {}
+  }
+  for (let i = 0; i < 20; i += 1) {
+    await new Promise(resolve => setTimeout(resolve, 250))
+    if (!isProcessAlive(record.pid)) break
+  }
+  if (!isWindows && isProcessAlive(record.pid)) {
+    try { process.kill(record.pid, 'SIGKILL') } catch {}
+  }
+  try { fs.unlinkSync(dshPidPath()) } catch {}
+  if (_dshManagedChild?.pid === record.pid) _dshManagedChild = null
+  const current = await dshStatus(port)
+  if (current.running) throw new Error('DeepSeek Harness 进程停止后服务仍可达，请检查是否存在其他实例')
+  return current
+}
 
 const handlers = {
   // 配置读写
@@ -14134,6 +14774,43 @@ const handlers = {
     if (!channel) throw new Error(`模型渠道不存在: ${channelId}`)
     if (channel.apiKeyRef) throw new Error('该渠道使用 OpenClaw SecretRef，只能原样同步到 OpenClaw')
     return channel.apiKey || ''
+  },
+
+  // DeepSeek Harness：受认证保护的回环进程与配置面
+  dsh_status({ port = DSH_DEFAULT_PORT } = {}) {
+    return dshStatus(port)
+  },
+
+  dsh_install() {
+    return installDsh()
+  },
+
+  dsh_uninstall() {
+    return uninstallDsh()
+  },
+
+  dsh_embed_session({ port = DSH_DEFAULT_PORT, storage = {} } = {}) {
+    return createDshEmbedSession(port, storage)
+  },
+
+  dsh_start({ port = DSH_DEFAULT_PORT } = {}) {
+    return startDsh(port)
+  },
+
+  dsh_stop({ port = DSH_DEFAULT_PORT } = {}) {
+    return stopDsh(port)
+  },
+
+  async dsh_sync_provider({ channelId, setDefault = false, port = DSH_DEFAULT_PORT } = {}) {
+    const channel = readModelChannelsPrivate().channels.find(item => item.id === String(channelId || '').trim())
+    if (!channel) throw new Error(`模型渠道不存在: ${channelId}`)
+    if (channel.apiKeyRef) throw new Error('该渠道使用 OpenClaw SecretRef，只能原样同步到 OpenClaw')
+    return syncDshProvider({
+      channel,
+      apiKey: resolveModelApiKey(String(channel.apiKey || '')),
+      setDefault: Boolean(setDefault),
+      port,
+    })
   },
 
   // 云端媒体生成
@@ -17993,6 +18670,7 @@ function _initApi() {
   // 定时清理过期 session 和登录限速记录（每 10 分钟）
   setInterval(() => {
     const now = Date.now()
+    pruneDshEmbedSessions(now)
     for (const [token, session] of _sessions) {
       if (now > session.expires) _sessions.delete(token)
     }
@@ -18283,6 +18961,10 @@ async function _handleHermesAgentRunStream(req, res, args = {}) {
 
 // API 中间件（dev server 和 preview server 共用）
 async function _apiMiddleware(req, res, next) {
+  if (isDshEmbedRequest(req.url)) {
+    await handleDshEmbedHttp(req, res)
+    return
+  }
   if (!req.url?.startsWith('/__api/')) return next()
 
   const cmd = req.url.slice(7).split('?')[0]
@@ -18507,14 +19189,23 @@ export function devApiPlugin() {
     _inited = true
     _initApi()
   }
+  const attachDshUpgrade = server => {
+    if (!server?.httpServer || server.httpServer.__clawpanelDshUpgradeAttached) return
+    server.httpServer.__clawpanelDshUpgradeAttached = true
+    server.httpServer.on('upgrade', (req, socket, head) => {
+      _handleDshUpgrade(req, socket, head)
+    })
+  }
   return {
     name: 'clawpanel-dev-api',
     configureServer(server) {
       ensureInit()
+      attachDshUpgrade(server)
       server.middlewares.use(_apiMiddleware)
     },
     configurePreviewServer(server) {
       ensureInit()
+      attachDshUpgrade(server)
       server.middlewares.use(_apiMiddleware)
     },
   }

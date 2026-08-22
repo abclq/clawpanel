@@ -17,6 +17,7 @@ pub mod agent;
 pub mod assistant;
 pub mod cli_conflict;
 pub mod config;
+pub mod deepseek_harness;
 pub mod device;
 pub mod diagnose;
 pub mod extensions;

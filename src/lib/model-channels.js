@@ -2,9 +2,10 @@
  * 统一模型渠道 — 共享逻辑
  *
  * 渠道是唯一维护入口（Base URL + API Key + 模型列表），通过显式同步推送到
- * OpenClaw / Hermes / 晴辰助手。同步全部组合现有 API 完成：
+ * OpenClaw / Hermes / DeepSeek Harness / 晴辰助手。同步全部组合现有 API 完成：
  * - OpenClaw：read/write_openclaw_config（后端自带备份，合并保留未知字段）
  * - Hermes：hermes_sync_provider（事务更新 .env + config.yaml）
+ * - DeepSeek Harness：dsh_sync_provider（后端读取渠道密钥并通过回环 RPC 回读核对）
  * - 助手：一次性拷贝到 localStorage（clawpanel-assistant）
  * 本模块自身不直接写任何引擎配置文件。
  */
@@ -12,6 +13,7 @@ import { api, isTauriRuntime } from './tauri-api.js'
 import { normalizeModelApiType } from './model-presets.js'
 
 export const ASSISTANT_STORAGE_KEY = 'clawpanel-assistant'
+export const DSH_PORT_STORAGE_KEY = 'clawpanel-dsh-port'
 
 /**
  * 渠道 apiType → Hermes 回退 provider id（已按内核注册表逐一核对）：
@@ -32,12 +34,38 @@ export const ASSISTANT_SUPPORTED_API_TYPES = [
   'openai-completions', 'anthropic-messages', 'google-generative-ai', 'ollama',
 ]
 
+const DSH_SUPPORTED_API_TYPES = new Set([
+  'openai-completions', 'ollama', 'openai-responses', 'anthropic-messages',
+])
+
 export function hermesSyncSupported(channel) {
   return !channel?.apiKeyRef && Boolean(HERMES_TARGET_MAP[channel?.apiType])
 }
 
 export function assistantSyncSupported(channel) {
   return !channel?.apiKeyRef && ASSISTANT_SUPPORTED_API_TYPES.includes(channel?.apiType)
+}
+
+export function dshSyncSupported(channel) {
+  return !channel?.apiKeyRef && DSH_SUPPORTED_API_TYPES.has(normalizeModelApiType(channel?.apiType))
+}
+
+export function getDshPort() {
+  try {
+    const port = Number(localStorage.getItem(DSH_PORT_STORAGE_KEY) || 3080)
+    return Number.isInteger(port) && port >= 1024 && port <= 65535 ? port : 3080
+  } catch {
+    return 3080
+  }
+}
+
+export function setDshPort(port) {
+  const normalized = Number(port)
+  if (!Number.isInteger(normalized) || normalized < 1024 || normalized > 65535) {
+    throw new Error('DeepSeek Harness 端口必须是 1024-65535 的整数')
+  }
+  localStorage.setItem(DSH_PORT_STORAGE_KEY, String(normalized))
+  return normalized
 }
 
 /**
@@ -208,6 +236,13 @@ export async function syncChannelToHermes(channel, { setDefault = false } = {}) 
     model: channel.defaultModel || '',
     setDefault: Boolean(setDefault && channel.defaultModel),
   })
+}
+
+/** 同步到 DeepSeek Harness：由后端通过回环 RPC 写入并执行三源回读核对。 */
+export async function syncChannelToDsh(channel, { setDefault = false, port = getDshPort() } = {}) {
+  if (!dshSyncSupported(channel)) throw new Error('unsupported-dsh')
+  if (!channel?.apiKeySaved) throw new Error('no-key')
+  return api.dshSyncProvider({ channelId: channel.id, setDefault, port })
 }
 
 /**

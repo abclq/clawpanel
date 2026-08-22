@@ -43,6 +43,7 @@ export default {
   choiceHermesFeat3: _('内置 Kanban / Skills / OAuth', 'Kanban / Skills / OAuth built-in', '內建 Kanban / Skills / OAuth'),
   choiceHermesCategory: _('Agent 工作流', 'Agent Workflow', 'Agent 工作流'),
   choiceSecondaryBoth: _('两个都要 ↗', 'Use both ↗', '兩個都要 ↗'),
+  choiceSecondaryDsh: _('DeepSeek Harness ↗', 'DeepSeek Harness ↗', 'DeepSeek Harness ↗'),
   choiceSecondaryLater: _('稍后再说', 'Decide later', '稍後再說'),
   hermesSetupDesc: _('安装并配置 Hermes Agent', 'Install and configure Hermes Agent', '安裝並配置 Hermes Agent'),
   hermesPhaseClickHint: _('点击可返回此步骤', 'Click to go back to this step', '點擊可返回此步驟', 'このステップに戻るにはクリック', '이 단계로 돌아가려면 클릭'),
