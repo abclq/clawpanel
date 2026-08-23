@@ -11,15 +11,15 @@ const desktopConfig = readFileSync(new URL('../src-tauri/src/commands/config.rs'
 const desktopService = readFileSync(new URL('../src-tauri/src/commands/service.rs', import.meta.url), 'utf8')
 const chatPage = readFileSync(new URL('../src/pages/chat.js', import.meta.url), 'utf8')
 
-test('ClawPanel recommends the matching official and Chinese 2026.7.1 stable builds', () => {
-  assert.equal(policy.default.official.recommended, '2026.7.1')
-  assert.equal(policy.default.chinese.recommended, '2026.7.1-zh.2')
-  assert.match(featureCatalog, /official: '2026\.7\.1'/)
-  assert.match(featureCatalog, /chinese: '2026\.7\.1-zh\.2'/)
+test('ClawPanel recommends the matching official and Chinese 2026.7.1 correction builds', () => {
+  assert.equal(policy.default.official.recommended, '2026.7.1-2')
+  assert.equal(policy.default.chinese.recommended, '2026.7.1-2-zh.1')
+  assert.match(featureCatalog, /official: '2026\.7\.1-2'/)
+  assert.match(featureCatalog, /chinese: '2026\.7\.1-2-zh\.1'/)
 })
 
-test('Linux deployment installs the Chinese 2026.7.1 stable build', () => {
-  assert.match(linuxDeploy, /OPENCLAW_RECOMMENDED_VERSION="2026\.7\.1-zh\.2"/)
+test('Linux deployment installs the Chinese 2026.7.1 correction build', () => {
+  assert.match(linuxDeploy, /OPENCLAW_RECOMMENDED_VERSION="2026\.7\.1-2-zh\.1"/)
   assert.match(linuxDeploy, /\[ "\$major" -ge 25 \]/)
   assert.match(
     linuxDeploy,

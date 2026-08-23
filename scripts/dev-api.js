@@ -9831,6 +9831,12 @@ function readJsonOrDefault(file, fallback) {
 
 export function writeJsonAtomic(file, value, { backup = false } = {}) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
+  const existingMetadata = process.platform !== 'win32' && fs.existsSync(file)
+    ? (() => {
+        const metadata = fs.statSync(file)
+        return { uid: metadata.uid, gid: metadata.gid, mode: metadata.mode & 0o777 }
+      })()
+    : null
   const content = JSON.stringify(value, null, 2)
   const parsed = JSON.parse(content)
   if (JSON.stringify(parsed) !== JSON.stringify(value)) throw new Error('候选配置序列化后内容不一致')
@@ -9841,6 +9847,13 @@ export function writeJsonAtomic(file, value, { backup = false } = {}) {
     try {
       fs.writeFileSync(fd, content)
       fs.fsyncSync(fd)
+      if (process.platform !== 'win32') {
+        const current = fs.fstatSync(fd)
+        if (existingMetadata && (current.uid !== existingMetadata.uid || current.gid !== existingMetadata.gid)) {
+          fs.fchownSync(fd, existingMetadata.uid, existingMetadata.gid)
+        }
+        fs.fchmodSync(fd, existingMetadata?.mode ?? 0o600)
+      }
     } finally {
       fs.closeSync(fd)
     }
@@ -9891,7 +9904,7 @@ export function writeJsonAtomic(file, value, { backup = false } = {}) {
     throw new Error('配置写入后回读不一致，已恢复原配置')
   }
   if (rollback) fs.rmSync(rollback, { force: true })
-  if (process.platform !== 'win32') fs.chmodSync(file, 0o600)
+  if (process.platform !== 'win32') fs.chmodSync(file, existingMetadata?.mode ?? 0o600)
 }
 
 function mediaApiKeyMask(key) {

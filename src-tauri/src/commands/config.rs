@@ -1205,6 +1205,11 @@ fn write_verified_json_with_backup(path: &Path, value: &Value) -> Result<(), Str
         .parent()
         .ok_or_else(|| "配置路径缺少父目录".to_string())?;
     fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败: {e}"))?;
+    #[cfg(unix)]
+    let existing_metadata = fs::metadata(path).ok().map(|metadata| {
+        use std::os::unix::fs::MetadataExt;
+        (metadata.mode() & 0o777, metadata.uid(), metadata.gid())
+    });
     let content = serde_json::to_string_pretty(value).map_err(|e| format!("序列化失败: {e}"))?;
     let parsed: Value =
         serde_json::from_str(&content).map_err(|e| format!("候选配置校验失败: {e}"))?;
@@ -1235,8 +1240,21 @@ fn write_verified_json_with_backup(path: &Path, value: &Value) -> Result<(), Str
     drop(file);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(error) = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600)) {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let desired_mode = existing_metadata.map(|(mode, _, _)| mode).unwrap_or(0o600);
+        if let Some((_, uid, gid)) = existing_metadata {
+            let tmp_metadata = fs::metadata(&tmp).map_err(|error| {
+                let _ = fs::remove_file(&tmp);
+                format!("读取候选配置元数据失败: {error}")
+            })?;
+            if tmp_metadata.uid() != uid || tmp_metadata.gid() != gid {
+                if let Err(error) = std::os::unix::fs::chown(&tmp, Some(uid), Some(gid)) {
+                    let _ = fs::remove_file(&tmp);
+                    return Err(format!("保留候选配置所有者失败: {error}"));
+                }
+            }
+        }
+        if let Err(error) = fs::set_permissions(&tmp, fs::Permissions::from_mode(desired_mode)) {
             let _ = fs::remove_file(&tmp);
             return Err(format!("设置候选配置权限失败: {error}"));
         }
@@ -1311,7 +1329,8 @@ fn write_verified_json_with_backup(path: &Path, value: &Value) -> Result<(), Str
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        let desired_mode = existing_metadata.map(|(mode, _, _)| mode).unwrap_or(0o600);
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(desired_mode));
     }
     Ok(())
 }
@@ -8362,6 +8381,28 @@ mod write_openclaw_config_merge_tests {
         assert_eq!(written, next);
         assert_eq!(backup["models"]["mode"], json!("merge"));
         assert!(backup["models"].get("providers").is_none());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verified_writer_preserves_existing_unix_metadata() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let root = unique_temp_dir("verified-config-permissions");
+        let path = root.join("openclaw.json");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&path, r#"{"before":true}"#).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let before = std::fs::metadata(&path).unwrap();
+
+        write_verified_json_with_backup(&path, &json!({ "after": true })).unwrap();
+
+        let after = std::fs::metadata(&path).unwrap();
+        assert_eq!(after.uid(), before.uid());
+        assert_eq!(after.gid(), before.gid());
+        assert_eq!(after.mode() & 0o777, before.mode() & 0o777);
 
         let _ = std::fs::remove_dir_all(root);
     }
