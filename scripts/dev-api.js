@@ -33,6 +33,24 @@ import {
   rewriteDshProxyText,
   shouldRewriteDshResponse,
 } from './deepseek-harness-proxy.js'
+import {
+  OPENCODE_DEFAULT_PORT,
+  OPENCODE_PACKAGE_NAME,
+  OPENCODE_PACKAGE_VERSION,
+  buildOpenCodeUpdateInfo,
+  mergeOpenCodeProviderConfig,
+  normalizeOpenCodePort,
+  normalizeOpenCodeVersion,
+  openCodeCredentialFileName,
+  readOpenCodeSummary,
+} from './opencode.js'
+import {
+  openCodeEmbedPrefix,
+  openCodeUpstreamHeaders,
+  parseOpenCodeEmbedUrl,
+  rewriteOpenCodeProxyText,
+  shouldRewriteOpenCodeResponse,
+} from './opencode-proxy.js'
 const DOCKER_TASK_TIMEOUT_MS = 10 * 60 * 1000
 
 export function probeTcpPort(port, host = '127.0.0.1', timeoutMs = 3000) {
@@ -9337,6 +9355,7 @@ const ALWAYS_LOCAL = new Set([
   'assistant_ensure_data_dir', 'assistant_save_image', 'assistant_load_image', 'assistant_delete_image',
   'read_model_channels', 'write_model_channels', 'reveal_model_channel_key', 'hermes_sync_provider',
   'dsh_status', 'dsh_install', 'dsh_uninstall', 'dsh_start', 'dsh_stop', 'dsh_sync_provider', 'dsh_embed_session',
+  'opencode_status', 'opencode_install', 'opencode_check_update', 'opencode_update', 'opencode_uninstall', 'opencode_start', 'opencode_stop', 'opencode_sync_provider', 'opencode_embed_session',
   'read_media_config', 'write_media_config', 'test_media_provider', 'fetch_media_models',
   'generate_image', 'create_video_task', 'poll_video_task',
   'cancel_media_job', 'list_media_jobs', 'delete_media_job',
@@ -11497,7 +11516,10 @@ function npmCommandSpec(args) {
   if (npmExecPath && fs.existsSync(npmExecPath)) {
     return { command: process.execPath, args: [npmExecPath, ...args] }
   }
-  return { command: isWindows ? 'npm.cmd' : 'npm', args }
+  // Windows 的 .cmd shim 不能直接交给 spawn（Node 会返回 EINVAL），统一经 cmd.exe 执行。
+  return isWindows
+    ? { command: 'cmd.exe', args: ['/D', '/S', '/C', 'npm', ...args] }
+    : { command: 'npm', args }
 }
 
 function commandAvailable(command) {
@@ -11685,6 +11707,737 @@ async function stopDsh(portValue = DSH_DEFAULT_PORT) {
   const current = await dshStatus(port)
   if (current.running) throw new Error('DeepSeek Harness 进程停止后服务仍可达，请检查是否存在其他实例')
   return current
+}
+
+// === OpenCode（受管二进制、独立配置目录和短期内嵌能力令牌） ===
+let _openCodeInstallRunning = false
+let _openCodeManagedChild = null
+let _openCodeUpdateCache = null
+const _openCodeEmbedSessions = new Map()
+const OPENCODE_EMBED_IDLE_TTL = 30 * 60 * 1000
+const OPENCODE_EMBED_MAX_TTL = 8 * 60 * 60 * 1000
+const OPENCODE_EMBED_MAX_SESSIONS = 32
+const _openCodeProxyAgent = new http.Agent({ keepAlive: true, maxSockets: 20, maxFreeSockets: 6 })
+
+function openCodeRootDir() {
+  return path.join(OPENCLAW_DIR, 'clawpanel', 'opencode')
+}
+
+function openCodeRuntimeDir() {
+  return path.join(openCodeRootDir(), 'runtime')
+}
+
+function openCodeStagingDir() {
+  return path.join(openCodeRootDir(), 'runtime.update-staging')
+}
+
+function openCodeBackupDir() {
+  return path.join(openCodeRootDir(), 'runtime.update-backup')
+}
+
+function openCodeHomeDir() {
+  return path.join(openCodeRootDir(), 'home')
+}
+
+function openCodeConfigDir() {
+  return path.join(openCodeHomeDir(), 'config')
+}
+
+function openCodeConfigPath() {
+  return path.join(openCodeConfigDir(), 'opencode.json')
+}
+
+function openCodeCredentialDir() {
+  return path.join(openCodeHomeDir(), 'credentials')
+}
+
+function openCodeWorkspaceDir() {
+  return path.join(openCodeHomeDir(), 'workspace')
+}
+
+function openCodePidPath() {
+  return path.join(openCodeRuntimeDir(), 'server.pid.json')
+}
+
+function openCodeLogPath() {
+  return path.join(openCodeRuntimeDir(), 'server.log')
+}
+
+function openCodePlatformPackageCandidates() {
+  const platform = process.platform === 'win32' ? 'windows' : process.platform
+  const arch = process.arch === 'x64' ? 'x64' : process.arch
+  const suffixes = process.platform === 'linux'
+    ? ['', '-baseline', '-musl', '-baseline-musl']
+    : ['', '-baseline']
+  return suffixes.map(suffix => `opencode-${platform}-${arch}${suffix}`)
+}
+
+function openCodeManagedBinaryCandidates(runtime = openCodeRuntimeDir()) {
+  const executable = isWindows ? 'opencode.exe' : 'opencode'
+  return openCodePlatformPackageCandidates().map(packageName => (
+    path.join(runtime, 'node_modules', packageName, 'bin', executable)
+  ))
+}
+
+function findManagedOpenCodeBinary(runtime = openCodeRuntimeDir()) {
+  for (const candidate of openCodeManagedBinaryCandidates(runtime)) {
+    if (!fs.existsSync(candidate)) continue
+    try {
+      const probe = spawnSync(candidate, ['--version'], { encoding: 'utf8', windowsHide: true, timeout: 5000 })
+      if (probe.status === 0) return candidate
+    } catch {}
+  }
+  return ''
+}
+
+function findGlobalOpenCodeCommand() {
+  try {
+    const found = spawnSync(isWindows ? 'where.exe' : 'which', ['opencode'], {
+      encoding: 'utf8', windowsHide: true, timeout: 3000,
+      env: { ...process.env, PATH: hermesEnhancedPath() },
+    })
+    if (found.status !== 0) return ''
+    return String(found.stdout || '').split(/\r?\n/).map(value => value.trim()).find(Boolean) || ''
+  } catch {
+    return ''
+  }
+}
+
+function readManagedOpenCodeVersion(runtime = openCodeRuntimeDir()) {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(runtime, 'node_modules', OPENCODE_PACKAGE_NAME, 'package.json'), 'utf8'))
+    return String(pkg.version || '')
+  } catch {
+    return ''
+  }
+}
+
+function recoverOpenCodeRuntimeSwap() {
+  const runtime = verifiedOpenCodeManagedDir('runtime')
+  const staging = verifiedOpenCodeManagedDir('runtime.update-staging')
+  const backup = verifiedOpenCodeManagedDir('runtime.update-backup')
+  fs.mkdirSync(openCodeRootDir(), { recursive: true })
+  if (!fs.existsSync(runtime) && fs.existsSync(backup)) fs.renameSync(backup, runtime)
+  if (fs.existsSync(runtime) && fs.existsSync(backup)) fs.rmSync(backup, { recursive: true, force: true })
+  if (fs.existsSync(staging)) fs.rmSync(staging, { recursive: true, force: true })
+}
+
+function readOpenCodePidRecord() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(openCodePidPath(), 'utf8'))
+    const pid = Number(parsed?.pid)
+    const port = Number(parsed?.port)
+    return Number.isInteger(pid) && pid > 0 && Number.isInteger(port)
+      ? { ...parsed, pid, port }
+      : null
+  } catch {
+    return null
+  }
+}
+
+function isManagedOpenCodeProcess(record) {
+  if (!record || !isProcessAlive(record.pid)) return false
+  if (_openCodeManagedChild?.pid === record.pid) return true
+  const commandLine = dshProcessCommandLine(record.pid).toLowerCase().replace(/\\/g, '/')
+  const expected = String(record.entry || '').toLowerCase().replace(/\\/g, '/')
+  return Boolean(expected && commandLine.includes(expected))
+    && commandLine.includes('serve')
+    && commandLine.includes(String(record.port))
+}
+
+function readOpenCodeConfig() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(openCodeConfigPath(), 'utf8'))
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function ensureOpenCodeHome() {
+  for (const dir of [openCodeConfigDir(), openCodeCredentialDir(), openCodeWorkspaceDir(), path.join(openCodeHomeDir(), 'data'), path.join(openCodeHomeDir(), 'cache'), path.join(openCodeHomeDir(), 'state')]) {
+    fs.mkdirSync(dir, { recursive: true })
+  }
+  if (!fs.existsSync(openCodeConfigPath())) {
+    writeJsonAtomic(openCodeConfigPath(), { $schema: 'https://opencode.ai/config.json', autoupdate: false })
+  }
+}
+
+function openCodeRuntimeEnv(password = '') {
+  ensureOpenCodeHome()
+  return {
+    ...process.env,
+    PATH: hermesEnhancedPath(),
+    OPENCODE_CONFIG: openCodeConfigPath(),
+    OPENCODE_CONFIG_DIR: openCodeConfigDir(),
+    OPENCODE_SERVER_USERNAME: 'opencode',
+    OPENCODE_SERVER_PASSWORD: password,
+    OPENCODE_DISABLE_DEFAULT_PLUGINS: 'true',
+    OPENCODE_DISABLE_CLAUDE_CODE: 'true',
+    XDG_DATA_HOME: path.join(openCodeHomeDir(), 'data'),
+    XDG_CACHE_HOME: path.join(openCodeHomeDir(), 'cache'),
+    XDG_STATE_HOME: path.join(openCodeHomeDir(), 'state'),
+    CLAWPANEL_OPENCODE_MANAGED: '1',
+  }
+}
+
+async function probeOpenCodeHealth(port, password = '') {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 1500)
+  try {
+    const authorization = password
+      ? { Authorization: `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}` }
+      : {}
+    const response = await fetch(`http://127.0.0.1:${port}/global/health`, {
+      headers: authorization,
+      signal: controller.signal,
+    })
+    if (!response.ok) return null
+    const body = await response.json()
+    return body?.healthy === true ? body : null
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function openCodeStatus(portValue = OPENCODE_DEFAULT_PORT) {
+  const port = normalizeOpenCodePort(portValue)
+  if (!_openCodeInstallRunning) recoverOpenCodeRuntimeSwap()
+  const managedBinary = findManagedOpenCodeBinary()
+  const managedInstalled = Boolean(managedBinary)
+  const globalCommand = managedInstalled ? '' : findGlobalOpenCodeCommand()
+  const record = readOpenCodePidRecord()
+  const managed = isManagedOpenCodeProcess(record)
+  const portOpen = await probeTcpPort(port, '127.0.0.1', 700)
+  const health = portOpen
+    ? await probeOpenCodeHealth(port, managed && record?.port === port ? String(record.password || '') : '')
+    : null
+  const config = readOpenCodeConfig()
+  const version = String(health?.version || (managedInstalled ? readManagedOpenCodeVersion() : ''))
+  const update = _openCodeUpdateCache
+    ? buildOpenCodeUpdateInfo(version, _openCodeUpdateCache.latestVersion, _openCodeUpdateCache)
+    : buildOpenCodeUpdateInfo(version, '')
+  return {
+    installed: managedInstalled || Boolean(globalCommand),
+    managedInstalled,
+    installRunning: _openCodeInstallRunning,
+    running: Boolean(health),
+    managed: Boolean(health && managed && record?.port === port),
+    requiresManagedAuth: Boolean(health && managed && record?.port === port && record?.password),
+    portOpen,
+    foreignPort: portOpen && !health,
+    port,
+    url: `http://127.0.0.1:${port}`,
+    version,
+    targetVersion: OPENCODE_PACKAGE_VERSION,
+    latestVersion: update.latestVersion,
+    updateAvailable: update.updateAvailable,
+    updateCheckedAt: update.checkedAt || '',
+    updateRegistry: update.registry || '',
+    packageName: OPENCODE_PACKAGE_NAME,
+    path: managedInstalled ? managedBinary : globalCommand,
+    runtimeDir: openCodeRuntimeDir(),
+    configPath: openCodeConfigPath(),
+    workspacePath: openCodeWorkspaceDir(),
+    logPath: openCodeLogPath(),
+    pid: health && managed ? record.pid : null,
+    summary: readOpenCodeSummary(config),
+  }
+}
+
+function verifiedOpenCodeManagedDir(name) {
+  const allowed = new Set(['runtime', 'runtime.update-staging', 'runtime.update-backup'])
+  if (!allowed.has(name)) throw new Error('OpenCode 受管目录名称无效')
+  const root = path.resolve(openCodeRootDir())
+  const actual = path.resolve(root, name)
+  if (path.dirname(actual) !== root || path.basename(actual) !== name) {
+    throw new Error('OpenCode 受管目录校验失败，未执行文件操作')
+  }
+  return actual
+}
+
+function verifiedOpenCodeRuntimeDir() {
+  return verifiedOpenCodeManagedDir('runtime')
+}
+
+function normalizeOpenCodeRegistry(value) {
+  try {
+    const registry = new URL(String(value || '').trim())
+    if (!['http:', 'https:'].includes(registry.protocol)) return ''
+    registry.pathname = `${registry.pathname.replace(/\/+$/, '')}/`
+    registry.search = ''
+    registry.hash = ''
+    const normalized = registry.toString()
+    return /^https?:\/\/[A-Za-z0-9._~:/%+-]+\/$/.test(normalized) ? normalized : ''
+  } catch {
+    return ''
+  }
+}
+
+async function fetchLatestOpenCodeVersion({ force = false } = {}) {
+  if (!force && _openCodeUpdateCache && Date.now() - Number(_openCodeUpdateCache.checkedAtMs || 0) < 5 * 60 * 1000) {
+    return _openCodeUpdateCache
+  }
+  const registries = [...new Set([
+    normalizeOpenCodeRegistry(getConfiguredNpmRegistry()),
+    'https://registry.npmjs.org/',
+  ].filter(Boolean))]
+  const errors = []
+  for (const registry of registries) {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 10000)
+    try {
+      const endpoint = new URL(`${OPENCODE_PACKAGE_NAME}/latest`, registry)
+      const response = await fetch(endpoint, {
+        headers: { accept: 'application/json' },
+        signal: controller.signal,
+      })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const payload = await response.json()
+      const latestVersion = normalizeOpenCodeVersion(payload?.version)
+      if (!latestVersion) throw new Error('仓库返回的版本号无效')
+      _openCodeUpdateCache = {
+        latestVersion,
+        registry,
+        checkedAt: new Date().toISOString(),
+        checkedAtMs: Date.now(),
+      }
+      return _openCodeUpdateCache
+    } catch (error) {
+      errors.push(`${registry}: ${error?.name === 'AbortError' ? '请求超时' : error?.message || error}`)
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+  throw new Error(`检查 OpenCode 更新失败: ${errors.join('; ')}`)
+}
+
+async function installOpenCodeVersion(targetVersion, registry = '') {
+  const version = normalizeOpenCodeVersion(targetVersion)
+  if (!version) throw new Error(`OpenCode 目标版本无效: ${targetVersion || '-'}`)
+  const staging = verifiedOpenCodeManagedDir('runtime.update-staging')
+  if (fs.existsSync(staging)) fs.rmSync(staging, { recursive: true, force: true })
+  fs.mkdirSync(staging, { recursive: true })
+  const args = [
+    'install', '--prefix', staging, '--save-exact', '--omit=dev',
+    '--ignore-scripts', '--audit=false', '--fund=false',
+    `${OPENCODE_PACKAGE_NAME}@${version}`,
+  ]
+  const normalizedRegistry = normalizeOpenCodeRegistry(registry)
+  if (normalizedRegistry) args.push('--registry', normalizedRegistry)
+  const spec = npmCommandSpec(args)
+  await runCaptured(spec.command, spec.args)
+  if (!findManagedOpenCodeBinary(staging)) throw new Error('npm 安装完成，但未找到适用于当前平台的 OpenCode 二进制')
+  const installed = readManagedOpenCodeVersion(staging)
+  if (installed !== version) throw new Error(`OpenCode 安装版本回读不一致: ${installed || '-'}，期望 ${version}`)
+  return staging
+}
+
+function activateOpenCodeStaging() {
+  const runtime = verifiedOpenCodeRuntimeDir()
+  const staging = verifiedOpenCodeManagedDir('runtime.update-staging')
+  const backup = verifiedOpenCodeManagedDir('runtime.update-backup')
+  if (!findManagedOpenCodeBinary(staging)) throw new Error('OpenCode 暂存运行时校验失败')
+  if (fs.existsSync(backup)) fs.rmSync(backup, { recursive: true, force: true })
+  let movedOld = false
+  try {
+    if (fs.existsSync(runtime)) {
+      fs.renameSync(runtime, backup)
+      movedOld = true
+    }
+    fs.renameSync(staging, runtime)
+  } catch (error) {
+    if (!fs.existsSync(runtime) && movedOld && fs.existsSync(backup)) {
+      try { fs.renameSync(backup, runtime) } catch {}
+    }
+    throw new Error(`切换 OpenCode 新版本失败，已回滚原运行时: ${error?.message || error}`)
+  }
+  if (fs.existsSync(backup)) {
+    try { fs.rmSync(backup, { recursive: true, force: true }) } catch {}
+  }
+}
+
+async function installOpenCode() {
+  if (_openCodeInstallRunning) throw new Error('OpenCode 安装任务正在运行')
+  recoverOpenCodeRuntimeSwap()
+  _openCodeInstallRunning = true
+  try {
+    ensureOpenCodeHome()
+    await installOpenCodeVersion(OPENCODE_PACKAGE_VERSION, getConfiguredNpmRegistry())
+    activateOpenCodeStaging()
+    _openCodeUpdateCache = null
+  } finally {
+    _openCodeInstallRunning = false
+  }
+  return openCodeStatus(OPENCODE_DEFAULT_PORT)
+}
+
+async function checkOpenCodeUpdate() {
+  const latest = await fetchLatestOpenCodeVersion({ force: true })
+  const currentVersion = readManagedOpenCodeVersion()
+  return buildOpenCodeUpdateInfo(currentVersion, latest.latestVersion, latest)
+}
+
+async function updateOpenCode() {
+  if (_openCodeInstallRunning) throw new Error('OpenCode 安装、更新或卸载任务正在运行')
+  recoverOpenCodeRuntimeSwap()
+  const before = await openCodeStatus(OPENCODE_DEFAULT_PORT)
+  if (!before.managedInstalled) throw new Error('在线更新仅适用于 ClawPanel 管理的 OpenCode 运行时')
+  if (before.running && !before.managed) throw new Error('当前 OpenCode 不是由 ClawPanel 启动，未执行更新')
+  const latest = await fetchLatestOpenCodeVersion({ force: true })
+  const update = buildOpenCodeUpdateInfo(before.version, latest.latestVersion, latest)
+  if (!update.updateAvailable) return { ...before, ...update, updated: false }
+
+  const restart = Boolean(before.running && before.managed)
+  const port = Number(before.port || OPENCODE_DEFAULT_PORT)
+  _openCodeInstallRunning = true
+  let updateError = null
+  try {
+    if (restart) await stopOpenCode(port)
+    await installOpenCodeVersion(update.latestVersion, update.registry)
+    activateOpenCodeStaging()
+    _openCodeUpdateCache = latest
+  } catch (error) {
+    updateError = error
+  }
+
+  let restartError = null
+  if (restart) {
+    try { await startOpenCode(port) } catch (error) { restartError = error }
+  }
+  _openCodeInstallRunning = false
+  if (updateError) {
+    throw new Error(`${updateError?.message || updateError}${restartError ? `；恢复服务失败: ${restartError?.message || restartError}` : ''}`)
+  }
+  if (restartError) throw new Error(`OpenCode 已更新，但重新启动失败: ${restartError?.message || restartError}`)
+  const status = await openCodeStatus(port)
+  if (status.version !== update.latestVersion) throw new Error(`OpenCode 更新后版本核对失败: ${status.version || '-'}，期望 ${update.latestVersion}`)
+  return { ...status, ...buildOpenCodeUpdateInfo(status.version, update.latestVersion, latest), updated: true, restarted: restart }
+}
+
+async function uninstallOpenCode() {
+  if (_openCodeInstallRunning) throw new Error('OpenCode 安装或卸载任务正在运行')
+  recoverOpenCodeRuntimeSwap()
+  const before = await openCodeStatus(OPENCODE_DEFAULT_PORT)
+  if (before.running && !before.managed) throw new Error('当前 OpenCode 不是由 ClawPanel 启动，未执行卸载')
+  const record = readOpenCodePidRecord()
+  _openCodeInstallRunning = true
+  try {
+    if (isManagedOpenCodeProcess(record)) await stopOpenCode(record.port)
+    clearOpenCodeEmbedSessions()
+    const runtime = verifiedOpenCodeRuntimeDir()
+    if (fs.existsSync(runtime)) fs.rmSync(runtime, { recursive: true, force: true })
+    if (fs.existsSync(runtime)) throw new Error('OpenCode 运行目录卸载后仍然存在')
+  } finally {
+    _openCodeInstallRunning = false
+  }
+  return { removedManaged: true, ...(await openCodeStatus(OPENCODE_DEFAULT_PORT)) }
+}
+
+function writeOpenCodePidRecord(record) {
+  writeJsonAtomic(openCodePidPath(), record)
+  try { fs.chmodSync(openCodePidPath(), 0o600) } catch {}
+}
+
+function spawnOpenCodeServer(port) {
+  fs.mkdirSync(openCodeRuntimeDir(), { recursive: true })
+  const entry = findManagedOpenCodeBinary() || findGlobalOpenCodeCommand()
+  if (!entry) throw new Error('OpenCode 未安装')
+  const password = crypto.randomBytes(32).toString('base64url')
+  const logFd = fs.openSync(openCodeLogPath(), 'a')
+  const child = spawn(entry, ['serve', '--hostname', '127.0.0.1', '--port', String(port)], {
+    detached: true,
+    cwd: openCodeWorkspaceDir(),
+    env: openCodeRuntimeEnv(password),
+    windowsHide: true,
+    stdio: ['ignore', logFd, logFd],
+  })
+  fs.closeSync(logFd)
+  child.unref()
+  _openCodeManagedChild = child
+  writeOpenCodePidRecord({
+    pid: child.pid,
+    port,
+    password,
+    startedAt: new Date().toISOString(),
+    entry,
+  })
+  return child.pid
+}
+
+async function startOpenCode(portValue = OPENCODE_DEFAULT_PORT) {
+  const port = normalizeOpenCodePort(portValue)
+  const before = await openCodeStatus(port)
+  if (before.running) return before
+  if (before.foreignPort) throw new Error(`端口 ${port} 已被其他服务占用`)
+  const existing = readOpenCodePidRecord()
+  if (isManagedOpenCodeProcess(existing)) {
+    throw new Error(`ClawPanel 管理的 OpenCode 已在端口 ${existing.port || '-'} 启动，请先停止后再切换端口`)
+  }
+  if (!before.installed) throw new Error('OpenCode 未安装，请先安装受管运行时')
+  clearOpenCodeEmbedSessions()
+  spawnOpenCodeServer(port)
+  for (let i = 0; i < 60; i += 1) {
+    await new Promise(resolve => setTimeout(resolve, 500))
+    const current = await openCodeStatus(port)
+    if (current.running) return current
+    const record = readOpenCodePidRecord()
+    if (record && !isProcessAlive(record.pid)) break
+  }
+  let tail = ''
+  try { tail = fs.readFileSync(openCodeLogPath(), 'utf8').slice(-4000).trim() } catch {}
+  throw new Error(`OpenCode 启动失败${tail ? `: ${tail}` : ''}`)
+}
+
+async function stopOpenCode(portValue = OPENCODE_DEFAULT_PORT) {
+  const port = normalizeOpenCodePort(portValue)
+  const record = readOpenCodePidRecord()
+  if (!record || !isManagedOpenCodeProcess(record)) {
+    const current = await openCodeStatus(port)
+    if (!current.running) return current
+    throw new Error('当前 OpenCode 不是由 ClawPanel 启动，未执行停止操作')
+  }
+  clearOpenCodeEmbedSessions()
+  if (isWindows) {
+    spawnSync('taskkill.exe', ['/PID', String(record.pid), '/T', '/F'], { windowsHide: true, timeout: 10000 })
+  } else {
+    try { process.kill(record.pid, 'SIGTERM') } catch {}
+  }
+  for (let i = 0; i < 20; i += 1) {
+    await new Promise(resolve => setTimeout(resolve, 250))
+    if (!isProcessAlive(record.pid)) break
+  }
+  if (!isWindows && isProcessAlive(record.pid)) {
+    try { process.kill(record.pid, 'SIGKILL') } catch {}
+  }
+  try { fs.unlinkSync(openCodePidPath()) } catch {}
+  if (_openCodeManagedChild?.pid === record.pid) _openCodeManagedChild = null
+  const current = await openCodeStatus(port)
+  if (current.running) throw new Error('OpenCode 进程停止后服务仍可达，请检查是否存在其他实例')
+  return current
+}
+
+function writeOpenCodeCredential(providerId, apiKey) {
+  ensureOpenCodeHome()
+  const target = path.join(openCodeCredentialDir(), openCodeCredentialFileName(providerId))
+  fs.writeFileSync(target, `${String(apiKey || '').trim()}\n`, { mode: 0o600 })
+  try { fs.chmodSync(target, 0o600) } catch {}
+  return target
+}
+
+function syncOpenCodeProvider(channel, apiKey, setDefault = false) {
+  if (channel?.apiKeyRef) throw new Error('该渠道使用 OpenClaw SecretRef，只能原样同步到 OpenClaw')
+  const key = String(apiKey || '').trim()
+  if (!key) throw new Error('OpenCode API Key 不能为空')
+  const current = readOpenCodeConfig()
+  const provisional = mergeOpenCodeProviderConfig(current, {
+    channel,
+    credentialPath: path.join(openCodeCredentialDir(), 'placeholder.key'),
+    setDefault: Boolean(setDefault),
+  })
+  const credentialPath = writeOpenCodeCredential(provisional.providerId, key)
+  const result = mergeOpenCodeProviderConfig(current, { channel, credentialPath, setDefault: Boolean(setDefault) })
+  writeJsonAtomic(openCodeConfigPath(), result.config, { backup: true })
+  const saved = readOpenCodeConfig()
+  const savedProvider = saved?.provider?.[result.providerId]
+  if (!savedProvider || JSON.stringify(savedProvider) !== JSON.stringify(result.config.provider[result.providerId])) {
+    throw new Error(`OpenCode Provider 写入后回读核对失败: ${result.providerId}`)
+  }
+  if (setDefault && saved.model !== `${result.providerId}/${result.defaultModel}`) {
+    throw new Error(`OpenCode 默认模型写入后回读核对失败: ${result.providerId}/${result.defaultModel}`)
+  }
+  return {
+    providerId: result.providerId,
+    model: result.defaultModel,
+    modelCount: result.modelCount,
+    verified: true,
+  }
+}
+
+function clearOpenCodeEmbedSessions() {
+  _openCodeEmbedSessions.clear()
+}
+
+function pruneOpenCodeEmbedSessions(now = Date.now()) {
+  for (const [token, session] of _openCodeEmbedSessions) {
+    if (now > session.expiresAt || now > session.maxExpiresAt) _openCodeEmbedSessions.delete(token)
+  }
+  while (_openCodeEmbedSessions.size > OPENCODE_EMBED_MAX_SESSIONS) {
+    const oldest = _openCodeEmbedSessions.keys().next().value
+    if (!oldest) break
+    _openCodeEmbedSessions.delete(oldest)
+  }
+}
+
+function resolveOpenCodeEmbedSession(token) {
+  const now = Date.now()
+  pruneOpenCodeEmbedSessions(now)
+  const session = _openCodeEmbedSessions.get(String(token || ''))
+  if (!session) return null
+  const record = readOpenCodePidRecord()
+  if (!record || record.pid !== session.pid || record.port !== session.port || !isManagedOpenCodeProcess(record)) {
+    _openCodeEmbedSessions.delete(token)
+    return null
+  }
+  session.expiresAt = Math.min(now + OPENCODE_EMBED_IDLE_TTL, session.maxExpiresAt)
+  return session
+}
+
+async function createOpenCodeEmbedSession(portValue = OPENCODE_DEFAULT_PORT) {
+  const port = normalizeOpenCodePort(portValue)
+  const status = await openCodeStatus(port)
+  const record = readOpenCodePidRecord()
+  if (!status.running || !status.managed || !record || record.port !== port) {
+    throw new Error('只有 ClawPanel 启动且正在运行的 OpenCode 才能内嵌')
+  }
+  pruneOpenCodeEmbedSessions()
+  const token = crypto.randomBytes(32).toString('base64url')
+  const now = Date.now()
+  const session = {
+    pid: record.pid,
+    port,
+    password: String(record.password || ''),
+    createdAt: now,
+    expiresAt: now + OPENCODE_EMBED_IDLE_TTL,
+    maxExpiresAt: now + OPENCODE_EMBED_MAX_TTL,
+  }
+  _openCodeEmbedSessions.set(token, session)
+  pruneOpenCodeEmbedSessions(now)
+  return { src: `${openCodeEmbedPrefix(token)}/`, expiresAt: session.expiresAt, sandboxed: true }
+}
+
+function isOpenCodeEmbedRequest(rawUrl) {
+  const pathname = String(rawUrl || '').split('?')[0]
+  return pathname === '/__opencode' || pathname.startsWith('/__opencode/')
+}
+
+function setOpenCodeEmbedResponseHeaders(res) {
+  res.setHeader('Access-Control-Allow-Origin', '*')
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', '*')
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+  res.setHeader('Referrer-Policy', 'no-referrer')
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN')
+  res.setHeader('Content-Security-Policy', "frame-ancestors 'self'")
+}
+
+function writeOpenCodeProxyError(res, status, message) {
+  if (res.headersSent || res.writableEnded) return
+  res.statusCode = status
+  setOpenCodeEmbedResponseHeaders(res)
+  res.setHeader('Cache-Control', 'no-store')
+  res.setHeader('Content-Type', 'application/json; charset=utf-8')
+  res.end(JSON.stringify({ error: message }))
+}
+
+function copyOpenCodeProxyHeaders(upstreamHeaders, res, { rewrite, prefix }) {
+  const blocked = new Set([
+    'connection', 'content-encoding', 'content-length', 'content-security-policy', 'keep-alive',
+    'proxy-authenticate', 'set-cookie', 'transfer-encoding', 'www-authenticate', 'x-frame-options',
+  ])
+  for (const [rawName, rawValue] of Object.entries(upstreamHeaders || {})) {
+    const name = rawName.toLowerCase()
+    if (blocked.has(name) || rawValue === undefined) continue
+    if (name === 'location' && typeof rawValue === 'string' && rawValue.startsWith('/')) res.setHeader(rawName, `${prefix}${rawValue}`)
+    else res.setHeader(rawName, rawValue)
+  }
+  if (!rewrite && upstreamHeaders['content-length'] !== undefined) res.setHeader('Content-Length', upstreamHeaders['content-length'])
+  setOpenCodeEmbedResponseHeaders(res)
+}
+
+function proxyOpenCodeEmbedHttp(req, res, route, session) {
+  return new Promise(resolve => {
+    const method = String(req.method || 'GET').toUpperCase()
+    let completed = false
+    const finish = () => { if (!completed) { completed = true; resolve() } }
+    const headers = openCodeUpstreamHeaders(req.headers, session.port, { password: session.password })
+    const upstream = http.request({
+      hostname: '127.0.0.1',
+      port: session.port,
+      path: route.upstreamPath,
+      method,
+      agent: _openCodeProxyAgent,
+      headers,
+    }, upstreamRes => {
+      const contentType = String(upstreamRes.headers['content-type'] || '')
+      const rewrite = shouldRewriteOpenCodeResponse(contentType)
+      if (!rewrite || method === 'HEAD') {
+        res.statusCode = upstreamRes.statusCode || 502
+        copyOpenCodeProxyHeaders(upstreamRes.headers, res, { rewrite, prefix: route.prefix })
+        upstreamRes.pipe(res)
+        upstreamRes.once('end', finish)
+        upstreamRes.once('error', error => { if (!res.writableEnded) res.destroy(error); finish() })
+        return
+      }
+      const chunks = []
+      let size = 0
+      upstreamRes.on('data', chunk => {
+        size += chunk.length
+        if (size > 32 * 1024 * 1024) upstreamRes.destroy(new Error('OpenCode 代理响应超过 32MB'))
+        else chunks.push(chunk)
+      })
+      upstreamRes.once('end', () => {
+        if (completed || res.writableEnded) return finish()
+        const body = Buffer.from(rewriteOpenCodeProxyText(Buffer.concat(chunks).toString('utf8'), route.prefix, { contentType }), 'utf8')
+        res.statusCode = upstreamRes.statusCode || 502
+        copyOpenCodeProxyHeaders(upstreamRes.headers, res, { rewrite, prefix: route.prefix })
+        res.setHeader('Content-Length', String(body.length))
+        if (contentType.includes('text/html')) res.setHeader('Cache-Control', 'no-store')
+        res.end(body)
+        finish()
+      })
+      upstreamRes.once('error', error => {
+        if (!res.headersSent) writeOpenCodeProxyError(res, 502, `OpenCode 内嵌代理不可达: ${error?.message || error}`)
+        finish()
+      })
+    })
+    upstream.once('error', error => { writeOpenCodeProxyError(res, 502, `OpenCode 内嵌代理不可达: ${error?.message || error}`); finish() })
+    req.once('aborted', () => { upstream.destroy(); finish() })
+    if (method === 'GET' || method === 'HEAD') upstream.end()
+    else req.pipe(upstream)
+  })
+}
+
+async function handleOpenCodeEmbedHttp(req, res) {
+  const route = parseOpenCodeEmbedUrl(req.url)
+  if (!route) return writeOpenCodeProxyError(res, 404, 'OpenCode 内嵌地址无效')
+  const session = resolveOpenCodeEmbedSession(route.token)
+  if (!session) return writeOpenCodeProxyError(res, 401, 'OpenCode 内嵌会话已失效，请刷新面板')
+  if (req.method === 'OPTIONS') {
+    res.statusCode = 204
+    setOpenCodeEmbedResponseHeaders(res)
+    res.end()
+    return
+  }
+  await proxyOpenCodeEmbedHttp(req, res, route, session)
+}
+
+function rejectOpenCodeEmbedUpgrade(socket, status, message) {
+  if (socket.destroyed) return
+  const body = String(message || 'OpenCode 内嵌连接失败')
+  socket.end(`HTTP/1.1 ${status} Error\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`)
+}
+
+export function _handleOpenCodeUpgrade(req, socket, head) {
+  if (!isOpenCodeEmbedRequest(req.url)) return false
+  const route = parseOpenCodeEmbedUrl(req.url)
+  if (!route) { rejectOpenCodeEmbedUpgrade(socket, 404, 'OpenCode 内嵌地址无效'); return true }
+  const session = resolveOpenCodeEmbedSession(route.token)
+  if (!session) { rejectOpenCodeEmbedUpgrade(socket, 401, 'OpenCode 内嵌会话已失效'); return true }
+  const target = net.createConnection(session.port, '127.0.0.1', () => {
+    const headers = openCodeUpstreamHeaders(req.headers, session.port, { password: session.password, websocket: true })
+    const requestLine = `${req.method || 'GET'} ${route.upstreamPath} HTTP/${req.httpVersion || '1.1'}\r\n`
+    const headerLines = Object.entries(headers).flatMap(([name, value]) => Array.isArray(value) ? value.map(item => `${name}: ${item}`) : [`${name}: ${value}`]).join('\r\n')
+    target.write(`${requestLine}${headerLines}\r\n\r\n`)
+    if (head?.length) target.write(head)
+    socket.pipe(target)
+    target.pipe(socket)
+  })
+  target.once('error', () => { if (!socket.destroyed) rejectOpenCodeEmbedUpgrade(socket, 502, 'OpenCode WebSocket 不可达') })
+  socket.once('error', () => target.destroy())
+  return true
 }
 
 const handlers = {
@@ -14824,6 +15577,49 @@ const handlers = {
       setDefault: Boolean(setDefault),
       port,
     })
+  },
+
+  // OpenCode：受管二进制、独立配置和安全内嵌工作台
+  opencode_status({ port = OPENCODE_DEFAULT_PORT } = {}) {
+    return openCodeStatus(port)
+  },
+
+  opencode_install() {
+    return installOpenCode()
+  },
+
+  opencode_check_update() {
+    return checkOpenCodeUpdate()
+  },
+
+  opencode_update() {
+    return updateOpenCode()
+  },
+
+  opencode_uninstall() {
+    return uninstallOpenCode()
+  },
+
+  opencode_embed_session({ port = OPENCODE_DEFAULT_PORT } = {}) {
+    return createOpenCodeEmbedSession(port)
+  },
+
+  opencode_start({ port = OPENCODE_DEFAULT_PORT } = {}) {
+    return startOpenCode(port)
+  },
+
+  opencode_stop({ port = OPENCODE_DEFAULT_PORT } = {}) {
+    return stopOpenCode(port)
+  },
+
+  opencode_sync_provider({ channelId, setDefault = false } = {}) {
+    const channel = readModelChannelsPrivate().channels.find(item => item.id === String(channelId || '').trim())
+    if (!channel) throw new Error(`模型渠道不存在: ${channelId}`)
+    return syncOpenCodeProvider(
+      channel,
+      resolveModelApiKey(String(channel.apiKey || '')),
+      Boolean(setDefault),
+    )
   },
 
   // 云端媒体生成
@@ -18974,6 +19770,10 @@ async function _handleHermesAgentRunStream(req, res, args = {}) {
 
 // API 中间件（dev server 和 preview server 共用）
 async function _apiMiddleware(req, res, next) {
+  if (isOpenCodeEmbedRequest(req.url)) {
+    await handleOpenCodeEmbedHttp(req, res)
+    return
+  }
   if (isDshEmbedRequest(req.url)) {
     await handleDshEmbedHttp(req, res)
     return
@@ -19206,6 +20006,7 @@ export function devApiPlugin() {
     if (!server?.httpServer || server.httpServer.__clawpanelDshUpgradeAttached) return
     server.httpServer.__clawpanelDshUpgradeAttached = true
     server.httpServer.on('upgrade', (req, socket, head) => {
+      if (_handleOpenCodeUpgrade(req, socket, head)) return
       _handleDshUpgrade(req, socket, head)
     })
   }

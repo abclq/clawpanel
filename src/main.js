@@ -26,6 +26,7 @@ import { initSiteMessageCenter, refreshSiteMessageCenter } from './components/si
 import openclawEngine from './engines/openclaw/index.js'
 import hermesEngine from './engines/hermes/index.js'
 import deepseekHarnessEngine from './engines/deepseek-harness/index.js'
+import openCodeEngine from './engines/opencode/index.js'
 import xintianEngine from './engines/xintian/index.js'
 
 // 样式
@@ -633,6 +634,7 @@ async function boot() {
   registerEngine(openclawEngine)
   registerEngine(hermesEngine)
   registerEngine(deepseekHarnessEngine)
+  registerEngine(openCodeEngine)
   registerEngine(xintianEngine)
   registerRoute('/engine-select', () => import('./pages/engine-select.js'))
   registerRoute('/media', () => import('./pages/media.js'))

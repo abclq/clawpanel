@@ -28,6 +28,7 @@ pub mod media;
 pub mod memory;
 pub mod messaging;
 pub mod model_channels;
+pub mod opencode;
 pub mod pairing;
 pub mod portable;
 pub mod service;

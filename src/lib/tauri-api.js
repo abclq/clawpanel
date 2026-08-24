@@ -339,6 +339,20 @@ export const api = {
     return invoke('dsh_sync_provider', { channelId, setDefault, port })
   },
 
+  // OpenCode（Web/Tauri 双运行时同名命令）
+  openCodeStatus: (port = 4096) => cachedInvoke('opencode_status', { port }, 2000),
+  openCodeInstall: () => { invalidate('opencode_status'); return invoke('opencode_install') },
+  openCodeCheckUpdate: () => invoke('opencode_check_update'),
+  openCodeUpdate: () => { invalidate('opencode_status'); return invoke('opencode_update') },
+  openCodeUninstall: () => { invalidate('opencode_status'); return invoke('opencode_uninstall') },
+  openCodeEmbedSession: (port = 4096) => invoke('opencode_embed_session', { port }),
+  openCodeStart: (port = 4096) => { invalidate('opencode_status'); return invoke('opencode_start', { port }) },
+  openCodeStop: (port = 4096) => { invalidate('opencode_status'); return invoke('opencode_stop', { port }) },
+  openCodeSyncProvider: ({ channelId, setDefault = false }) => {
+    invalidate('opencode_status')
+    return invoke('opencode_sync_provider', { channelId, setDefault })
+  },
+
   // Agent 管理
   listAgents: () => cachedInvoke('list_agents'),
   getAgentDetail: (id) => cachedInvoke('get_agent_detail', { id }, 5000),

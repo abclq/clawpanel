@@ -16,7 +16,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { homedir } from 'os'
 import net from 'net'
-import { _initApi, _apiMiddleware, _handleDshUpgrade } from './dev-api.js'
+import { _initApi, _apiMiddleware, _handleDshUpgrade, _handleOpenCodeUpgrade } from './dev-api.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DIST_DIR = path.resolve(__dirname, '..', 'dist')
@@ -160,6 +160,7 @@ async function main() {
   } catch {}
 
   server.on('upgrade', (req, socket, head) => {
+    if (_handleOpenCodeUpgrade(req, socket, head)) return
     if (_handleDshUpgrade(req, socket, head)) return
     if (!req.url?.startsWith('/ws')) {
       socket.destroy()

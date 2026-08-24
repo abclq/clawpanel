@@ -9,12 +9,14 @@ import {
   channelProviderKey,
   hermesSyncSupported,
   dshSyncSupported,
+  openCodeSyncSupported,
   assistantSyncSupported,
   getDshPort,
   resolveHermesTarget,
   syncChannelToOpenclaw,
   syncChannelToHermes,
   syncChannelToDsh,
+  syncChannelToOpenCode,
   syncChannelToAssistant,
   importChannelsFromOpenclaw,
 } from '../lib/model-channels.js'
@@ -48,6 +50,7 @@ function renderCompatHint(apiType) {
     { label: t('modelChannels.targetOpenclaw'), ok: true, hint: '' },
     { label: t('modelChannels.targetHermes'), ok: hermesSyncSupported(fake), hint: t('modelChannels.syncHermesUnsupported') },
     { label: t('modelChannels.targetDsh'), ok: dshSyncSupported(fake), hint: t('modelChannels.syncDshUnsupported') },
+    { label: t('modelChannels.targetOpenCode'), ok: openCodeSyncSupported(fake), hint: t('modelChannels.syncOpenCodeUnsupported') },
     { label: t('modelChannels.targetAssistant'), ok: assistantSyncSupported(fake), hint: t('modelChannels.syncAssistantUnsupported') },
   ]
   const parts = targets.map(item => item.ok
@@ -213,6 +216,7 @@ function renderChannelCard(state, channel) {
         ${renderSyncLine(state, channel, 'openclaw', t('modelChannels.targetOpenclaw'), true, '', t('modelChannels.syncOpenclaw'))}
         ${renderSyncLine(state, channel, 'hermes', t('modelChannels.targetHermes'), hermesSyncSupported(channel), t('modelChannels.syncHermesUnsupported'), t('modelChannels.syncHermes'))}
         ${renderSyncLine(state, channel, 'dsh', t('modelChannels.targetDsh'), dshSyncSupported(channel), t('modelChannels.syncDshUnsupported'), t('modelChannels.syncDsh'))}
+        ${renderSyncLine(state, channel, 'opencode', t('modelChannels.targetOpenCode'), openCodeSyncSupported(channel), t('modelChannels.syncOpenCodeUnsupported'), t('modelChannels.syncOpenCode'))}
         ${renderSyncLine(state, channel, 'assistant', t('modelChannels.targetAssistant'), assistantSyncSupported(channel), t('modelChannels.syncAssistantUnsupported'), t('modelChannels.syncAssistant'))}
       </div>
       <div class="mch-actions">
@@ -472,7 +476,7 @@ async function deleteChannel(page, state, channelId) {
   const ok = await showConfirm(t('modelChannels.deleteConfirm', { name: channel.name }))
   if (!ok) return
   state.doc = { ...state.doc, channels: (state.doc.channels || []).filter(c => c.id !== channelId) }
-  for (const target of ['openclaw', 'hermes', 'dsh', 'assistant']) {
+  for (const target of ['openclaw', 'hermes', 'dsh', 'opencode', 'assistant']) {
     if (state.doc.syncState?.[target]) delete state.doc.syncState[target][channelId]
   }
   await persistDoc(state)
@@ -548,6 +552,18 @@ async function syncChannel(page, state, channelId, target) {
       recordSync(state, target, channel, { providerId: result.providerId, verified: result.verified })
       await persistDoc(state)
       toast(t('modelChannels.syncDone', { target: t('modelChannels.targetDsh') }), 'success')
+    } else if (target === 'opencode') {
+      if (!openCodeSyncSupported(channel)) { toast(t('modelChannels.syncOpenCodeUnsupported'), 'warning'); return }
+      const ok = await showConfirm(t('modelChannels.syncOpenCodeConfirm', { count: (channel.models || []).length }), { variant: 'primary' })
+      if (!ok) return
+      let setDefault = false
+      if (channel.defaultModel) {
+        setDefault = await showConfirm(t('modelChannels.syncSetDefaultAsk', { model: channel.defaultModel }), { variant: 'primary' })
+      }
+      const result = await syncChannelToOpenCode(channel, { setDefault })
+      recordSync(state, target, channel, { providerId: result.providerId, verified: result.verified })
+      await persistDoc(state)
+      toast(t('modelChannels.syncDone', { target: t('modelChannels.targetOpenCode') }), 'success')
     } else if (target === 'assistant') {
       const model = channel.defaultModel || channel.models?.[0]?.id || ''
       const ok = await showConfirm(t('modelChannels.syncAssistantConfirm', { model: model || '-' }), { variant: 'primary' })
@@ -562,6 +578,7 @@ async function syncChannel(page, state, channelId, target) {
   } catch (error) {
     if (error?.message === 'unsupported') toast(t('modelChannels.syncHermesUnsupported'), 'warning')
     else if (error?.message === 'unsupported-dsh') toast(t('modelChannels.syncDshUnsupported'), 'warning')
+    else if (error?.message === 'unsupported-opencode') toast(t('modelChannels.syncOpenCodeUnsupported'), 'warning')
     else if (error?.message === 'no-key') toast(t('modelChannels.noKeyForSync'), 'warning')
     else throw error
   } finally {
