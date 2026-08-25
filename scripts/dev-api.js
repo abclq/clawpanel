@@ -69,17 +69,44 @@ export function probeTcpPort(port, host = '127.0.0.1', timeoutMs = 3000) {
   })
 }
 
+/** 从指定偏移读取文件末尾，限制返回大小，供启动失败日志增量诊断复用。 */
+export function readFileExcerptSince(filePath, offset = 0, maxBytes = 8192) {
+  try {
+    const size = fs.statSync(filePath).size
+    if (!Number.isFinite(size) || size <= 0) return ''
+    const requestedOffset = Math.max(0, Number(offset) || 0)
+    const safeOffset = requestedOffset <= size ? requestedOffset : 0
+    const start = Math.max(safeOffset, size - Math.max(1, Number(maxBytes) || 8192))
+    const length = size - start
+    if (length <= 0) return ''
+    const fd = fs.openSync(filePath, 'r')
+    try {
+      const buffer = Buffer.alloc(length)
+      const bytesRead = fs.readSync(fd, buffer, 0, length, start)
+      return buffer.subarray(0, bytesRead).toString('utf8').trim()
+    } finally {
+      fs.closeSync(fd)
+    }
+  } catch {
+    return ''
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Hermes Agent — 路径 / 工具函数
 // ---------------------------------------------------------------------------
 const HERMES_HOME = path.join(homedir(), '.hermes')
 const HERMES_DEFAULT_PORT = 8642
-const HERMES_STABLE_VERSION = '0.18.2'
-const HERMES_STABLE_TAG = 'v2026.7.7.2'
+const HERMES_STABLE_VERSION = '0.20.5'
+const HERMES_STABLE_TAG = 'v2026.8.19'
+const HERMES_STABLE_COMMIT = 'fcbd1076a93841fa88855acce810e342a5b78101'
 const HERMES_REPO_URL = 'https://github.com/NousResearch/hermes-agent.git'
 const HERMES_GIT_URL = `git+${HERMES_REPO_URL}@${HERMES_STABLE_TAG}`
-const HERMES_MIN_UV_VERSION = '0.11.24'
-const HERMES_RUNTIME_EXTRA_DEPS = ['croniter', 'httpx', 'openai', 'aiohttp', 'websockets']
+const HERMES_INSTALLER_BASE_URL = `https://raw.githubusercontent.com/NousResearch/hermes-agent/${HERMES_STABLE_COMMIT}/scripts`
+const HERMES_INSTALLER_SHA256 = {
+  windows: '74225bf244253bfa5bc2b1d16fa3bb8618e199a53d1c0344b37ab9930696d3ba',
+  posix: '0582d9b1562efcb6e0ac62f4451021667830b830a72ce7d91eaea9fee8b6c09b',
+}
 const HERMES_DASHBOARD_FALLBACK_INDEX_HTML = `<!doctype html>
 <html lang="en">
   <head>
@@ -101,19 +128,6 @@ function hermesProvider(id, name, authType, baseUrl, baseUrlEnvVar, apiKeyEnvVar
   return { id, name, authType, baseUrl, baseUrlEnvVar, apiKeyEnvVars, transport, modelsProbe, models, isAggregator, cliAuthHint }
 }
 
-function hermesPackageSpec(extras = []) {
-  const normalized = Array.isArray(extras)
-    ? extras.map(v => String(v || '').trim()).filter(Boolean)
-    : []
-  return normalized.length
-    ? `hermes-agent[${normalized.join(',')}] @ ${HERMES_GIT_URL}`
-    : `hermes-agent @ ${HERMES_GIT_URL}`
-}
-
-function hermesRuntimeExtraArgs() {
-  return HERMES_RUNTIME_EXTRA_DEPS.flatMap(dep => ['--with', dep])
-}
-
 export function ensureHermesDashboardFallbackDist(home = hermesHome()) {
   const dist = path.join(home, 'clawpanel-dashboard-web-dist')
   fs.mkdirSync(path.join(dist, 'assets'), { recursive: true })
@@ -125,11 +139,13 @@ export function ensureHermesDashboardFallbackDist(home = hermesHome()) {
 }
 
 const HERMES_PROVIDER_REGISTRY = [
-  hermesProvider('anthropic', 'Anthropic', 'api_key', 'https://api.anthropic.com', '', ['ANTHROPIC_API_KEY', 'ANTHROPIC_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN'], 'anthropic_messages', 'anthropic', ['claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-opus-4-20250514', 'claude-sonnet-4-20250514', 'claude-haiku-4-5-20251001']),
-  hermesProvider('gemini', 'Google AI Studio', 'api_key', 'https://generativelanguage.googleapis.com/v1beta/openai', 'GEMINI_BASE_URL', ['GOOGLE_API_KEY', 'GEMINI_API_KEY'], 'openai_chat', 'openai', ['gemini-3.1-pro-preview', 'gemini-3-flash-preview', 'gemini-3.1-flash-lite-preview', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemma-4-31b-it', 'gemma-4-26b-it']),
-  hermesProvider('deepseek', 'DeepSeek', 'api_key', 'https://api.deepseek.com', 'DEEPSEEK_BASE_URL', ['DEEPSEEK_API_KEY'], 'openai_chat', 'openai', ['deepseek-chat', 'deepseek-reasoner']),
+  hermesProvider('anthropic', 'Anthropic', 'api_key', 'https://api.anthropic.com', 'ANTHROPIC_BASE_URL', ['ANTHROPIC_API_KEY', 'ANTHROPIC_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN'], 'anthropic_messages', 'anthropic', ['claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-opus-4-20250514', 'claude-sonnet-4-20250514', 'claude-haiku-4-5-20251001']),
+  hermesProvider('gemini', 'Google AI Studio', 'api_key', 'https://generativelanguage.googleapis.com/v1beta', 'GEMINI_BASE_URL', ['GOOGLE_API_KEY', 'GEMINI_API_KEY'], 'google_gemini', 'google', ['gemini-3.1-pro-preview', 'gemini-3-flash-preview', 'gemini-3.1-flash-lite-preview', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemma-4-31b-it', 'gemma-4-26b-it']),
+  hermesProvider('deepseek', 'DeepSeek', 'api_key', 'https://api.deepseek.com/v1', 'DEEPSEEK_BASE_URL', ['DEEPSEEK_API_KEY'], 'openai_chat', 'openai', ['deepseek-v4-pro', 'deepseek-v4-flash']),
+  hermesProvider('openai-api', 'OpenAI API', 'api_key', 'https://api.openai.com/v1', 'OPENAI_BASE_URL', ['OPENAI_API_KEY'], 'openai_chat', 'openai', ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5-mini', 'gpt-5.3-codex', 'gpt-4.1', 'gpt-4o', 'gpt-4o-mini']),
+  hermesProvider('fireworks', 'Fireworks AI', 'api_key', 'https://api.fireworks.ai/inference/v1', '', ['FIREWORKS_API_KEY'], 'openai_chat', 'openai', ['accounts/fireworks/models/kimi-k2p6', 'accounts/fireworks/models/glm-5p2', 'accounts/fireworks/models/kimi-k2p7-code']),
   hermesProvider('xai', 'xAI', 'api_key', 'https://api.x.ai/v1', 'XAI_BASE_URL', ['XAI_API_KEY'], 'openai_chat', 'openai', ['grok-4.20-reasoning', 'grok-4-1-fast-reasoning']),
-  hermesProvider('minimax', 'MiniMax (International)', 'api_key', 'https://api.minimax.io/anthropic/v1', 'MINIMAX_BASE_URL', ['MINIMAX_API_KEY'], 'anthropic_messages', 'anthropic', ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed']),
+  hermesProvider('minimax', 'MiniMax (International)', 'api_key', 'https://api.minimax.io/anthropic', 'MINIMAX_BASE_URL', ['MINIMAX_API_KEY'], 'anthropic_messages', 'anthropic', ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.5', 'MiniMax-M2.1', 'MiniMax-M2']),
   hermesProvider('huggingface', 'Hugging Face', 'api_key', 'https://router.huggingface.co/v1', 'HF_BASE_URL', ['HF_TOKEN'], 'openai_chat', 'openai', ['Qwen/Qwen3.5-397B-A17B', 'Qwen/Qwen3.5-35B-A3B', 'deepseek-ai/DeepSeek-V3.2', 'moonshotai/Kimi-K2.5', 'MiniMaxAI/MiniMax-M2.5', 'zai-org/GLM-5', 'XiaomiMiMo/MiMo-V2-Flash', 'moonshotai/Kimi-K2-Thinking'], true),
   hermesProvider('arcee', 'Arcee AI', 'api_key', 'https://api.arcee.ai/api/v1', 'ARCEE_BASE_URL', ['ARCEEAI_API_KEY'], 'openai_chat', 'openai', []),
   hermesProvider('azure-foundry', 'Azure Foundry', 'api_key', '', 'AZURE_FOUNDRY_BASE_URL', ['AZURE_FOUNDRY_API_KEY'], 'openai_chat', 'openai', [], true),
@@ -138,15 +154,16 @@ const HERMES_PROVIDER_REGISTRY = [
   hermesProvider('lmstudio', 'LM Studio', 'api_key', 'http://127.0.0.1:1234/v1', 'LM_BASE_URL', ['LM_API_KEY'], 'openai_chat', 'openai', []),
   hermesProvider('nvidia', 'NVIDIA NIM', 'api_key', 'https://integrate.api.nvidia.com/v1', 'NVIDIA_BASE_URL', ['NVIDIA_API_KEY'], 'openai_chat', 'openai', []),
   hermesProvider('ollama-cloud', 'Ollama Cloud', 'api_key', 'https://ollama.com/v1', 'OLLAMA_BASE_URL', ['OLLAMA_API_KEY'], 'openai_chat', 'openai', []),
-  hermesProvider('copilot', 'GitHub Copilot (PAT)', 'api_key', 'https://api.githubcopilot.com', '', ['COPILOT_GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'], 'openai_chat', 'none', ['gpt-4o', 'gpt-4.1', 'claude-3.5-sonnet', 'claude-3.7-sonnet', 'claude-sonnet-4-5', 'o1', 'o1-mini', 'gemini-2.5-pro']),
+  hermesProvider('copilot', 'GitHub Copilot (PAT)', 'api_key', 'https://api.githubcopilot.com', 'COPILOT_API_BASE_URL', ['COPILOT_GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'], 'openai_chat', 'none', ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5-mini', 'gpt-5.3-codex', 'gpt-5.2-codex', 'gpt-4.1', 'gpt-4o', 'gpt-4o-mini', 'claude-sonnet-4.6', 'claude-sonnet-5', 'claude-haiku-4.5', 'gemini-3.1-pro-preview', 'gemini-3-flash-preview']),
   hermesProvider('zai', 'Z.AI / GLM', 'api_key', 'https://api.z.ai/api/paas/v4', 'GLM_BASE_URL', ['GLM_API_KEY', 'ZAI_API_KEY', 'Z_AI_API_KEY'], 'openai_chat', 'openai', ['glm-5.2', 'glm-5.1', 'glm-5', 'glm-5v-turbo', 'glm-5-turbo', 'glm-4.7', 'glm-4.5', 'glm-4.5-flash']),
-  hermesProvider('kimi-coding', 'Kimi / Moonshot', 'api_key', 'https://api.moonshot.ai/v1', 'KIMI_BASE_URL', ['KIMI_API_KEY'], 'openai_chat', 'openai', ['kimi-k2.7-code', 'kimi-for-coding', 'kimi-k2.6', 'kimi-k2.5', 'kimi-k2-thinking', 'kimi-k2-turbo-preview', 'kimi-k2-0905-preview']),
+  hermesProvider('kimi-coding', 'Kimi / Moonshot', 'api_key', 'https://api.moonshot.ai/v1', 'KIMI_BASE_URL', ['KIMI_API_KEY', 'KIMI_CODING_API_KEY'], 'openai_chat', 'openai', ['kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6', 'kimi-k2.5', 'kimi-for-coding', 'kimi-for-coding-highspeed', 'kimi-k2-thinking', 'kimi-k2-thinking-turbo', 'kimi-k2-turbo-preview', 'kimi-k2-0905-preview']),
   hermesProvider('kimi-coding-cn', 'Kimi / Moonshot (China)', 'api_key', 'https://api.moonshot.cn/v1', '', ['KIMI_CN_API_KEY'], 'openai_chat', 'openai', ['kimi-k2.7-code', 'kimi-for-coding', 'kimi-k2.6', 'kimi-k2.5', 'kimi-k2-thinking', 'kimi-k2-turbo-preview']),
   hermesProvider('alibaba', 'Qwen Cloud', 'api_key', 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', 'DASHSCOPE_BASE_URL', ['DASHSCOPE_API_KEY'], 'openai_chat', 'openai', ['qwen3.5-plus', 'qwen3-coder-plus', 'qwen3-coder-next', 'glm-5.2', 'glm-5', 'glm-4.7', 'kimi-k2.7-code', 'kimi-k2.5', 'MiniMax-M2.5']),
   hermesProvider('alibaba-coding-plan', 'Alibaba Cloud (Coding Plan)', 'api_key', 'https://coding-intl.dashscope.aliyuncs.com/v1', 'ALIBABA_CODING_PLAN_BASE_URL', ['ALIBABA_CODING_PLAN_API_KEY', 'DASHSCOPE_API_KEY'], 'openai_chat', 'openai', ['qwen3-coder-plus', 'qwen3-coder-next', 'qwen3.5-plus', 'qwen3.5-coder']),
-  hermesProvider('minimax-cn', 'MiniMax (China)', 'api_key', 'https://api.minimaxi.com/v1', 'MINIMAX_CN_BASE_URL', ['MINIMAX_CN_API_KEY'], 'anthropic_messages', 'anthropic', ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed']),
+  hermesProvider('minimax-cn', 'MiniMax (China)', 'api_key', 'https://api.minimaxi.com/anthropic', 'MINIMAX_CN_BASE_URL', ['MINIMAX_CN_API_KEY'], 'anthropic_messages', 'anthropic', ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.5', 'MiniMax-M2.1', 'MiniMax-M2']),
   hermesProvider('xiaomi', 'Xiaomi MiMo', 'api_key', 'https://api.xiaomimimo.com/v1', 'XIAOMI_BASE_URL', ['XIAOMI_API_KEY'], 'openai_chat', 'openai', ['mimo-v2-pro', 'mimo-v2-omni', 'mimo-v2-flash']),
-  hermesProvider('stepfun', 'StepFun', 'api_key', 'https://api.stepfun.ai/step_plan/v1', '', ['STEPFUN_API_KEY'], 'openai_chat', 'openai', ['step-3.5-flash']),
+  hermesProvider('stepfun', 'StepFun', 'api_key', 'https://api.stepfun.ai/step_plan/v1', 'STEPFUN_BASE_URL', ['STEPFUN_API_KEY'], 'openai_chat', 'openai', ['step-3.5-flash', 'step-3.5-flash-2603']),
+  hermesProvider('tencent-tokenhub', 'Tencent TokenHub', 'api_key', 'https://tokenhub.tencentmaas.com/v1', 'TOKENHUB_BASE_URL', ['TOKENHUB_API_KEY'], 'openai_chat', 'openai', ['hy3-preview']),
   hermesProvider('bedrock', 'AWS Bedrock', 'aws_sdk', 'https://bedrock-runtime.us-east-1.amazonaws.com', 'BEDROCK_BASE_URL', [], 'anthropic_messages', 'none', []),
   hermesProvider('vertex', 'Google Vertex AI', 'vertex', 'https://aiplatform.googleapis.com', '', [], 'openai_chat', 'none', ['google/gemini-3-pro-preview', 'google/gemini-3-flash-preview', 'google/gemini-2.5-pro', 'google/gemini-2.5-flash'], false, '使用 Google Cloud Application Default Credentials 或服务账号 JSON'),
   hermesProvider('openrouter', 'OpenRouter', 'api_key', 'https://openrouter.ai/api/v1', 'OPENAI_BASE_URL', ['OPENROUTER_API_KEY'], 'openai_chat', 'openai', [], true),
@@ -156,6 +173,7 @@ const HERMES_PROVIDER_REGISTRY = [
   hermesProvider('kilocode', 'Kilo Code', 'api_key', 'https://api.kilo.ai/api/gateway', 'KILOCODE_BASE_URL', ['KILOCODE_API_KEY'], 'openai_chat', 'openai', ['anthropic/claude-opus-4.6', 'anthropic/claude-sonnet-4.6', 'openai/gpt-5.4', 'google/gemini-3-pro-preview', 'google/gemini-3-flash-preview'], true),
   hermesProvider('nous', 'Nous Portal', 'oauth_device_code', 'https://inference-api.nousresearch.com/v1', '', [], 'openai_chat', 'none', ['moonshotai/kimi-k2.6', 'moonshotai/kimi-k2.7-code', 'anthropic/claude-opus-4.7', 'anthropic/claude-sonnet-4.6', 'openai/gpt-5.4', 'google/gemini-3-pro-preview', 'qwen/qwen3.5-plus-02-15', 'minimax/minimax-m2.7', 'z-ai/glm-5.1', 'x-ai/grok-4.20-beta'], true, 'hermes auth login nous'),
   hermesProvider('openai-codex', 'OpenAI Codex', 'oauth_external', 'https://chatgpt.com/backend-api/codex', '', [], 'codex_responses', 'none', ['gpt-5.5', 'gpt-5.4-mini', 'gpt-5.4', 'gpt-5.3-codex', 'gpt-5.2-codex', 'gpt-5.1-codex-max', 'gpt-5.1-codex-mini'], false, 'hermes auth login openai-codex'),
+  hermesProvider('xai-oauth', 'xAI Grok OAuth', 'oauth_external', 'https://api.x.ai/v1', '', [], 'codex_responses', 'none', ['grok-4.20-reasoning', 'grok-4-1-fast-reasoning'], false, 'hermes auth login xai-oauth'),
   hermesProvider('qwen-oauth', 'Qwen OAuth', 'oauth_external', 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', '', [], 'openai_chat', 'none', ['qwen3.5-plus', 'qwen3-coder-plus', 'qwen3-coder-next'], false, 'hermes auth login qwen-oauth'),
   hermesProvider('minimax-oauth', 'MiniMax (OAuth)', 'oauth_minimax', 'https://api.minimax.io/anthropic', '', [], 'anthropic_messages', 'none', ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed'], false, 'hermes auth login minimax-oauth'),
   hermesProvider('copilot-acp', 'GitHub Copilot ACP', 'external_process', 'http://127.0.0.1:0', 'COPILOT_ACP_BASE_URL', [], 'openai_chat', 'none', ['gpt-4o', 'gpt-4.1', 'claude-3.5-sonnet', 'claude-3.7-sonnet'], false, 'hermes auth login copilot-acp'),
@@ -166,6 +184,14 @@ function hermesHome() {
   return process.env.HERMES_HOME || HERMES_HOME
 }
 
+function hermesSourceDir(home = hermesHome()) {
+  return path.join(home, 'hermes-agent')
+}
+
+function hermesSourceVenvBinDir(home = hermesHome()) {
+  return path.join(hermesSourceDir(home), 'venv', isWindows ? 'Scripts' : 'bin')
+}
+
 const HERMES_PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 
 function stripAnsi(text) {
@@ -174,7 +200,7 @@ function stripAnsi(text) {
 
 /**
  * 兼容 Hermes 新旧版本的 profile list 输出。
- * 新版只输出 profile 名称并用 * 标记当前项，旧版还会输出模型和 Gateway 状态。
+ * 0.20.5 会把显示名渲染为 `显示名 (canonical-id)`，同时增加 Distribution 列。
  */
 export function parseHermesProfileListOutput(output = '') {
   const profiles = []
@@ -190,18 +216,32 @@ export function parseHermesProfileListOutput(output = '') {
     if (isActive) row = row.slice(1).trim()
 
     const parts = row.split(/\s+/)
-    const name = parts[0]
-    if (!name || !HERMES_PROFILE_NAME_RE.test(name)) continue
-
     const gatewayIdx = parts.findIndex(part => part === 'running' || part === 'stopped')
     const hasLegacyMeta = gatewayIdx >= 1
-    const model = gatewayIdx > 1 ? parts.slice(1, gatewayIdx).join(' ') : ''
+    const prefixParts = hasLegacyMeta ? parts.slice(0, gatewayIdx) : parts
+    let name = prefixParts[0] || ''
+    let displayName = ''
+    let model = hasLegacyMeta && prefixParts.length > 1 ? prefixParts.slice(1).join(' ') : ''
+
+    if (hasLegacyMeta) {
+      for (let i = prefixParts.length - 2; i >= 1; i -= 1) {
+        const match = /^\(([a-z0-9][a-z0-9_-]{0,63})\)$/.exec(prefixParts[i])
+        if (!match) continue
+        name = match[1]
+        displayName = prefixParts.slice(0, i).join(' ')
+        model = prefixParts.slice(i + 1).join(' ')
+        break
+      }
+    }
+    if (!name || !HERMES_PROFILE_NAME_RE.test(name)) continue
+
     const alias = hasLegacyMeta ? (parts[gatewayIdx + 1] || '') : ''
     const profile = byName.get(name)
 
     if (isActive) active = name
     if (profile) {
       profile.active ||= isActive
+      if (!profile.displayName && displayName && displayName !== name) profile.displayName = displayName
       if (!profile.model && model && model !== '—') profile.model = model
       if (!profile.alias && alias && alias !== '—') profile.alias = alias
       profile.gatewayRunning ||= hasLegacyMeta && parts[gatewayIdx] === 'running'
@@ -210,6 +250,7 @@ export function parseHermesProfileListOutput(output = '') {
 
     const next = {
       name,
+      ...(displayName && displayName !== name ? { displayName } : {}),
       active: isActive,
       model: model === '—' ? '' : model,
       gatewayRunning: hasLegacyMeta && parts[gatewayIdx] === 'running',
@@ -269,7 +310,9 @@ function uvBinDir() {
 function hermesEnhancedPath() {
   const current = process.env.PATH || ''
   const home = homedir()
-  const extra = [uvBinDir()]
+  // 0.20.5 起上游不再支持从 Git 构建 wheel/sdist，ClawPanel 改用官方
+  // source installer。把源码 venv 放在旧 uv-tool 路径前，升级迁移后立刻生效。
+  const extra = [hermesSourceVenvBinDir(), path.join(hermesHome(), 'bin'), uvBinDir()]
   if (isWindows) {
     const appdata = process.env.APPDATA || ''
     if (appdata) extra.push(path.join(appdata, 'uv', 'tools', 'bin'))
@@ -347,6 +390,11 @@ function runHermesSilent(program, args) {
   }
 }
 
+function runHermesVersionSilent() {
+  const legacy = runHermesSilent('hermes', ['version'])
+  return legacy.ok ? legacy : runHermesSilent('hermes', ['--version'])
+}
+
 function sanitizeHermesInstallOutput(text = '') {
   return String(text || '')
     .replaceAll(HERMES_GIT_URL, 'hermes-agent')
@@ -357,34 +405,6 @@ function sanitizeHermesInstallOutput(text = '') {
     .replaceAll('github.com/NousResearch/hermes-agent.git', 'hermes-agent')
     .replaceAll('github.com/NousResearch/hermes-agent', 'hermes-agent')
     .replaceAll('NousResearch/hermes-agent', 'hermes-agent')
-}
-
-// 读取 panel config (~/.openclaw/clawpanel.json) 中的 gitMirror 前缀。
-// 为空/未设置 → 返回 '' 不启用镜像。
-function gitMirrorPrefix() {
-  try {
-    const cfgPath = path.join(DEFAULT_OPENCLAW_DIR, 'clawpanel.json')
-    if (!fs.existsSync(cfgPath)) return ''
-    const raw = fs.readFileSync(cfgPath, 'utf8')
-    const cfg = JSON.parse(raw)
-    const v = String(cfg?.gitMirror || '').trim()
-    return v
-  } catch {
-    return ''
-  }
-}
-
-// 返回一个 env 添加包，含 GIT_CONFIG_COUNT/KEY/VALUE 临时重写。
-// 未配置镜像 → 返回空对象。
-function gitMirrorEnv() {
-  let mirror = gitMirrorPrefix()
-  if (!mirror) return {}
-  if (!mirror.endsWith('/')) mirror += '/'
-  return {
-    GIT_CONFIG_COUNT: '1',
-    GIT_CONFIG_KEY_0: `url.${mirror}https://github.com/.insteadOf`,
-    GIT_CONFIG_VALUE_0: 'https://github.com/',
-  }
 }
 
 export function buildHermesInstallEnv(config = {}, baseEnv = process.env) {
@@ -400,11 +420,191 @@ export function buildHermesInstallEnv(config = {}, baseEnv = process.env) {
   let gitMirror = String(config?.gitMirror || '').trim()
   if (gitMirror) {
     if (!gitMirror.endsWith('/')) gitMirror += '/'
-    env.GIT_CONFIG_COUNT = '1'
+    env.GIT_CONFIG_COUNT = '2'
     env.GIT_CONFIG_KEY_0 = `url.${gitMirror}https://github.com/.insteadOf`
     env.GIT_CONFIG_VALUE_0 = 'https://github.com/'
+    env.GIT_CONFIG_KEY_1 = `url.${gitMirror}https://github.com/.insteadOf`
+    env.GIT_CONFIG_VALUE_1 = 'git@github.com:'
+  } else {
+    // 官方安装器会优先尝试 SSH；服务端常未配置 GitHub SSH key。进程级
+    // insteadOf 让该尝试直接走 HTTPS，不写入用户 ~/.gitconfig。
+    env.GIT_CONFIG_COUNT = '1'
+    env.GIT_CONFIG_KEY_0 = 'url.https://github.com/.insteadOf'
+    env.GIT_CONFIG_VALUE_0 = 'git@github.com:'
   }
   return env
+}
+
+function hermesInstallerPlan(home = hermesHome()) {
+  const installDir = hermesSourceDir(home)
+  const cacheDir = path.join(home, '.clawpanel-cache')
+  if (isWindows) {
+    return {
+      url: `${HERMES_INSTALLER_BASE_URL}/install.ps1`,
+      sha256: HERMES_INSTALLER_SHA256.windows,
+      sourcePath: 'scripts/install.ps1',
+      scriptPath: path.join(cacheDir, `install-${HERMES_STABLE_TAG}.ps1`),
+      program: 'powershell.exe',
+      stages: ['uv', 'python', 'git', 'repository', 'venv', 'dependencies', 'config-templates', 'platform-sdks', 'bootstrap-marker'],
+      argsForStage: (scriptPath, stage) => [
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath,
+        '-HermesHome', home, '-InstallDir', installDir,
+        '-Branch', HERMES_STABLE_TAG,
+        '-Commit', HERMES_STABLE_COMMIT, '-ForceCommit',
+        '-SkipSetup', '-SkipComputerUse', '-NonInteractive', '-Json', '-Stage', stage,
+      ],
+    }
+  }
+  return {
+    url: `${HERMES_INSTALLER_BASE_URL}/install.sh`,
+    sha256: HERMES_INSTALLER_SHA256.posix,
+    sourcePath: 'scripts/install.sh',
+    scriptPath: path.join(cacheDir, `install-${HERMES_STABLE_TAG}.sh`),
+    program: 'bash',
+    stages: ['repository', 'venv', 'python-deps', 'config', 'complete'],
+    argsForStage: (scriptPath, stage) => [
+      scriptPath,
+      '--hermes-home', home, '--dir', installDir,
+      '--branch', HERMES_STABLE_TAG,
+      '--commit', HERMES_STABLE_COMMIT, '--force-commit',
+      '--skip-setup', '--skip-computer-use', '--non-interactive', '--json', '--stage', stage,
+    ],
+  }
+}
+
+function hermesInstallerChecksum(buffer) {
+  return crypto.createHash('sha256').update(buffer).digest('hex')
+}
+
+async function readHermesInstallerViaGit(plan, env) {
+  const cacheDir = path.dirname(plan.scriptPath)
+  const checkout = path.join(cacheDir, `.installer-source-${process.pid}-${crypto.randomUUID()}`)
+  try {
+    const clone = await runHermesInstallCommand('git', [
+      'clone', '--quiet', '--filter=blob:none', '--no-checkout', '--depth', '1',
+      '--branch', HERMES_STABLE_TAG, HERMES_REPO_URL, checkout,
+    ], { env, timeout: 5 * 60 * 1000, windowsHide: true })
+    if (clone.status !== 0) throw new Error((clone.stderr || clone.stdout || '').trim())
+    const show = await runHermesInstallCommand('git', [
+      '-C', checkout, 'show', `${HERMES_STABLE_COMMIT}:${plan.sourcePath}`,
+    ], { env, timeout: 60000, windowsHide: true })
+    if (show.status !== 0) throw new Error((show.stderr || show.stdout || '').trim())
+    return Buffer.from(show.stdout, 'utf8')
+  } finally {
+    if (fs.existsSync(checkout)) fs.rmSync(checkout, { recursive: true, force: true })
+  }
+}
+
+async function ensureHermesInstallerScript(plan, env) {
+  fs.mkdirSync(path.dirname(plan.scriptPath), { recursive: true })
+  if (fs.existsSync(plan.scriptPath)) {
+    const cached = fs.readFileSync(plan.scriptPath)
+    if (hermesInstallerChecksum(cached) === plan.sha256) return plan.scriptPath
+  }
+
+  let buffer
+  let directError = null
+  try {
+    const response = await globalThis.fetch(plan.url, {
+      signal: AbortSignal.timeout(120000),
+      headers: { 'User-Agent': `ClawPanel Hermes/${HERMES_STABLE_VERSION}` },
+    })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    buffer = Buffer.from(await response.arrayBuffer())
+  } catch (error) {
+    directError = error
+    try {
+      buffer = await readHermesInstallerViaGit(plan, env)
+    } catch (gitError) {
+      throw new Error(`Hermes 官方安装脚本下载失败: ${directError?.message || directError}; Git fallback: ${gitError?.message || gitError}`)
+    }
+  }
+  const actual = hermesInstallerChecksum(buffer)
+  if (actual !== plan.sha256) {
+    throw new Error(`Hermes 官方安装脚本校验失败（期望 ${plan.sha256}，实际 ${actual}）`)
+  }
+  const temporary = `${plan.scriptPath}.${process.pid}.tmp`
+  fs.writeFileSync(temporary, buffer)
+  if (fs.existsSync(plan.scriptPath)) fs.rmSync(plan.scriptPath, { force: true })
+  fs.renameSync(temporary, plan.scriptPath)
+  return plan.scriptPath
+}
+
+async function normalizeHermesLineEndingOnlyChanges(sourceDir, env) {
+  if (!fs.existsSync(path.join(sourceDir, '.git'))) return true
+  const status = await runHermesInstallCommand('git', ['-C', sourceDir, 'status', '--porcelain'], {
+    env, timeout: 30000, windowsHide: true,
+  })
+  if (status.status !== 0) return false
+  const rows = String(status.stdout || '').split(/\r?\n/).filter(Boolean)
+  if (rows.length === 0) return true
+  if (rows.some(row => row.slice(0, 2) !== ' M')) return false
+
+  const semantic = await runHermesInstallCommand('git', [
+    '-C', sourceDir, 'diff', '--ignore-space-at-eol', '--quiet', '--', '.',
+  ], { env, timeout: 30000, windowsHide: true })
+  if (semantic.status !== 0) return false
+  const restore = await runHermesInstallCommand('git', [
+    '-C', sourceDir, 'restore', '--worktree', '--', '.',
+  ], { env, timeout: 30000, windowsHide: true })
+  return restore.status === 0
+}
+
+export async function installHermesManagedSource(config = readPanelConfig()) {
+  const plan = hermesInstallerPlan()
+  const env = buildHermesInstallEnv(config)
+  const scriptPath = await ensureHermesInstallerScript(plan, env)
+  const checkoutWasClean = await normalizeHermesLineEndingOnlyChanges(hermesSourceDir(), env)
+
+  for (const stage of plan.stages) {
+    const result = await runHermesInstallCommand(plan.program, plan.argsForStage(scriptPath, stage), {
+      env,
+      timeout: 20 * 60 * 1000,
+      windowsHide: true,
+    })
+    if (result.status === 0) continue
+    const cleaned = sanitizeHermesInstallOutput([result.stderr, result.stdout].filter(Boolean).join('\n').trim())
+    const hint = diagnoseHermesInstallError(cleaned)
+    const message = `Hermes 官方安装阶段 ${stage} 失败: ${cleaned || `exit ${result.status}`}`
+    throw new Error(hint ? `${message}\n\n${hint}` : message)
+  }
+  if (checkoutWasClean) await normalizeHermesLineEndingOnlyChanges(hermesSourceDir(), env)
+  const revision = await runHermesInstallCommand('git', [
+    '-C', hermesSourceDir(), 'rev-parse', 'HEAD',
+  ], { env, timeout: 30000, windowsHide: true })
+  if (revision.status !== 0 || String(revision.stdout || '').trim() !== HERMES_STABLE_COMMIT) {
+    throw new Error(`Hermes 安装版本校验失败：期望 ${HERMES_STABLE_COMMIT}，实际 ${String(revision.stdout || '').trim() || 'unknown'}`)
+  }
+  return hermesSourceDir()
+}
+
+export async function uninstallHermesManagedSourceAt(home = hermesHome(), cleanConfig = false) {
+  const sourceDir = hermesSourceDir(home)
+  const sourceInstalled = fs.existsSync(sourceDir)
+  if (sourceInstalled) {
+    if (_hermesGwProcess) {
+      try { _hermesGwProcess.kill() } catch {}
+      _hermesGwProcess = null
+    }
+    if (handlers?._dashPid) {
+      try { process.kill(handlers._dashPid, 'SIGKILL') } catch {}
+      handlers._dashPid = 0
+    }
+    fs.rmSync(sourceDir, { recursive: true, force: true })
+  }
+
+  // 仅清理由 ClawPanel 选择的官方 stage 创建的受管工具；未执行 PATH stage，
+  // 因此不调用会扫描全局 wrapper/shell 配置的上游 uninstaller。
+  for (const artifact of [
+    path.join(home, 'bin', isWindows ? 'uv.exe' : 'uv'),
+    path.join(home, 'bin', isWindows ? 'uvx.exe' : 'uvx'),
+  ]) {
+    if (fs.existsSync(artifact)) fs.rmSync(artifact, { force: true })
+  }
+  const cacheDir = path.join(home, '.clawpanel-cache')
+  if (fs.existsSync(cacheDir)) fs.rmSync(cacheDir, { recursive: true, force: true })
+  if (cleanConfig && fs.existsSync(home)) fs.rmSync(home, { recursive: true, force: true })
+  return sourceInstalled
 }
 
 export function runHermesInstallCommand(program, args, options = {}) {
@@ -432,50 +632,6 @@ export function runHermesInstallCommand(program, args, options = {}) {
       resolve({ status, stdout, stderr })
     })
   })
-}
-
-function parseUvVersion(versionOutput = '') {
-  const match = String(versionOutput).match(/\b(\d+)\.(\d+)\.(\d+)\b/)
-  if (!match) return null
-  return match.slice(1).map(Number)
-}
-
-export function isHermesUvVersionSupported(versionOutput = '') {
-  const current = parseUvVersion(versionOutput)
-  const minimum = parseUvVersion(HERMES_MIN_UV_VERSION)
-  if (!current || !minimum) return false
-  for (let index = 0; index < minimum.length; index += 1) {
-    if (current[index] !== minimum[index]) return current[index] > minimum[index]
-  }
-  return true
-}
-
-export function isHermesWheelCacheError(text = '') {
-  const lower = String(text || '').toLowerCase()
-  return lower.includes('the wheel is invalid')
-    || lower.includes('metadata field name not found')
-    || lower.includes('failed to read from the distribution cache')
-    || lower.includes('failed to fetch wheel')
-}
-
-function withIsolatedUvCache(args) {
-  return args.includes('--no-cache') ? args : [...args, '--no-cache']
-}
-
-export async function runHermesInstallWithCacheRecovery(
-  runner,
-  program,
-  args,
-  options,
-  uvVersion,
-) {
-  const isolateInitially = !isHermesUvVersionSupported(uvVersion)
-  const firstArgs = isolateInitially ? withIsolatedUvCache(args) : args
-  let result = await runner(program, firstArgs, options)
-  if (result.status !== 0 && !isolateInitially && isHermesWheelCacheError(result.stderr)) {
-    result = await runner(program, withIsolatedUvCache(args), options)
-  }
-  return result
 }
 
 // 判断输出是否命中 「网络无法访问」 类失败，命中返回建议文案。
@@ -8496,6 +8652,28 @@ let _gwRestartLastFinishedAt = 0
 const GW_RESTART_COOLDOWN_MS = 2000
 const OPENCLAW_NATIVE_CONFIG_RELOAD_VERSION_FLOOR = '2026.7.1'
 
+// 所有 Gateway 生命周期操作共用一条串行队列；同类并发请求直接复用正在执行的 Promise。
+// 这样即使多个页面、按钮或配置回调同时触发，也只会实际拉起一个 OpenClaw 进程。
+let _gwLifecycleTail = Promise.resolve()
+const _gwLifecycleInflight = new Map()
+
+export function runGatewayLifecycleOnce(action, task) {
+  const existing = _gwLifecycleInflight.get(action)
+  if (existing) return existing
+
+  const queued = _gwLifecycleTail.catch(() => {}).then(task)
+  _gwLifecycleTail = queued.then(() => undefined, () => undefined)
+
+  let tracked
+  tracked = queued.finally(() => {
+    if (_gwLifecycleInflight.get(action) === tracked) {
+      _gwLifecycleInflight.delete(action)
+    }
+  })
+  _gwLifecycleInflight.set(action, tracked)
+  return tracked
+}
+
 function supportsNativeConfigReload(version = getLocalOpenclawVersion()) {
   return !!version && versionGe(baseVersion(version), OPENCLAW_NATIVE_CONFIG_RELOAD_VERSION_FLOOR)
 }
@@ -8831,7 +9009,15 @@ async function getLocalGatewayRuntime(label = 'ai.openclaw.gateway') {
   return winCheckGateway()
 }
 
-async function waitForGatewayRunning(label = 'ai.openclaw.gateway', timeoutMs = 10000) {
+function gatewayErrorLogSize() {
+  try {
+    return fs.statSync(path.join(LOGS_DIR, 'gateway.err.log')).size
+  } catch {
+    return 0
+  }
+}
+
+async function waitForGatewayRunning(label = 'ai.openclaw.gateway', timeoutMs = 10000, errorLogOffset = 0) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const status = await getLocalGatewayRuntime(label)
@@ -8841,7 +9027,12 @@ async function waitForGatewayRunning(label = 'ai.openclaw.gateway', timeoutMs = 
     }
     await new Promise(resolve => setTimeout(resolve, 300))
   }
-  throw new Error(`Gateway 启动超时，请查看 ${path.join(LOGS_DIR, 'gateway.err.log')}`)
+  const errorLogPath = path.join(LOGS_DIR, 'gateway.err.log')
+  const excerpt = readFileExcerptSince(errorLogPath, errorLogOffset, 8192)
+  throw new Error([
+    `Gateway 启动超时，请查看 ${errorLogPath}`,
+    excerpt ? `最近一次启动错误：\n${excerpt}` : '',
+  ].filter(Boolean).join('\n\n'))
 }
 
 async function waitForGatewayStopped(label = 'ai.openclaw.gateway', timeoutMs = 10000) {
@@ -8923,11 +9114,31 @@ function findOpenclawBin() {
   return null
 }
 
+function linuxPortListening(port) {
+  const hexPort = port.toString(16).toUpperCase().padStart(4, '0')
+  let inspected = false
+  for (const table of ['/proc/net/tcp', '/proc/net/tcp6']) {
+    try {
+      const lines = fs.readFileSync(table, 'utf8').split('\n').slice(1)
+      inspected = true
+      if (lines.some(line => {
+        const fields = line.trim().split(/\s+/)
+        return fields[1]?.toUpperCase().endsWith(`:${hexPort}`) && fields[3] === '0A'
+      })) return true
+    } catch {}
+  }
+  return inspected ? false : null
+}
+
 function linuxCheckGateway() {
   const port = readGatewayPort()
+  // Gateway 停止是最常见状态。先读 /proc（微秒级），确认端口未监听时不再同步执行
+  // ss + lsof，避免低配 Web 服务器的 Node 事件循环被两个最长 3 秒的命令阻塞。
+  const listening = linuxPortListening(port)
+  if (listening === false) return { running: false, pid: null }
   // ss 查端口监听
   try {
-    const out = execSync(`ss -tlnp 'sport = :${port}' 2>/dev/null`, { timeout: 3000 }).toString().trim()
+    const out = execSync(`ss -tlnp 'sport = :${port}' 2>/dev/null`, { timeout: 1000 }).toString().trim()
     const pidMatch = out.match(/pid=(\d+)/)
     if (pidMatch) {
       const pid = parseInt(pidMatch[1])
@@ -8945,18 +9156,13 @@ function linuxCheckGateway() {
   } catch {}
   // fallback: lsof
   try {
-    const out = execSync(`lsof -i :${port} -t 2>/dev/null`, { timeout: 3000 }).toString().trim()
+    const out = execSync(`lsof -i :${port} -t 2>/dev/null`, { timeout: 1000 }).toString().trim()
     if (out) {
       const pid = parseInt(out.split('\n')[0]) || null
       return { running: !!pid, pid }
     }
   } catch {}
-  // fallback: /proc/net/tcp
-  try {
-    const hexPort = port.toString(16).toUpperCase().padStart(4, '0')
-    const tcp = fs.readFileSync('/proc/net/tcp', 'utf8')
-    if (tcp.includes(`:${hexPort}`)) return { running: true, pid: null }
-  } catch {}
+  if (listening === true) return { running: true, pid: null, manageable: false }
   return { running: false, pid: null }
 }
 
@@ -12503,33 +12709,36 @@ const handlers = {
   },
 
   async start_service({ label }) {
-    // 修复 #159: Docker 双容器模式下禁止本地启动 Gateway
-    if (process.env.DISABLE_GATEWAY_SPAWN === '1' || process.env.DISABLE_GATEWAY_SPAWN === 'true') {
-      throw new Error('本地 Gateway 启动已禁用（DISABLE_GATEWAY_SPAWN=1），请使用远程 Gateway')
-    }
-    const status = await getLocalGatewayRuntime(label)
-    if (status?.running) {
-      if (status.manageable === false) {
-        throw new Error(`端口 ${readGatewayPort()} 已被其他进程 (PID ${status.pid}) 占用，无法操作`)
+    return runGatewayLifecycleOnce(`start:${label}`, async () => {
+      // 修复 #159: Docker 双容器模式下禁止本地启动 Gateway
+      if (process.env.DISABLE_GATEWAY_SPAWN === '1' || process.env.DISABLE_GATEWAY_SPAWN === 'true') {
+        throw new Error('本地 Gateway 启动已禁用（DISABLE_GATEWAY_SPAWN=1），请使用远程 Gateway')
       }
-      ensureOwnedGatewayOrThrow(status.pid || null)
-      writeGatewayOwner(status.pid || null)
+      const status = await getLocalGatewayRuntime(label)
+      if (status?.running) {
+        if (status.manageable === false) {
+          throw new Error(`端口 ${readGatewayPort()} 已被其他进程 (PID ${status.pid}) 占用，无法操作`)
+        }
+        ensureOwnedGatewayOrThrow(status.pid || null)
+        writeGatewayOwner(status.pid || null)
+        return true
+      }
+      ensureNodeRuntimeCompatibleWeb()
+      const errorLogOffset = gatewayErrorLogSize()
+      if (isMac) {
+        macStartService(label)
+        await waitForGatewayRunning(label, 10000, errorLogOffset)
+        return true
+      }
+      if (isLinux) {
+        linuxStartGateway()
+        await waitForGatewayRunning(label, 10000, errorLogOffset)
+        return true
+      }
+      winStartGateway()
+      await waitForGatewayRunning(label, 10000, errorLogOffset)
       return true
-    }
-    ensureNodeRuntimeCompatibleWeb()
-    if (isMac) {
-      macStartService(label)
-      await waitForGatewayRunning(label)
-      return true
-    }
-    if (isLinux) {
-      linuxStartGateway()
-      await waitForGatewayRunning(label)
-      return true
-    }
-    winStartGateway()
-    await waitForGatewayRunning(label)
-    return true
+    })
   },
 
   async claim_gateway() {
@@ -12542,26 +12751,28 @@ const handlers = {
   },
 
   async stop_service({ label }) {
-    const status = await getLocalGatewayRuntime(label)
-    if (status?.running) {
-      if (status.manageable === false) {
-        throw new Error(`端口 ${readGatewayPort()} 已被其他进程 (PID ${status.pid}) 占用，无法操作`)
+    return runGatewayLifecycleOnce(`stop:${label}`, async () => {
+      const status = await getLocalGatewayRuntime(label)
+      if (status?.running) {
+        if (status.manageable === false) {
+          throw new Error(`端口 ${readGatewayPort()} 已被其他进程 (PID ${status.pid}) 占用，无法操作`)
+        }
+        ensureOwnedGatewayOrThrow(status.pid || null)
       }
-      ensureOwnedGatewayOrThrow(status.pid || null)
-    }
-    if (isMac) {
-      macStopService(label)
-      if (!(await waitForGatewayStopped(label))) throw new Error('Gateway 停止超时')
+      if (isMac) {
+        macStopService(label)
+        if (!(await waitForGatewayStopped(label))) throw new Error('Gateway 停止超时')
+        return true
+      }
+      if (isLinux) {
+        linuxStopGateway()
+        if (!(await waitForGatewayStopped(label))) throw new Error('Gateway 停止超时')
+        return true
+      }
+      await winStopGateway()
+      clearGatewayOwner()
       return true
-    }
-    if (isLinux) {
-      linuxStopGateway()
-      if (!(await waitForGatewayStopped(label))) throw new Error('Gateway 停止超时')
-      return true
-    }
-    await winStopGateway()
-    clearGatewayOwner()
-    return true
+    })
   },
 
   async restart_service({ label }) {
@@ -16394,8 +16605,7 @@ const handlers = {
     const home = hermesHome()
     const result = {}
     // 1. 检测 hermes CLI
-    let r = runHermesSilent('hermes', ['version'])
-    if (!r.ok) r = runHermesSilent('hermes', ['--version'])
+    const r = runHermesVersionSilent()
     if (r.ok) {
       const verMatch = r.stdout.split(/\s+/).find(s => /^v?\d/.test(s)) || r.stdout
       result.installed = true
@@ -16460,30 +16670,11 @@ const handlers = {
     if (_hermesInstallRunning) throw new Error('Hermes Agent 正在安装，请勿重复操作')
     _hermesInstallRunning = true
     try {
-    // 1. 查找 uv
-    const uvPath = path.join(uvBinDir(), isWindows ? 'uv.exe' : 'uv')
-    let uv = fs.existsSync(uvPath) ? uvPath : null
-    if (!uv && runHermesSilent('uv', ['--version']).ok) uv = 'uv'
-    if (!uv) throw new Error('uv 未安装。请先安装 uv 或使用 Tauri 桌面版自动下载')
-    // 2. 安装
-    const pkg = hermesPackageSpec(extras)
-    const installArgs = method === 'uv-pip'
-      ? ['pip', 'install', pkg, ...HERMES_RUNTIME_EXTRA_DEPS]
-      : ['tool', 'install', '--force', pkg, '--python', '3.11', ...hermesRuntimeExtraArgs()]
-    const uvVersion = runHermesSilent(uv, ['--version']).stdout || ''
-    const result = await runHermesInstallWithCacheRecovery(runHermesInstallCommand, uv, installArgs, {
-      env: buildHermesInstallEnv(readPanelConfig()),
-      timeout: 600000,
-      windowsHide: true,
-    }, uvVersion)
-    if (result.status !== 0) {
-      const cleaned = sanitizeHermesInstallOutput((result.stderr || '').trim())
-      const hint = diagnoseHermesInstallError(cleaned)
-      if (hint) throw new Error(`安装失败: ${cleaned}\n\n${hint}`)
-      throw new Error(`安装失败: ${cleaned}`)
-    }
-    // 3. 验证
-    const ver = runHermesSilent('hermes', ['version'])
+    if (!['uv-tool', 'uv-pip', ''].includes(method)) throw new Error(`不支持的安装方式: ${method}`)
+    // 0.20.5 禁止从 Git 构建 wheel/sdist；extras 由上游锁定依赖统一管理。
+    void extras
+    await installHermesManagedSource(readPanelConfig())
+    const ver = runHermesVersionSilent()
     if (ver.ok) return ver.stdout
     throw new Error('安装完成但验证失败: hermes version 不可用')
     } finally {
@@ -19035,37 +19226,33 @@ const handlers = {
   },
 
   async update_hermes() {
-    const uvPath = path.join(uvBinDir(), isWindows ? 'uv.exe' : 'uv')
-    const uv = fs.existsSync(uvPath) ? uvPath : 'uv'
-    const pkg = hermesPackageSpec(['web'])
-    const result = spawnSync(uv, ['tool', 'install', '--reinstall', pkg, '--python', '3.11', ...hermesRuntimeExtraArgs()], {
-      env: { ...process.env, PATH: hermesEnhancedPath(), GIT_TERMINAL_PROMPT: '0', ...gitMirrorEnv() },
-      timeout: 600000, windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    if (result.status !== 0) {
-      const cleaned = sanitizeHermesInstallOutput((result.stderr || '').trim())
-      const hint = diagnoseHermesInstallError(cleaned)
-      if (hint) throw new Error(`升级失败: ${cleaned}\n\n${hint}`)
-      throw new Error(`升级失败: ${cleaned}`)
+    if (_hermesInstallRunning) throw new Error('Hermes Agent 正在安装或升级，请勿重复操作')
+    _hermesInstallRunning = true
+    try {
+      await installHermesManagedSource(readPanelConfig())
+      const ver = runHermesVersionSilent()
+      if (!ver.ok) throw new Error('升级完成但验证失败: hermes version 不可用')
+      return `升级完成，当前稳定版: Hermes Agent ${HERMES_STABLE_VERSION} (${HERMES_STABLE_TAG})`
+    } finally {
+      _hermesInstallRunning = false
     }
-    return `升级完成，当前稳定版: Hermes Agent ${HERMES_STABLE_VERSION} (${HERMES_STABLE_TAG})`
   },
 
   async uninstall_hermes({ cleanConfig = false } = {}) {
+    const home = hermesHome()
+    const sourceInstalled = await uninstallHermesManagedSourceAt(home, cleanConfig)
+
+    // 兼容清理 0.20.5 之前由 ClawPanel 创建的 uv-tool 安装。
     const uvPath = path.join(uvBinDir(), isWindows ? 'uv.exe' : 'uv')
     const uv = fs.existsSync(uvPath) ? uvPath : 'uv'
     const result = spawnSync(uv, ['tool', 'uninstall', 'hermes-agent'], {
       env: { ...process.env, PATH: hermesEnhancedPath() },
       timeout: 60000, windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
     })
-    if (result.status !== 0) throw new Error(`卸载失败: ${(result.stderr || '').trim()}`)
+    if (!sourceInstalled && result.status !== 0) throw new Error(`卸载失败: ${(result.stderr || '').trim()}`)
     // 清理 venv
     const venvDir = path.join(homedir(), '.hermes-venv')
     if (fs.existsSync(venvDir)) fs.rmSync(venvDir, { recursive: true, force: true })
-    if (cleanConfig) {
-      const home = hermesHome()
-      if (fs.existsSync(home)) fs.rmSync(home, { recursive: true, force: true })
-    }
     return 'Hermes Agent 已卸载'
   },
 
@@ -19179,7 +19366,8 @@ function _mergeHermesConfigYaml(existing, modelStr, baseUrlLine, providerLine = 
   let inModel = false, written = false, i = 0
   while (i < lines.length) {
     const line = lines[i], t = line.trim()
-    if (t === 'model:' || t.startsWith('model:')) {
+    const isTopLevel = line === line.trimStart()
+    if (isTopLevel && (t === 'model:' || t.startsWith('model:'))) {
       inModel = true; written = true
       result.push('model:')
       result.push(`  default: ${modelStr}`)

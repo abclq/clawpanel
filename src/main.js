@@ -10,7 +10,7 @@ import { renderSidebar, openMobileSidebar } from './components/sidebar.js'
 import { initTheme } from './lib/theme.js'
 import { detectOpenclawStatus, isOpenclawReady, isUpgrading, isGatewayRunning, isGatewayForeign, onGatewayChange, startGatewayPoll, onGuardianGiveUp, resetAutoRestart, loadActiveInstance, getActiveInstance, onInstanceChange } from './lib/app-state.js'
 import { wsClient } from './lib/ws-client.js'
-import { api, checkBackendHealth, isBackendOnline, isTauriRuntime, onBackendStatusChange } from './lib/tauri-api.js'
+import { api, checkBackendHealth, invalidate, isBackendOnline, isTauriRuntime, onBackendStatusChange } from './lib/tauri-api.js'
 const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0'
 import { statusIcon } from './lib/icons.js'
 import { isForeignGatewayError, showGatewayConflictGuidance } from './lib/gateway-ownership.js'
@@ -28,6 +28,7 @@ import hermesEngine from './engines/hermes/index.js'
 import deepseekHarnessEngine from './engines/deepseek-harness/index.js'
 import openCodeEngine from './engines/opencode/index.js'
 import xintianEngine from './engines/xintian/index.js'
+import { showGatewayStartDiagnostics } from './lib/gateway-start-diagnostics.js'
 
 // 样式
 import './style/variables.css'
@@ -47,7 +48,7 @@ import './engines/xintian/style/xintian.css'
 
 // 初始化主题 + 国际化
 initTheme()
-initI18n()
+const i18nReady = initI18n()
 
 /** HTML 转义，防止 XSS 注入 */
 function escapeHtml(str) {
@@ -521,10 +522,10 @@ function showLoginOverlay(defaultPw) {
   _hideSplash()
 
   return new Promise((resolve) => {
-    overlay.querySelector('#login-lang-select')?.addEventListener('change', (event) => {
+    overlay.querySelector('#login-lang-select')?.addEventListener('change', async (event) => {
       const next = event.target.value
       if (!next || next === getLang()) return
-      setLang(next)
+      await setLang(next)
       overlay.remove()
       showLoginOverlay(defaultPw).then(resolve)
     })
@@ -985,6 +986,28 @@ function setupGatewayBanner() {
   const banner = document.getElementById('gw-banner')
   if (!banner) return
 
+  function renderStartFailure(error, message = t('dashboard.startFail')) {
+    const errMsg = String(error?.message || error || '').slice(0, 800)
+    banner.classList.remove('gw-banner-hidden')
+    banner.innerHTML = `
+      <div class="gw-banner-content" style="flex-wrap:wrap">
+        <span class="gw-banner-icon">${statusIcon('warning', 16)}</span>
+        <span>${message}</span>
+        <button class="btn btn-sm btn-secondary" id="btn-gw-retry" style="margin-left:auto">${t('dashboard.retry')}</button>
+        <button class="btn btn-sm btn-ghost" id="btn-gw-details">${t('services.gatewayDiagnosticsTitle')}</button>
+        <a class="btn btn-sm btn-ghost" href="#/logs">${t('sidebar.logs')}</a>
+      </div>
+      ${errMsg ? `<div style="font-size:11px;opacity:0.75;margin-top:4px;font-family:monospace;white-space:pre-wrap;word-break:break-word">${escapeHtml(errMsg)}</div>` : ''}
+    `
+    banner.querySelector('#btn-gw-retry')?.addEventListener('click', () => {
+      update(false)
+      queueMicrotask(() => banner.querySelector('#btn-gw-start')?.click())
+    })
+    banner.querySelector('#btn-gw-details')?.addEventListener('click', () => {
+      showGatewayStartDiagnostics(error).catch(err => console.error('[banner] diagnostics failed:', err))
+    })
+  }
+
   function update(running, foreign) {
     // Hermes 模式不显示 OpenClaw Gateway 横幅
     if (getActiveEngineId() !== 'openclaw') {
@@ -1057,18 +1080,8 @@ function setupGatewayBanner() {
             update(false)
             return
           }
-          const errMsg = (err.message || String(err)).slice(0, 120)
-          banner.innerHTML = `
-            <div class="gw-banner-content" style="flex-wrap:wrap">
-              <span class="gw-banner-icon">${statusIcon('info', 16)}</span>
-              <span>${t('dashboard.startFail')}</span>
-              <button class="btn btn-sm btn-secondary" id="btn-gw-start" style="margin-left:auto">${t('dashboard.retry')}</button>
-              <a class="btn btn-sm btn-ghost" href="#/services">${t('sidebar.services')}</a>
-              <a class="btn btn-sm btn-ghost" href="#/logs">${t('sidebar.logs')}</a>
-            </div>
-            <div style="font-size:11px;opacity:0.7;margin-top:4px;font-family:monospace;word-break:break-all">${escapeHtml(errMsg)}</div>
-          `
-          update(false)
+          renderStartFailure(err)
+          await showGatewayStartDiagnostics(err)
           return
         }
         // 轮询等待实际启动
@@ -1086,19 +1099,13 @@ function setupGatewayBanner() {
         // 超时后尝试获取日志帮助排查
         let logHint = ''
         try {
-          const logs = await api.readLogTail('gateway', 5)
-          if (logs?.trim()) logHint = `<div style="font-size:12px;margin-top:4px;opacity:0.8;font-family:monospace;white-space:pre-wrap">${logs.trim().split('\n').slice(-3).join('\n')}</div>`
+          invalidate('read_log_tail')
+          const logs = await api.readLogTail('gateway-err', 20)
+          if (logs?.trim()) logHint = logs.trim().split('\n').slice(-12).join('\n')
         } catch {}
-        banner.innerHTML = `
-          <div class="gw-banner-content">
-            <span class="gw-banner-icon">${statusIcon('info', 16)}</span>
-            <span>${t('dashboard.startTimeout')}</span>
-            <button class="btn btn-sm btn-secondary" id="btn-gw-start" style="margin-left:auto">${t('dashboard.retry')}</button>
-            <a class="btn btn-sm btn-ghost" href="#/logs">${t('sidebar.logs')}</a>
-          </div>
-          ${logHint}
-        `
-        update(false)
+        const timeoutError = new Error([t('dashboard.startTimeout'), logHint].filter(Boolean).join('\n\n'))
+        renderStartFailure(timeoutError, t('dashboard.startTimeout'))
+        await showGatewayStartDiagnostics(timeoutError)
       })
   }
 
@@ -1258,6 +1265,7 @@ function startAnnouncementChecker() {
 
 // 启动：先检查后端 → 认证 → 加载应用
 ;(async () => {
+  await i18nReady
   // Web 模式：先检测后端是否在线（不在线则显示提示，不加载应用）
   if (!isTauri) {
     const backendOk = await checkBackendHealth()

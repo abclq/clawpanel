@@ -31,6 +31,20 @@ test('Hermes 旧版 profile 表格仍保留模型和 Gateway 状态', () => {
   ])
 })
 
+test('Hermes 0.20.5 profile 表格可解析显示名、canonical id 与 Distribution 列', () => {
+  const result = parseHermesProfileListOutput([
+    'Profile                         Model                           Gateway   Alias  Distribution',
+    '◆ 智能 编码助手 (work)          anthropic/claude-sonnet-4.6    running   work   team@1',
+    '  默认助手 (default)             openai/gpt-5.4                  stopped   —      —',
+  ].join('\n'))
+
+  assert.equal(result.active, 'work')
+  assert.deepEqual(result.profiles, [
+    { name: 'work', displayName: '智能 编码助手', active: true, model: 'anthropic/claude-sonnet-4.6', gatewayRunning: true, alias: 'work' },
+    { name: 'default', displayName: '默认助手', active: false, model: 'openai/gpt-5.4', gatewayRunning: false, alias: '' },
+  ])
+})
+
 test('Hermes Profile 页面提供按 Profile 写入模型的入口', () => {
   assert.match(profilePage, /hermesDashboardApi\('PUT', `\/api\/profiles\/\$\{encodeURIComponent\(name\)\}\/model`/)
   assert.match(profilePage, /data-action="configure"/)

@@ -12,6 +12,7 @@ import { diagnoseInstallError } from '../lib/error-diagnosis.js'
 import { icon, statusIcon } from '../lib/icons.js'
 import { t } from '../lib/i18n.js'
 import { wsClient } from '../lib/ws-client.js'
+import { showGatewayStartDiagnostics } from '../lib/gateway-start-diagnostics.js'
 
 // HTML 转义，防止 XSS
 function escapeHtml(str) {
@@ -722,6 +723,7 @@ async function handleServiceAction(action, label, page) {
       await _promptDoctorFix(page, actionLabel, e)
     } else {
       toast(humanizeError(e, t('services.actionCmdFailed', { action: actionLabel, error: '' }).trim()), 'error')
+      if (expectRunning) await showGatewayStartDiagnostics(e)
     }
     if (actionsEl) actionsEl.innerHTML = origHtml
     if (dot) dot.className = 'status-dot stopped'
@@ -752,6 +754,9 @@ async function handleServiceAction(action, label, page) {
     // 超时
     if (elapsed > POLL_TIMEOUT) {
       toast(t('services.actionTimeout', { action: actionLabel }), 'warning')
+      if (expectRunning) {
+        await showGatewayStartDiagnostics(new Error(t('services.actionTimeout', { action: actionLabel })))
+      }
       break
     }
 
