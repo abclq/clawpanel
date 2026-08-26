@@ -1874,6 +1874,40 @@ function verifyStandaloneRuntimeDependencies(stagingDir) {
   }
 }
 
+/**
+ * 校验 npm 全局安装中的 OpenClaw 主包及其直接运行依赖。
+ * npm 可能以成功状态退出，但镜像或中断安装仍会留下不完整的 node_modules。
+ */
+export function verifyInstalledOpenclawRuntimeDependencies(cliPath) {
+  const packageJsonPath = findOpenclawPackageJson(cliPath)
+  if (!packageJsonPath) throw new Error('OpenClaw 安装校验失败：未找到主包 package.json')
+
+  let packageJson
+  try {
+    packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'))
+  } catch (error) {
+    throw new Error(`OpenClaw 安装校验失败：主包 package.json 无法读取：${error.message || error}`)
+  }
+
+  const packageDir = path.dirname(packageJsonPath)
+  const dependencyRoots = [path.join(packageDir, 'node_modules')]
+  let ancestor = packageDir
+  while (ancestor && ancestor !== path.dirname(ancestor)) {
+    if (path.basename(ancestor).toLowerCase() === 'node_modules') dependencyRoots.push(ancestor)
+    ancestor = path.dirname(ancestor)
+  }
+
+  const uniqueRoots = [...new Set(dependencyRoots)]
+  const missing = Object.keys(packageJson.dependencies || {}).filter(dependency => {
+    const parts = dependency.split('/').filter(Boolean)
+    return !uniqueRoots.some(root => fs.existsSync(path.join(root, ...parts, 'package.json')))
+  })
+  if (missing.length > 0) {
+    throw new Error(`OpenClaw 安装校验失败：缺少运行时依赖：${missing.sort().join(', ')}`)
+  }
+  return { packageJsonPath, dependencyCount: Object.keys(packageJson.dependencies || {}).length }
+}
+
 export function verifyStandaloneInstall(stagingDir, remoteVersion) {
   const binFile = isWindows ? 'openclaw.cmd' : 'openclaw'
   const cliPath = path.join(stagingDir, binFile)
@@ -15474,8 +15508,8 @@ const handlers = {
         }
       }
 
-      const npmCli = npmOpenclawCliPath()
-      const installedVersion = npmCli
+      let npmCli = npmOpenclawCliPath()
+      let installedVersion = npmCli
         ? (readVersionFromInstallation(npmCli) || getLocalOpenclawVersion())
         : getLocalOpenclawVersion()
       if (!npmCli || !installedVersion) {
@@ -15484,6 +15518,27 @@ const handlers = {
       if (ver !== 'latest' && !versionsMatch(installedVersion, ver)) {
         throw new Error(`安装校验失败：目标 CLI 版本为 ${installedVersion}，期望版本为 ${ver}`)
       }
+
+      try {
+        verifyInstalledOpenclawRuntimeDependencies(npmCli)
+      } catch (runtimeError) {
+        if (registry === 'https://registry.npmjs.org') throw runtimeError
+        logs.push(`镜像源安装完整性校验失败（${runtimeError.message}），正在切换到 npm 官方源重新安装...`)
+        out += '\n' + runInstall('https://registry.npmjs.org')
+        npmCli = npmOpenclawCliPath()
+        installedVersion = npmCli
+          ? (readVersionFromInstallation(npmCli) || getLocalOpenclawVersion())
+          : getLocalOpenclawVersion()
+        if (!npmCli || !installedVersion) {
+          throw new Error('官方源重装完成但无法读取 OpenClaw 版本')
+        }
+        if (ver !== 'latest' && !versionsMatch(installedVersion, ver)) {
+          throw new Error(`官方源重装校验失败：目标 CLI 版本为 ${installedVersion}，期望版本为 ${ver}`)
+        }
+        verifyInstalledOpenclawRuntimeDependencies(npmCli)
+        logs.push('npm 官方源重装完成')
+      }
+      logs.push('运行依赖完整性校验通过')
       bindOpenclawCliPath(npmCli)
       logs.push(`已切换当前 CLI: ${npmCli} (${installedVersion})`)
       logs.push(`安装完成 (${pkg}@${installedVersion})`)

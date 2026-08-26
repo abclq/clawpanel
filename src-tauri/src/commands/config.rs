@@ -3842,6 +3842,58 @@ fn verify_standalone_runtime_dependencies(staging_dir: &std::path::Path) -> Resu
     }
 }
 
+fn verify_installed_openclaw_runtime_dependencies(
+    cli_path: &std::path::Path,
+) -> Result<(), String> {
+    let package_json_path = find_openclaw_package_json(cli_path)
+        .ok_or_else(|| "OpenClaw 安装校验失败：未找到主包 package.json".to_string())?;
+    let package_dir = package_json_path
+        .parent()
+        .ok_or_else(|| "OpenClaw 安装校验失败：主包路径无效".to_string())?;
+    let package_json: Value = serde_json::from_slice(
+        &std::fs::read(&package_json_path)
+            .map_err(|e| format!("OpenClaw 安装校验失败：主包 package.json 无法读取：{e}"))?,
+    )
+    .map_err(|e| format!("OpenClaw 安装校验失败：主包 package.json 无法解析：{e}"))?;
+
+    let mut dependency_roots = vec![package_dir.join("node_modules")];
+    for ancestor in package_dir.ancestors() {
+        if ancestor
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("node_modules"))
+        {
+            dependency_roots.push(ancestor.to_path_buf());
+        }
+    }
+
+    let mut missing = package_json
+        .get("dependencies")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter_map(|(dependency, _)| {
+            let dependency_path = dependency
+                .split('/')
+                .filter(|part| !part.is_empty())
+                .fold(PathBuf::new(), |path, part| path.join(part));
+            (!dependency_roots
+                .iter()
+                .any(|root| root.join(&dependency_path).join("package.json").exists()))
+            .then(|| dependency.to_string())
+        })
+        .collect::<Vec<_>>();
+    missing.sort();
+
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "OpenClaw 安装校验失败：缺少运行时依赖：{}",
+            missing.join(", ")
+        ))
+    }
+}
+
 fn replace_standalone_install(
     staging_dir: &std::path::Path,
     install_dir: &std::path::Path,
@@ -5039,9 +5091,9 @@ async fn upgrade_openclaw_inner(
     super::refresh_enhanced_path();
     crate::commands::service::invalidate_cli_detection_cache();
 
-    let npm_cli = npm_openclaw_cli_path()
+    let mut npm_cli = npm_openclaw_cli_path()
         .ok_or_else(|| "安装完成但无法确定 npm openclaw CLI 路径".to_string())?;
-    let new_ver = read_version_from_installation(&npm_cli)
+    let mut new_ver = read_version_from_installation(&npm_cli)
         .or_else(|| {
             crate::utils::resolve_openclaw_cli_path()
                 .and_then(|p| read_version_from_installation(std::path::Path::new(&p)))
@@ -5052,6 +5104,66 @@ async fn upgrade_openclaw_inner(
             "安装校验失败：目标 CLI 版本为 {new_ver}，期望版本为 {ver}"
         ));
     }
+
+    if let Err(runtime_error) = verify_installed_openclaw_runtime_dependencies(&npm_cli) {
+        let used_mirror = registry.contains("npmmirror.com") || registry.contains("taobao.org");
+        if !used_mirror {
+            return Err(runtime_error);
+        }
+
+        let _ = app.emit(
+            "upgrade-log",
+            format!(
+                "镜像源安装完整性校验失败（{runtime_error}），正在切换到 npm 官方源重新安装..."
+            ),
+        );
+        let mut official_retry = npm_command_elevated();
+        official_retry.args([
+            "install",
+            "-g",
+            &pkg,
+            "--force",
+            "--registry",
+            "https://registry.npmjs.org",
+            "--verbose",
+        ]);
+        apply_git_install_env(&mut official_retry);
+        let output = official_retry
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(|e| format!("执行 npm 官方源重装失败: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "npm 官方源重装失败: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+
+        super::refresh_enhanced_path();
+        crate::commands::service::invalidate_cli_detection_cache();
+        npm_cli = npm_openclaw_cli_path()
+            .ok_or_else(|| "官方源重装完成但无法确定 npm openclaw CLI 路径".to_string())?;
+        new_ver = read_version_from_installation(&npm_cli)
+            .or_else(|| {
+                crate::utils::resolve_openclaw_cli_path()
+                    .and_then(|p| read_version_from_installation(std::path::Path::new(&p)))
+            })
+            .ok_or_else(|| {
+                format!(
+                    "官方源重装完成但无法读取 OpenClaw 版本: {}",
+                    npm_cli.display()
+                )
+            })?;
+        if ver != "latest" && !versions_match(&new_ver, ver) {
+            return Err(format!(
+                "官方源重装校验失败：目标 CLI 版本为 {new_ver}，期望版本为 {ver}"
+            ));
+        }
+        verify_installed_openclaw_runtime_dependencies(&npm_cli)?;
+        let _ = app.emit("upgrade-log", "npm 官方源重装完成");
+    }
+    let _ = app.emit("upgrade-log", "运行依赖完整性校验通过");
     bind_openclaw_cli_path(&npm_cli)?;
     let _ = app.emit(
         "upgrade-log",
@@ -8175,6 +8287,7 @@ mod write_openclaw_config_merge_tests {
     use super::strip_ui_fields;
     use super::supports_native_config_reload;
     use super::validate_model_provider_env_refs;
+    use super::verify_installed_openclaw_runtime_dependencies;
     use super::verify_standalone_install;
     use super::write_verified_json_with_backup;
     use serde_json::{json, Value};
@@ -8263,6 +8376,50 @@ mod write_openclaw_config_merge_tests {
 
         assert!(error.contains("缺少运行时依赖"));
         assert!(error.contains("@openclaw/ai"));
+    }
+
+    #[test]
+    fn npm_validation_rejects_missing_runtime_dependency_and_accepts_complete_tree() {
+        let root = unique_temp_dir("npm-runtime-validation");
+        #[cfg(target_os = "windows")]
+        let cli_name = "openclaw.cmd";
+        #[cfg(not(target_os = "windows"))]
+        let cli_name = "openclaw";
+        let cli_path = root.join(cli_name);
+        let package_dir = root
+            .join("node_modules")
+            .join("@qingchencloud")
+            .join("openclaw-zh");
+        let dependency_dir = root.join("node_modules").join("@openclaw").join("ai");
+        std::fs::create_dir_all(&package_dir).unwrap();
+        std::fs::write(&cli_path, "").unwrap();
+        std::fs::write(
+            package_dir.join("package.json"),
+            serde_json::to_vec(&json!({
+                "name": "@qingchencloud/openclaw-zh",
+                "version": "2026.7.1-2-zh.1",
+                "dependencies": { "@openclaw/ai": "2026.7.1-2" }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let error = verify_installed_openclaw_runtime_dependencies(&cli_path).unwrap_err();
+        assert!(error.contains("缺少运行时依赖"));
+        assert!(error.contains("@openclaw/ai"));
+
+        std::fs::create_dir_all(&dependency_dir).unwrap();
+        std::fs::write(
+            dependency_dir.join("package.json"),
+            serde_json::to_vec(&json!({
+                "name": "@openclaw/ai",
+                "version": "2026.7.1-2"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        verify_installed_openclaw_runtime_dependencies(&cli_path).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Regression guard: Issue #127 merge keeps full provider map when the UI payload

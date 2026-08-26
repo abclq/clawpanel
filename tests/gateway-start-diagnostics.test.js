@@ -5,6 +5,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { readFileExcerptSince } from '../scripts/dev-api.js'
+import { diagnoseGatewayStartFailure } from '../src/lib/gateway-start-diagnosis.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const read = file => fs.readFileSync(path.join(root, file), 'utf8')
@@ -35,6 +36,27 @@ test('Gateway 失败信息在三处操作入口使用持久诊断弹窗', () => 
   assert.match(main, /renderStartFailure\(err\)/)
   assert.match(main, /api\.readLogTail\('gateway-err', 20\)/)
   assert.doesNotMatch(main, /renderStartFailure\(err\)[\s\S]{0,180}update\(false\)/)
+})
+
+test('Gateway 诊断识别 OpenClaw 缺失运行依赖并提供 npm 修复策略', () => {
+  const diagnosis = diagnoseGatewayStartFailure({
+    stderr: `[openclaw] Could not start the CLI.
+[openclaw] Reason: Cannot find package '@openclaw/ai' imported from
+C:\\Users\\Administrator\\AppData\\Roaming\\npm\\node_modules\\@qingchencloud\\openclaw-zh\\dist\\errors.js`,
+  })
+
+  assert.deepEqual(diagnosis, {
+    code: 'missing-runtime-dependency',
+    missingPackage: '@openclaw/ai',
+    source: 'chinese',
+    method: 'npm',
+    repairable: true,
+  })
+  assert.equal(diagnoseGatewayStartFailure({ stderr: 'port 18789 is already in use' }), null)
+
+  const diagnosticsUi = read('src/lib/gateway-start-diagnostics.js')
+  assert.match(diagnosticsUi, /gateway-diagnostics-runtime-repair/)
+  assert.match(diagnosticsUi, /triggerOpenclawRuntimeRepair\(detectedIssue\)/)
 })
 
 test('桌面与 Web 启动后端都保留 stderr 并把增量错误带回界面', () => {

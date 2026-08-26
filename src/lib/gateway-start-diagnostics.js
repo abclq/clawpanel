@@ -1,7 +1,9 @@
 import { api, invalidate } from './tauri-api.js'
-import { showContentModal } from '../components/modal.js'
+import { showConfirm, showContentModal } from '../components/modal.js'
 import { navigate } from '../router.js'
 import { t } from './i18n.js'
+import { diagnoseGatewayStartFailure } from './gateway-start-diagnosis.js'
+import { triggerOpenclawRuntimeRepair } from './openclaw-runtime-repair.js'
 
 function errorText(error) {
   return String(error?.message || error || '').trim()
@@ -33,8 +35,11 @@ export async function collectGatewayStartDiagnostics(error) {
   }
 }
 
-function renderDiagnosticText(diagnostics) {
+function renderDiagnosticText(diagnostics, diagnosis = null) {
   const sections = []
+  if (diagnosis?.code === 'missing-runtime-dependency') {
+    sections.push(`${t('services.gatewayDiagnosticsDiagnosis')}\n${t('services.gatewayDiagnosticsMissingDependency', { dependency: diagnosis.missingPackage })}`)
+  }
   if (diagnostics.reason) sections.push(`${t('services.gatewayDiagnosticsReason')}\n${diagnostics.reason}`)
   if (diagnostics.stderr) sections.push(`${t('services.gatewayDiagnosticsErrorLog')}\n${diagnostics.stderr}`)
   if (diagnostics.stdout) sections.push(`${t('services.gatewayDiagnosticsOutputLog')}\n${diagnostics.stdout}`)
@@ -59,8 +64,12 @@ export async function showGatewayStartDiagnostics(error) {
     buttons: [
       { id: 'gateway-diagnostics-logs', label: t('sidebar.logs'), className: 'btn btn-secondary btn-sm' },
       { id: 'gateway-diagnostics-repair', label: t('sidebar.chatDebug'), className: 'btn btn-primary btn-sm' },
+      { id: 'gateway-diagnostics-runtime-repair', label: t('services.gatewayDiagnosticsRepair'), className: 'btn btn-primary btn-sm' },
     ],
   })
+  const runtimeRepairButton = overlay.querySelector('#gateway-diagnostics-runtime-repair')
+  if (runtimeRepairButton) runtimeRepairButton.hidden = true
+  let detectedIssue = null
   overlay.querySelector('#gateway-diagnostics-logs')?.addEventListener('click', () => {
     overlay.close()
     navigate('/logs')
@@ -69,11 +78,22 @@ export async function showGatewayStartDiagnostics(error) {
     overlay.close()
     navigate('/chat-debug')
   })
+  runtimeRepairButton?.addEventListener('click', async () => {
+    if (!detectedIssue) return
+    const confirmed = await showConfirm(t('services.gatewayDiagnosticsRepairConfirm', {
+      dependency: detectedIssue.missingPackage,
+    }))
+    if (!confirmed) return
+    overlay.close()
+    await triggerOpenclawRuntimeRepair(detectedIssue)
+  })
 
   const target = overlay.querySelector('[data-gateway-diagnostics]')
   try {
     const diagnostics = await collectGatewayStartDiagnostics(error)
-    if (target) target.textContent = renderDiagnosticText(diagnostics)
+    detectedIssue = diagnoseGatewayStartFailure(diagnostics)
+    if (runtimeRepairButton) runtimeRepairButton.hidden = !detectedIssue?.repairable
+    if (target) target.textContent = renderDiagnosticText(diagnostics, detectedIssue)
   } catch (diagnosticError) {
     if (target) target.textContent = redactSecrets(errorText(error) || errorText(diagnosticError))
   }
