@@ -115,3 +115,26 @@ test('Web API 同步保留 Agent 运行时手动添加的模型', () => {
     fs.rmSync(tmp, { recursive: true, force: true })
   }
 })
+
+test('Web API 在 OpenClaw 8.1 entries 注册表下同步全部 Agent', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'clawpanel-models-sync-'))
+  try {
+    const workerPath = writeAgentModels(tmp, 'worker', { providers: {} })
+    const result = syncProvidersToAgentModels({
+      agents: { entries: { main: {}, worker: {} }, ownership: 'explicit' },
+      models: {
+        providers: {
+          lmstudio: {
+            baseUrl: 'http://127.0.0.1:1234/v1',
+            models: [{ id: 'qwen-local', contextWindow: 131072 }],
+          },
+        },
+      },
+    }, tmp)
+
+    assert.deepEqual(result.updated, [workerPath])
+    assert.equal(readJson(workerPath).providers.lmstudio.models[0].contextWindow, 131072)
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})

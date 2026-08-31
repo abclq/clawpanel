@@ -12,6 +12,7 @@ import { wsClient } from '../lib/ws-client.js'
 import { attachCliConflictBanner } from '../components/cli-conflict-banner.js'
 import { icon } from '../lib/icons.js'
 import { showGatewayStartDiagnostics } from '../lib/gateway-start-diagnostics.js'
+import { syncExplicitModelPolicyAllow } from '../lib/openclaw-model-policy.js'
 
 let _unsubGw = null
 let _dashboardLoadPromise = null
@@ -211,6 +212,7 @@ function normalizeDefaultModelConfig(config) {
     modelConfig.primary = ''
     modelConfig.fallbacks = []
     config.agents.defaults.models = {}
+    syncExplicitModelPolicyAllow(config.agents.defaults)
     return ''
   }
   if (!validModels.has(modelConfig.primary || '')) {
@@ -236,6 +238,7 @@ function normalizeDefaultModelConfig(config) {
     }
   }
   config.agents.defaults.models = nextMap
+  syncExplicitModelPolicyAllow(config.agents.defaults)
   return modelConfig.primary
 }
 

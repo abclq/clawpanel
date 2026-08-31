@@ -18,6 +18,16 @@ import * as skillhubSdk from './lib/skillhub-sdk.js'
 import { createBackgroundJobQueue } from './media-background-queue.js'
 import { normalizeModelApiType } from '../src/lib/model-presets.js'
 import {
+  addAgentConfig,
+  agentRosterKind,
+  ensureAgentRoster,
+  ensureMutableAgentConfig,
+  findAgentConfig,
+  listAgentConfigs,
+  removeAgentConfig,
+  supportsAgentEntries,
+} from '../src/lib/openclaw-agent-roster.js'
+import {
   DSH_DEFAULT_PORT,
   DSH_PACKAGE_NAME,
   DSH_PACKAGE_VERSION,
@@ -1546,6 +1556,34 @@ function spawnOpenclawSync(args, options = {}) {
   })
 }
 
+function runOpenclawCaptured(args, { timeoutMs = 120000 } = {}) {
+  const spec = openclawProcessSpec(args)
+  return new Promise((resolve, reject) => {
+    const child = spawn(spec.command, spec.args, {
+      env: { ...process.env },
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    const append = (current, chunk) => (current + String(chunk)).slice(-1024 * 1024)
+    child.stdout?.on('data', chunk => { stdout = append(stdout, chunk) })
+    child.stderr?.on('data', chunk => { stderr = append(stderr, chunk) })
+    const timer = setTimeout(() => {
+      try { child.kill('SIGTERM') } catch {}
+      reject(new Error(`OpenClaw 命令执行超时 (${Math.round(timeoutMs / 1000)}s)`))
+    }, timeoutMs)
+    child.once('error', error => {
+      clearTimeout(timer)
+      reject(error)
+    })
+    child.once('close', status => {
+      clearTimeout(timer)
+      resolve({ status, stdout, stderr })
+    })
+  })
+}
+
 function openclawResultOutput(result) {
   return [result?.stdout, result?.stderr].map(value => value == null ? '' : String(value)).join('').trim()
 }
@@ -2833,6 +2871,15 @@ export function stripUiFields(config) {
         delete agent.update_available
       }
     }
+    if (config.agents.entries && typeof config.agents.entries === 'object' && !Array.isArray(config.agents.entries)) {
+      for (const agent of Object.values(config.agents.entries)) {
+        if (!agent || typeof agent !== 'object' || Array.isArray(agent)) continue
+        delete agent.id
+        delete agent.current
+        delete agent.latest
+        delete agent.update_available
+      }
+    }
   }
   // 清理模型测试相关的临时字段
   const providers = config?.models?.providers
@@ -2860,9 +2907,24 @@ export function stripUiFields(config) {
   return config
 }
 
+/** 移除当前 OpenClaw 版本已经退役、会被严格 schema 拒绝的字段。 */
+export function stripRetiredOpenclawFields(config, installedVersion = getLocalOpenclawVersion()) {
+  if (!supportsAgentEntries(installedVersion) || !config || typeof config !== 'object' || Array.isArray(config)) {
+    return config
+  }
+  if (config.commands && typeof config.commands === 'object' && !Array.isArray(config.commands)) {
+    delete config.commands.ownerDisplay
+    delete config.commands.ownerDisplaySecret
+  }
+  if (config.gateway?.controlUi && typeof config.gateway.controlUi === 'object' && !Array.isArray(config.gateway.controlUi)) {
+    delete config.gateway.controlUi.allowInsecureAuth
+  }
+  return config
+}
+
 function cleanLoadedConfig(config) {
   const before = JSON.stringify(config)
-  const cleaned = stripUiFields(config)
+  const cleaned = stripRetiredOpenclawFields(stripUiFields(config))
   if (fs.existsSync(CONFIG_PATH) && JSON.stringify(cleaned) !== before) {
     writeOpenclawConfigFile(cleaned)
   }
@@ -2958,7 +3020,7 @@ function requiredControlUiOrigins(additionalOrigin = null) {
 }
 
 function calibrationLastTouchedVersion() {
-  return recommendedVersionFor('chinese') || '2026.1.1'
+  return getLocalOpenclawVersion() || recommendedVersionFor('chinese') || '2026.1.1'
 }
 
 function calibrationDefaultWorkspace() {
@@ -2998,7 +3060,7 @@ function calibrationRichnessScore(config) {
   let score = 0
   if (config.models?.providers && Object.keys(config.models.providers).length) score += 4
   if (config.agents?.defaults) score += 2
-  if (Array.isArray(config.agents?.list) && config.agents.list.length) score += 3
+  if (listAgentConfigs(config).length) score += 3
   if (config.channels && Object.keys(config.channels).length) score += 2
   if (Array.isArray(config.bindings) && config.bindings.length) score += 2
   if (config.plugins?.entries && Object.keys(config.plugins.entries).length) score += 2
@@ -3023,20 +3085,25 @@ export function selectCalibrationSource(current, backup) {
 }
 
 function buildCalibrationBaseline() {
+  const installedVersion = calibrationLastTouchedVersion()
+  const useEntries = supportsAgentEntries(installedVersion)
   return {
     $schema: 'https://openclaw.ai/schema/config.json',
     meta: { lastTouchedVersion: calibrationLastTouchedVersion() },
     models: { providers: {} },
     agents: {
-      defaults: { workspace: calibrationDefaultWorkspace() },
-      list: [],
+      defaults: {
+        workspace: calibrationDefaultWorkspace(),
+        ...(useEntries ? { systemAgent: { agentId: 'main' } } : {}),
+      },
+      ...(useEntries ? { entries: { main: {} } } : { list: [] }),
     },
     bindings: [],
     channels: {},
     commands: {
       native: 'auto',
       nativeSkills: 'auto',
-      ownerDisplay: 'raw',
+      ...(!useEntries ? { ownerDisplay: 'raw' } : {}),
       restart: true,
     },
     plugins: {},
@@ -3057,7 +3124,7 @@ function buildCalibrationBaseline() {
       controlUi: {
         enabled: true,
         allowedOrigins: requiredControlUiOrigins(),
-        allowInsecureAuth: true,
+        ...(!useEntries ? { allowInsecureAuth: true } : {}),
       },
     },
   }
@@ -3095,14 +3162,19 @@ function normalizeCalibratedConfig(input) {
   config.agents = config.agents && typeof config.agents === 'object' && !Array.isArray(config.agents) ? config.agents : {}
   config.agents.defaults = config.agents.defaults && typeof config.agents.defaults === 'object' && !Array.isArray(config.agents.defaults) ? config.agents.defaults : {}
   if (!String(config.agents.defaults.workspace || '').trim()) config.agents.defaults.workspace = calibrationDefaultWorkspace()
-  if (!Array.isArray(config.agents.list)) config.agents.list = []
+  ensureAgentRoster(config, config.meta.lastTouchedVersion)
 
   if (!Array.isArray(config.bindings)) config.bindings = []
   config.channels = config.channels && typeof config.channels === 'object' && !Array.isArray(config.channels) ? config.channels : {}
   config.commands = config.commands && typeof config.commands === 'object' && !Array.isArray(config.commands) ? config.commands : {}
   if (!String(config.commands.native || '').trim()) config.commands.native = 'auto'
   if (!String(config.commands.nativeSkills || '').trim()) config.commands.nativeSkills = 'auto'
-  if (!String(config.commands.ownerDisplay || '').trim()) config.commands.ownerDisplay = 'raw'
+  if (supportsAgentEntries(config.meta.lastTouchedVersion)) {
+    delete config.commands.ownerDisplay
+    delete config.commands.ownerDisplaySecret
+  } else if (!String(config.commands.ownerDisplay || '').trim()) {
+    config.commands.ownerDisplay = 'raw'
+  }
   if (typeof config.commands.restart !== 'boolean') config.commands.restart = true
   config.plugins = config.plugins && typeof config.plugins === 'object' && !Array.isArray(config.plugins) ? config.plugins : {}
   config.session = config.session && typeof config.session === 'object' && !Array.isArray(config.session) ? config.session : {}
@@ -3130,7 +3202,8 @@ function normalizeCalibratedConfig(input) {
   const existingOrigins = Array.isArray(config.gateway.controlUi.allowedOrigins) ? config.gateway.controlUi.allowedOrigins.filter(Boolean) : []
   config.gateway.controlUi.allowedOrigins = [...new Set([...existingOrigins, ...origins])]
   config.gateway.controlUi.enabled = true
-  config.gateway.controlUi.allowInsecureAuth = true
+  if (supportsAgentEntries(config.meta.lastTouchedVersion)) delete config.gateway.controlUi.allowInsecureAuth
+  else config.gateway.controlUi.allowInsecureAuth = true
 
   return config
 }
@@ -3495,7 +3568,7 @@ export function syncProvidersToAgentModels(config, openclawDir = OPENCLAW_DIR) {
   }
 
   const agentIds = ['main']
-  for (const agent of Array.isArray(config?.agents?.list) ? config.agents.list : []) {
+  for (const agent of listAgentConfigs(config)) {
     const id = String(agent?.id || '').trim()
     if (id && id !== 'main') agentIds.push(id)
   }
@@ -3563,7 +3636,7 @@ export function syncProvidersToAgentModels(config, openclawDir = OPENCLAW_DIR) {
 }
 
 function writeOpenclawConfigFile(config) {
-  const cleaned = stripUiFields(config)
+  const cleaned = stripRetiredOpenclawFields(stripUiFields(config))
   const previous = fs.existsSync(CONFIG_PATH) ? readJsonFileRelaxed(CONFIG_PATH) : null
   validateModelProviderEnvRefs(cleaned, previous)
   validateOpenclawModelCandidate(cleaned)
@@ -3571,21 +3644,10 @@ function writeOpenclawConfigFile(config) {
   syncProvidersToAgentModels(cleaned)
 }
 
-function ensureAgentsList(config) {
-  if (!config.agents) config.agents = {}
-  if (!Array.isArray(config.agents.list)) config.agents.list = []
-  return config.agents.list
-}
-
 function expandHomePath(input) {
   return typeof input === 'string' && input.startsWith('~/')
     ? path.join(homedir(), input.slice(2))
     : input
-}
-
-function findAgentConfig(config, id) {
-  const agentsList = Array.isArray(config.agents?.list) ? config.agents.list : []
-  return agentsList.find(a => (a?.id || 'main').trim() === id) || null
 }
 
 function resolveDefaultWorkspace(config) {
@@ -13976,7 +14038,10 @@ const handlers = {
           mode: 'local',
           bind: 'lan',
           auth: { mode: 'token', token: CLUSTER_TOKEN },
-          controlUi: { allowedOrigins: ['*'], allowInsecureAuth: true },
+          controlUi: {
+            allowedOrigins: ['*'],
+            ...(!supportsAgentEntries(getLocalOpenclawVersion()) ? { allowInsecureAuth: true } : {}),
+          },
         }
 
         const configB64 = b64(JSON.stringify(syncConfig, null, 2))
@@ -14880,13 +14945,13 @@ const handlers = {
 
   // Agent 管理
   list_agents() {
-    // 从 openclaw.json 的 agents.list[] 读取完整配置
+    // 同时读取 <=7.x 的 agents.list[] 与 >=8.1 的 agents.entries{}
     const cfg = readOpenclawConfigOptional()
-    const agentsList = Array.isArray(cfg.agents?.list) ? cfg.agents.list : []
+    const agentsList = listAgentConfigs(cfg)
     const defaults = cfg.agents?.defaults || {}
 
     if (agentsList.length === 0) {
-      // 无 agents.list 配置 → 回退扫描目录模式
+      // 无显式 Agent 注册表配置 → 回退扫描目录模式
       const result = [{ id: 'main', isDefault: true, identityName: null, identityEmoji: null, model: null, workspace: resolveDefaultWorkspace(cfg) }]
       const agentsDir = path.join(OPENCLAW_DIR, 'agents')
       if (fs.existsSync(agentsDir)) {
@@ -14903,15 +14968,16 @@ const handlers = {
       return result
     }
 
-    // 从 agents.list[] 读取
+    // canonical entries 已经显式列出全部 Agent；旧 list 仍保留隐式 main 兼容。
+    const canonicalEntries = agentRosterKind(cfg) === 'entries'
     const hasMain = agentsList.some(a => (a?.id || 'main').trim() === 'main')
-    const allAgents = hasMain
+    const allAgents = hasMain || canonicalEntries
       ? agentsList
       : [{ id: 'main', default: true, workspace: resolveDefaultWorkspace(cfg) }, ...agentsList]
 
     return allAgents.filter(a => a && typeof a === 'object').map((a, idx) => {
       const id = (a.id || 'main').trim()
-      const isDefault = a.default === true || id === 'main' || (idx === 0 && !allAgents.some(x => x.default === true))
+      const isDefault = !canonicalEntries && (a.default === true || id === 'main' || (idx === 0 && !allAgents.some(x => x.default === true)))
       // 模型：可以是 string 或 { primary, fallbacks }
       let model = a.model || defaults.model || null
       if (model && typeof model === 'object') model = model.primary || JSON.stringify(model)
@@ -14935,8 +15001,9 @@ const handlers = {
     const bindings = Array.isArray(cfg.bindings) ? cfg.bindings : []
 
     // 查找 agent 配置
+    const canonicalEntries = agentRosterKind(cfg) === 'entries'
     let agent = findAgentConfig(cfg, id)
-    if (!agent && id === 'main') {
+    if (!agent && id === 'main' && !canonicalEntries) {
       // main agent 可能不在 list 中
       agent = { id: 'main', default: true }
     }
@@ -14950,7 +15017,7 @@ const handlers = {
 
     return {
       id,
-      isDefault: agent.default === true || id === 'main',
+      isDefault: !canonicalEntries && (agent.default === true || id === 'main'),
       name: agent.name || null,
       identity: agent.identity || null,
       model: agent.model || defaults.model || null,
@@ -15114,22 +15181,14 @@ const handlers = {
     return { ok: true, relativePath: normalized, size: Buffer.byteLength(content, 'utf8') }
   },
 
-  // 更新 Agent 概览配置（写入 openclaw.json agents.list[]）
+  // 更新 Agent 概览配置（按当前内核保留 list[] 或 entries{} 形状）
   update_agent_config({ id, config }) {
     if (!id) throw new Error('Agent ID 不能为空')
     if (!config || typeof config !== 'object') throw new Error('配置不能为空')
     const cfg = readOpenclawConfigRequired()
-    const agentsList = ensureAgentsList(cfg)
-
-    let agentIdx = agentsList.findIndex(a => (a.id || 'main').trim() === id)
-    if (agentIdx < 0 && id === 'main') {
-      // main agent 不存在则创建
-      agentsList.unshift({ id: 'main' })
-      agentIdx = 0
-    }
-    if (agentIdx < 0) throw new Error(`Agent "${id}" 不存在于配置中`)
-
-    const agent = agentsList[agentIdx]
+    const installedVersion = getLocalOpenclawVersion()
+    const agent = ensureMutableAgentConfig(cfg, id, { installedVersion, create: id === 'main' })
+    if (!agent) throw new Error(`Agent "${id}" 不存在于配置中`)
 
     // 合并允许修改的字段
     if (config.name !== undefined) {
@@ -16378,17 +16437,16 @@ const handlers = {
   add_agent({ name, model, workspace }) {
     if (!name) throw new Error('Agent 名称不能为空')
     const cfg = readOpenclawConfigRequired()
-    const agentsList = ensureAgentsList(cfg)
-    if (agentsList.some(a => (a?.id || 'main').trim() === name)) throw new Error(`Agent "${name}" 已存在`)
+    if (findAgentConfig(cfg, name)) throw new Error(`Agent "${name}" 已存在`)
 
     const agentDir = path.join(OPENCLAW_DIR, 'agents', name)
     const workspacePath = expandHomePath(workspace || null) || path.join(agentDir, 'workspace')
     if (!fs.existsSync(agentDir)) fs.mkdirSync(agentDir, { recursive: true })
     if (!fs.existsSync(workspacePath)) fs.mkdirSync(workspacePath, { recursive: true })
 
-    const entry = { id: name, workspace: workspacePath }
+    const entry = { workspace: workspacePath }
     if (model) entry.model = { primary: model }
-    agentsList.push(entry)
+    addAgentConfig(cfg, name, entry, { installedVersion: getLocalOpenclawVersion() })
 
     writeOpenclawConfigFile(cfg)
     triggerGatewayReloadNonBlocking('add_agent')
@@ -16399,10 +16457,7 @@ const handlers = {
     if (!id || id === 'main') throw new Error('不能删除默认 Agent')
     const cfg = readOpenclawConfigRequired()
     const agentDir = resolveAgentDir(cfg, id)
-    const agentsList = ensureAgentsList(cfg)
-    const before = agentsList.length
-    cfg.agents.list = agentsList.filter(a => (a?.id || 'main').trim() !== id)
-    if (before === cfg.agents.list.length) throw new Error(`Agent "${id}" 不存在`)
+    if (!removeAgentConfig(cfg, id)) throw new Error(`Agent "${id}" 不存在`)
     if (cfg.agents?.profiles && typeof cfg.agents.profiles === 'object') delete cfg.agents.profiles[id]
 
     writeOpenclawConfigFile(cfg)
@@ -16414,14 +16469,7 @@ const handlers = {
   update_agent_identity({ id, name, emoji }) {
     if (!id) throw new Error('Agent ID 不能为空')
     const config = readOpenclawConfigRequired()
-    const agentsList = ensureAgentsList(config)
-
-    let agent = agentsList.find(a => (a.id || 'main').trim() === id)
-    if (!agent) {
-      // 不存在则新建条目
-      agent = { id }
-      agentsList.push(agent)
-    }
+    const agent = ensureMutableAgentConfig(config, id, { installedVersion: getLocalOpenclawVersion(), create: true })
     if (!agent.identity || typeof agent.identity !== 'object') agent.identity = {}
     if (name !== undefined) {
       if (name) agent.identity.name = name
@@ -16447,13 +16495,7 @@ const handlers = {
   update_agent_model({ id, model }) {
     if (!id) throw new Error('Agent ID 不能为空')
     const config = readOpenclawConfigRequired()
-    const agentsList = ensureAgentsList(config)
-
-    let agent = agentsList.find(a => (a.id || 'main').trim() === id)
-    if (!agent) {
-      agent = { id }
-      agentsList.push(agent)
-    }
+    const agent = ensureMutableAgentConfig(config, id, { installedVersion: getLocalOpenclawVersion(), create: true })
     if (model) agent.model = { primary: model }
     else delete agent.model
 
@@ -19390,12 +19432,29 @@ const handlers = {
     throw new Error('Web 模式暂未实现 QQ Bot 自动修复，请使用桌面客户端')
   },
 
-  // —— 系统体检（暂未在 Node 实现）——
-  doctor_check() {
-    return { success: false, output: '', errors: 'Web 模式暂未实现 openclaw doctor，请使用桌面客户端' }
+  // —— 系统体检（Web 与桌面端统一调用当前绑定的 OpenClaw CLI）——
+  async doctor_check() {
+    const isEightOne = supportsAgentEntries(getLocalOpenclawVersion())
+    const result = await runOpenclawCaptured(isEightOne ? ['doctor', '--non-interactive'] : ['doctor'])
+    return {
+      success: result.status === 0,
+      output: String(result.stdout || '').trim(),
+      errors: String(result.stderr || '').trim(),
+      exitCode: result.status,
+    }
   },
-  doctor_fix() {
-    return { success: false, output: '', errors: 'Web 模式暂未实现 openclaw doctor --fix，请使用桌面客户端' }
+  async doctor_fix() {
+    const isEightOne = supportsAgentEntries(getLocalOpenclawVersion())
+    const args = isEightOne
+      ? ['doctor', '--fix', '--non-interactive', '--yes']
+      : ['doctor', '--fix']
+    const result = await runOpenclawCaptured(args)
+    return {
+      success: result.status === 0,
+      output: String(result.stdout || '').trim(),
+      errors: String(result.stderr || '').trim(),
+      exitCode: result.status,
+    }
   },
 
   // —— 配置/Skills 校验（暂未在 Node 实现）——

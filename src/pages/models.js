@@ -22,6 +22,7 @@ import {
 import { t } from '../lib/i18n.js'
 import { scheduleGatewayRestart, fireRestartNow, cancelPendingRestart, onRestartState } from '../lib/gateway-restart-queue.js'
 import { termHelpHtml, attachTermTooltips } from '../lib/term-tooltip.js'
+import { syncExplicitModelPolicyAllow } from '../lib/openclaw-model-policy.js'
 
 // HTML 转义，防止错误信息中的特殊字符破坏页面或被注入
 function escapeHtml(str) {
@@ -219,7 +220,7 @@ function normalizeDefaultModelMap(config, validModels, primary, fallbacks) {
   }
   const changed = JSON.stringify(current) !== JSON.stringify(next)
   defaults.models = next
-  return changed
+  return syncExplicitModelPolicyAllow(defaults) || changed
 }
 
 function dedupeValidFallbacks(fallbacks, validModels, primary) {

@@ -1001,9 +1001,14 @@ pub fn read_openclaw_config() -> Result<Value, String> {
         }
     };
 
-    // 自动清理 UI 专属字段，防止污染配置导致 CLI 启动失败
+    // 自动清理 UI 专属字段和当前内核已经退役的字段，防止严格 schema 阻断启动。
+    let before_cleanup = config.clone();
     if has_ui_fields(&config) {
         config = strip_ui_fields(config);
+    }
+    config =
+        strip_retired_openclaw_fields(config, installed_openclaw_version_from_files().as_deref());
+    if config != before_cleanup {
         // 静默写回清理后的配置
         let bak = super::openclaw_dir().join("openclaw.json.bak");
         let _ = fs::copy(&path, &bak);
@@ -1432,7 +1437,10 @@ pub fn write_openclaw_config(config: Value) -> Result<(), String> {
     };
 
     // 清理 UI 专属字段，避免 CLI schema 校验失败
-    let cleaned = strip_ui_fields(merged);
+    let cleaned = strip_retired_openclaw_fields(
+        strip_ui_fields(merged),
+        installed_openclaw_version_from_files().as_deref(),
+    );
     validate_model_provider_env_refs(&cleaned, existing_config.as_ref())?;
     validate_openclaw_model_candidate(&cleaned)?;
 
@@ -1467,7 +1475,9 @@ fn calibration_required_origins() -> Vec<String> {
 }
 
 fn calibration_last_touched_version() -> String {
-    recommended_version_for("chinese").unwrap_or_else(|| "2026.1.1".to_string())
+    installed_openclaw_version_from_files()
+        .or_else(|| recommended_version_for("chinese"))
+        .unwrap_or_else(|| "2026.1.1".to_string())
 }
 
 fn calibration_default_workspace() -> String {
@@ -1540,6 +1550,11 @@ fn calibration_richness_score(config: &Value) -> usize {
         .and_then(|v| v.as_array())
         .map(|v| !v.is_empty())
         .unwrap_or(false)
+        || config
+            .pointer("/agents/entries")
+            .and_then(|v| v.as_object())
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
     {
         score += 3;
     }
@@ -1617,26 +1632,57 @@ fn select_calibration_source(current: Option<Value>, backup: Option<Value>) -> (
 }
 
 fn build_calibration_baseline() -> Value {
+    let use_entries = installed_openclaw_supports_agent_entries();
+    let agents = if use_entries {
+        json!({
+            "defaults": {
+                "workspace": calibration_default_workspace(),
+                "systemAgent": { "agentId": "main" },
+            },
+            "entries": { "main": {} },
+        })
+    } else {
+        json!({
+            "defaults": { "workspace": calibration_default_workspace() },
+            "list": [],
+        })
+    };
+    let commands = if use_entries {
+        json!({
+            "native": "auto",
+            "nativeSkills": "auto",
+            "restart": true,
+        })
+    } else {
+        json!({
+            "native": "auto",
+            "nativeSkills": "auto",
+            "ownerDisplay": "raw",
+            "restart": true,
+        })
+    };
+    let control_ui = if use_entries {
+        json!({
+            "enabled": true,
+            "allowedOrigins": calibration_required_origins(),
+        })
+    } else {
+        json!({
+            "enabled": true,
+            "allowedOrigins": calibration_required_origins(),
+            "allowInsecureAuth": true,
+        })
+    };
     json!({
         "$schema": "https://openclaw.ai/schema/config.json",
         "meta": {
             "lastTouchedVersion": calibration_last_touched_version(),
         },
         "models": { "providers": {} },
-        "agents": {
-            "defaults": {
-                "workspace": calibration_default_workspace(),
-            },
-            "list": [],
-        },
+        "agents": agents,
         "bindings": [],
         "channels": {},
-        "commands": {
-            "native": "auto",
-            "nativeSkills": "auto",
-            "ownerDisplay": "raw",
-            "restart": true,
-        },
+        "commands": commands,
         "plugins": {},
         "session": { "dmScope": "per-channel-peer" },
         "skills": { "entries": {} },
@@ -1652,11 +1698,7 @@ fn build_calibration_baseline() -> Value {
                 "mode": "token",
                 "token": generate_calibration_token(),
             },
-            "controlUi": {
-                "enabled": true,
-                "allowedOrigins": calibration_required_origins(),
-                "allowInsecureAuth": true,
-            },
+            "controlUi": control_ui,
         },
     })
 }
@@ -1690,6 +1732,7 @@ fn normalize_calibrated_config(mut config: Value) -> Value {
     let required_origins = calibration_required_origins();
     let last_touched_version = calibration_last_touched_version();
     let default_workspace = calibration_default_workspace();
+    let installed_supports_entries = installed_openclaw_supports_agent_entries();
 
     let Some(root) = config.as_object_mut() else {
         return build_calibration_baseline();
@@ -1731,6 +1774,10 @@ fn normalize_calibrated_config(mut config: Value) -> Value {
         *agents = json!({});
     }
     if let Some(agents_obj) = agents.as_object_mut() {
+        let had_roster = agents_obj.get("entries").is_some_and(Value::is_object)
+            || agents_obj.get("list").is_some_and(Value::is_array);
+        let use_entries = agents_obj.get("entries").is_some_and(Value::is_object)
+            || (!agents_obj.get("list").is_some_and(Value::is_array) && installed_supports_entries);
         let defaults = agents_obj.entry("defaults").or_insert_with(|| json!({}));
         if !defaults.is_object() {
             *defaults = json!({});
@@ -1744,10 +1791,26 @@ fn normalize_calibrated_config(mut config: Value) -> Value {
             {
                 defaults_obj.insert("workspace".into(), Value::String(default_workspace));
             }
+            if use_entries && !had_roster && !defaults_obj.contains_key("systemAgent") {
+                defaults_obj.insert("systemAgent".into(), json!({ "agentId": "main" }));
+            }
         }
-        let list = agents_obj.entry("list").or_insert_with(|| json!([]));
-        if !list.is_array() {
-            *list = json!([]);
+        if use_entries {
+            agents_obj.remove("list");
+            let entries = agents_obj.entry("entries").or_insert_with(|| json!({}));
+            if !entries.is_object() {
+                *entries = json!({});
+            }
+            if let Some(entries_obj) = entries.as_object_mut() {
+                if !entries_obj.values().any(Value::is_object) {
+                    entries_obj.insert("main".into(), json!({}));
+                }
+            }
+        } else {
+            let list = agents_obj.entry("list").or_insert_with(|| json!([]));
+            if !list.is_array() {
+                *list = json!([]);
+            }
         }
     }
 
@@ -1863,7 +1926,11 @@ fn normalize_calibrated_config(mut config: Value) -> Value {
             }
             control_ui_obj.insert("allowedOrigins".into(), json!(merged));
             control_ui_obj.insert("enabled".into(), Value::Bool(true));
-            control_ui_obj.insert("allowInsecureAuth".into(), Value::Bool(true));
+            if installed_supports_entries {
+                control_ui_obj.remove("allowInsecureAuth");
+            } else {
+                control_ui_obj.insert("allowInsecureAuth".into(), Value::Bool(true));
+            }
         }
     }
 
@@ -2137,7 +2204,7 @@ pub fn validate_openclaw_config() -> Result<Value, String> {
         if obj.contains_key("agents") {
             if let Some(agents) = obj.get("agents") {
                 if let Some(agents_obj) = agents.as_object() {
-                    // 检查 agents 子字段（上游 schema 只定义 agents.list）
+                    // 检查 Agent 子字段；7.x 使用 list，8.1+ 使用 entries。
                     if agents_obj.contains_key("profiles") {
                         warnings.push(
                             "发现 agents.profiles 字段，上游 schema 未定义此字段，ClawPanel 会自动清理"
@@ -2152,6 +2219,18 @@ pub fn validate_openclaw_config() -> Result<Value, String> {
                                     if KNOWN_UI_FIELDS.contains(&key.as_str()) {
                                         ui_fields_found
                                             .push(format!("agents.list[{}].{}", idx, key));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let Some(Value::Object(entries)) = agents_obj.get("entries") {
+                        for (agent_id, agent) in entries {
+                            if let Some(agent_obj) = agent.as_object() {
+                                for key in agent_obj.keys() {
+                                    if KNOWN_UI_FIELDS.contains(&key.as_str()) {
+                                        ui_fields_found
+                                            .push(format!("agents.entries.{}.{}", agent_id, key));
                                     }
                                 }
                             }
@@ -2401,7 +2480,8 @@ fn has_ui_fields(val: &Value) -> bool {
 ///
 /// 保留的合法配置字段（不清理）：
 /// - `browser.*` - OpenClaw browser profiles 配置（如 browser.profiles）
-/// - `agents.list` - OpenClaw agent list 配置
+/// - `agents.list` - OpenClaw 7.x agent list 配置
+/// - `agents.entries` - OpenClaw 2026.8.1+ keyed agent 配置
 /// - 其他 OpenClaw schema 定义的字段
 ///
 /// 清理的 UI 专属字段：
@@ -2410,7 +2490,7 @@ fn has_ui_fields(val: &Value) -> bool {
 fn strip_ui_fields(mut val: Value) -> Value {
     if let Some(obj) = val.as_object_mut() {
         // 清理根层级 ClawPanel 内部字段（version info 等）
-        // 注意：保留 browser.* 和 agents.list，这些是 OpenClaw 合法的配置字段
+        // 注意：保留 browser.* 以及 Agent 注册表，这些是 OpenClaw 合法配置字段
         for key in &[
             "current",
             "latest",
@@ -2482,7 +2562,7 @@ fn strip_ui_fields(mut val: Value) -> Value {
                 }
             }
         }
-        // 递归处理 agents 数组中的元素（保留 agents.list 等合法字段）
+        // 递归处理 Agent 注册表元素（同时支持 7.x list 与 8.1+ entries）
         if let Some(agents_val) = obj.get_mut("agents") {
             if let Some(agents_obj) = agents_val.as_object_mut() {
                 agents_obj.remove("profiles");
@@ -2498,8 +2578,41 @@ fn strip_ui_fields(mut val: Value) -> Value {
                         }
                     }
                 }
+                if let Some(Value::Object(entries)) = agents_obj.get_mut("entries") {
+                    for agent in entries.values_mut() {
+                        if let Some(agent_obj) = agent.as_object_mut() {
+                            // canonical entries 的 id 来自键名，内嵌 id 会被 8.1 严格 schema 拒绝。
+                            agent_obj.remove("id");
+                            agent_obj.remove("current");
+                            agent_obj.remove("latest");
+                            agent_obj.remove("update_available");
+                        }
+                    }
+                }
             }
         }
+    }
+    val
+}
+
+fn strip_retired_openclaw_fields(mut val: Value, installed_version: Option<&str>) -> Value {
+    if !installed_version
+        .map(supports_agent_entries_version)
+        .unwrap_or(false)
+    {
+        return val;
+    }
+    if let Some(commands) = val.get_mut("commands").and_then(Value::as_object_mut) {
+        commands.remove("ownerDisplay");
+        commands.remove("ownerDisplaySecret");
+    }
+    if let Some(control_ui) = val
+        .get_mut("gateway")
+        .and_then(Value::as_object_mut)
+        .and_then(|gateway| gateway.get_mut("controlUi"))
+        .and_then(Value::as_object_mut)
+    {
+        control_ui.remove("allowInsecureAuth");
     }
     val
 }
@@ -6178,10 +6291,29 @@ fn get_uid() -> Result<u32, String> {
 }
 
 const OPENCLAW_NATIVE_CONFIG_RELOAD_VERSION_FLOOR: &str = "2026.7.1";
+const OPENCLAW_AGENT_ENTRIES_VERSION_FLOOR: &str = "2026.8.1";
+
+fn supports_agent_entries_version(version: &str) -> bool {
+    let parsed = parse_version(&base_version(version));
+    !parsed.is_empty() && parsed >= parse_version(OPENCLAW_AGENT_ENTRIES_VERSION_FLOOR)
+}
 
 fn supports_native_config_reload(version: &str) -> bool {
     let version = parse_version(&base_version(version));
     !version.is_empty() && version >= parse_version(OPENCLAW_NATIVE_CONFIG_RELOAD_VERSION_FLOOR)
+}
+
+fn installed_openclaw_version_from_files() -> Option<String> {
+    let cli_path = crate::utils::resolve_openclaw_cli_path()?;
+    read_version_from_installation(std::path::Path::new(&cli_path))
+}
+
+/// OpenClaw 2026.8.1 起持久化 Agent 注册表改为 agents.entries。
+/// 这里只读安装文件，不执行 CLI，供配置形状尚未出现时的兼容写入使用。
+pub(crate) fn installed_openclaw_supports_agent_entries() -> bool {
+    installed_openclaw_version_from_files()
+        .map(|value| supports_agent_entries_version(&value))
+        .unwrap_or(false)
 }
 
 async fn restart_gateway_internal(app: Option<&tauri::AppHandle>) -> Result<String, String> {
@@ -6263,11 +6395,12 @@ pub async fn restart_gateway(app: tauri::AppHandle) -> Result<String, String> {
 pub async fn doctor_fix() -> Result<Value, String> {
     use crate::utils::openclaw_command_async;
 
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        openclaw_command_async().args(["doctor", "--fix"]).output(),
-    )
-    .await;
+    let mut command = openclaw_command_async();
+    command.args(["doctor", "--fix"]);
+    if installed_openclaw_supports_agent_entries() {
+        command.args(["--non-interactive", "--yes"]);
+    }
+    let result = tokio::time::timeout(std::time::Duration::from_secs(120), command.output()).await;
 
     match result {
         Ok(Ok(o)) => {
@@ -6288,7 +6421,7 @@ pub async fn doctor_fix() -> Result<Value, String> {
                 Err(format!("执行 doctor 失败: {e}"))
             }
         }
-        Err(_) => Err("doctor --fix 执行超时 (30s)".to_string()),
+        Err(_) => Err("doctor --fix 执行超时 (120s)".to_string()),
     }
 }
 
@@ -6297,11 +6430,12 @@ pub async fn doctor_fix() -> Result<Value, String> {
 pub async fn doctor_check() -> Result<Value, String> {
     use crate::utils::openclaw_command_async;
 
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(20),
-        openclaw_command_async().args(["doctor"]).output(),
-    )
-    .await;
+    let mut command = openclaw_command_async();
+    command.arg("doctor");
+    if installed_openclaw_supports_agent_entries() {
+        command.arg("--non-interactive");
+    }
+    let result = tokio::time::timeout(std::time::Duration::from_secs(120), command.output()).await;
 
     match result {
         Ok(Ok(o)) => {
@@ -6314,7 +6448,7 @@ pub async fn doctor_check() -> Result<Value, String> {
             }))
         }
         Ok(Err(e)) => Err(format!("执行 doctor 失败: {e}")),
-        Err(_) => Err("doctor 执行超时 (20s)".to_string()),
+        Err(_) => Err("doctor 执行超时 (120s)".to_string()),
     }
 }
 
@@ -8284,6 +8418,7 @@ mod write_openclaw_config_merge_tests {
     use super::standalone_bundled_node_bin;
     use super::standalone_install_dir_impl;
     use super::standalone_install_version;
+    use super::strip_retired_openclaw_fields;
     use super::strip_ui_fields;
     use super::supports_native_config_reload;
     use super::validate_model_provider_env_refs;
@@ -8651,6 +8786,29 @@ mod write_openclaw_config_merge_tests {
             json!("aws-sdk")
         );
         assert!(cleaned["agents"].get("profiles").is_none());
+    }
+
+    #[test]
+    fn openclaw_8_1_removes_retired_strict_schema_fields_only_for_new_version() {
+        let legacy = json!({
+            "commands": {
+                "ownerDisplay": "raw",
+                "ownerDisplaySecret": "legacy-secret"
+            },
+            "gateway": {
+                "controlUi": { "allowInsecureAuth": true }
+            }
+        });
+
+        let official = strip_retired_openclaw_fields(legacy.clone(), Some("2026.8.1"));
+        assert!(official["commands"].get("ownerDisplay").is_none());
+        assert!(official["commands"].get("ownerDisplaySecret").is_none());
+        assert!(official["gateway"]["controlUi"]
+            .get("allowInsecureAuth")
+            .is_none());
+
+        let chinese = strip_retired_openclaw_fields(legacy.clone(), Some("2026.7.1-zh.2"));
+        assert_eq!(chinese, legacy);
     }
 
     #[test]
