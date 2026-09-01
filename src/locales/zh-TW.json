@@ -5338,7 +5338,8 @@
       "subtitle": "Gateway {from} → 推薦 {to}",
       "dismissTooltip": "本次工作階段不再提醒"
     },
-    "tooOldForProtocol": "Gateway 核心版本過舊，不相容目前 ClawPanel 使用的握手協議。請將 OpenClaw 核心升級到推薦版本（{recommended}）後重試。可在「服務管理 → OpenClaw → 一鍵升級」中完成升級。"
+    "tooOldForProtocol": "Gateway 核心版本過舊，不相容目前 ClawPanel 使用的握手協議。請將 OpenClaw 核心升級到推薦版本（{recommended}）後重試。可在「服務管理 → OpenClaw → 一鍵升級」中完成升級。",
+    "deviceAuthFailed": "Gateway 裝置簽章驗證失敗（{detail}）。ClawPanel 已嘗試自動修復；請重新啟動 Gateway 後重試，若仍失敗請在服務管理中查看啟動診斷。"
   },
   "siteMessages": {
     "title": "系统公告",

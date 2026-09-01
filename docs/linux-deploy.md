@@ -64,7 +64,7 @@ curl -fsSL https://raw.githubusercontent.com/qingchencloud/clawpanel/main/script
 
 脚本自动完成：
 1. 检测系统、安装 Node.js（如果缺少）
-2. 安装 OpenClaw 汉化版（如果缺少）
+2. 安装 OpenClaw 官方稳定版（如果缺少；可用 `OPENCLAW_SOURCE=chinese` 显式选择汉化版）
 3. 克隆 ClawPanel 仓库、安装依赖
 4. 创建 systemd 服务、开机自启
 5. 启动 ClawPanel Web，输出访问地址
@@ -109,7 +109,13 @@ npm -v    # 10.x.x
 ClawPanel 是 OpenClaw 的管理工具，需要先安装 OpenClaw：
 
 ```bash
-npm install -g @qingchencloud/openclaw-zh --registry https://registry.npmmirror.com
+npm install -g openclaw@2026.8.1 --registry https://registry.npmmirror.com
+```
+
+如需汉化版：
+
+```bash
+npm install -g @qingchencloud/openclaw-zh@2026.7.1-2-zh.1 --registry https://registry.npmmirror.com
 ```
 
 初始化配置（首次）：

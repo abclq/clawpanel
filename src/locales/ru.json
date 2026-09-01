@@ -5338,7 +5338,8 @@
       "subtitle": "Gateway {from} → recommended {to}",
       "dismissTooltip": "Не напоминать в этой сессии"
     },
-    "tooOldForProtocol": "Gateway kernel is too old and does not support the handshake protocol used by this ClawPanel. Please upgrade the OpenClaw kernel to the recommended version ({recommended}) and retry. You can upgrade from \"Services → OpenClaw → Upgrade\"."
+    "tooOldForProtocol": "Gateway kernel is too old and does not support the handshake protocol used by this ClawPanel. Please upgrade the OpenClaw kernel to the recommended version ({recommended}) and retry. You can upgrade from \"Services → OpenClaw → Upgrade\".",
+    "deviceAuthFailed": "Gateway device signature verification failed ({detail}). ClawPanel attempted an automatic repair. Restart the Gateway and retry; if it persists, check startup diagnostics in Services."
   },
   "siteMessages": {
     "title": "System notices",

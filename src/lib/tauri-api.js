@@ -299,10 +299,10 @@ export const api = {
   restartGateway: () => { invalidate('get_services_status'); return invoke('restart_gateway').finally(() => invalidate('get_services_status')) },
   doctorCheck: () => invoke('doctor_check'),
   doctorFix: () => invoke('doctor_fix'),
-  listOpenclawVersions: (source = 'chinese') => invoke('list_openclaw_versions', { source }),
+  listOpenclawVersions: (source = 'official') => invoke('list_openclaw_versions', { source }),
   // #Compat-4: 升级/卸载后 CLI 路径/版本/服务状态都可能变，一次性清掉相关前端缓存；
   //           Rust 端已经在命令内部调用 refresh_enhanced_path + invalidate_cli_detection_cache。
-  upgradeOpenclaw: (source = 'chinese', version = null, method = 'auto') => {
+  upgradeOpenclaw: (source = 'official', version = null, method = 'auto') => {
     invalidate('check_installation', 'check_node', 'check_git', 'get_services_status', 'get_status_summary', 'get_version_info')
     return invoke('upgrade_openclaw', { source, version, method })
   },
@@ -464,7 +464,12 @@ export const api = {
   deleteBackup: (name) => { invalidate('list_backups'); return invoke('delete_backup', { name }) },
 
   // 设备密钥 + Gateway 握手
-  createConnectFrame: (nonce, gatewayToken, gatewayPassword) => invoke('create_connect_frame', { nonce, gatewayToken, gatewayPassword: gatewayPassword || null }),
+  createConnectFrame: (nonce, gatewayToken, gatewayPassword, challengeTs = null) => invoke('create_connect_frame', {
+    nonce,
+    gatewayToken,
+    gatewayPassword: gatewayPassword || null,
+    challengeTs,
+  }),
 
   // 设备配对
   autoPairDevice: (origin = window.location.origin) => invoke('auto_pair_device', { origin: origin || null }),

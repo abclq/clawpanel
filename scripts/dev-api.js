@@ -18,6 +18,11 @@ import * as skillhubSdk from './lib/skillhub-sdk.js'
 import { createBackgroundJobQueue } from './media-background-queue.js'
 import { normalizeModelApiType } from '../src/lib/model-presets.js'
 import {
+  OPENCLAW_PROTOCOL_RANGE,
+  buildDeviceAuthPayloadV3,
+  resolveConnectSignedAt,
+} from '../src/lib/openclaw-gateway-compat.js'
+import {
   addAgentConfig,
   agentRosterKind,
   ensureAgentRoster,
@@ -2215,7 +2220,7 @@ async function _tryR2Install(version, source, logs) {
   return true
 }
 
-function recommendedVersionFor(source = 'chinese') {
+function recommendedVersionFor(source = 'official') {
   const policy = loadVersionPolicy()
   const panelEntry = findPanelPolicyEntry(policy, PANEL_VERSION)
   return panelEntry?.[source]?.recommended
@@ -2223,7 +2228,7 @@ function recommendedVersionFor(source = 'chinese') {
     || null
 }
 
-function npmPackageName(source = 'chinese') {
+function npmPackageName(source = 'official') {
   return source === 'official' ? 'openclaw' : '@qingchencloud/openclaw-zh'
 }
 
@@ -2580,7 +2585,7 @@ function getLocalOpenclawVersion() {
   return current || null
 }
 
-async function getLatestVersionFor(source = 'chinese') {
+async function getLatestVersionFor(source = 'official') {
   const pkg = npmPackageName(source)
   const encodedPkg = pkg.replace('/', '%2F').replace('@', '%40')
   const firstRegistry = pickRegistryForPackage(pkg)
@@ -2959,6 +2964,53 @@ function getOrCreateDeviceKey() {
   return { deviceId, publicKey, privateKey: keyPair.privateKey }
 }
 
+/**
+ * 构造 Web 运行时的 Gateway connect frame。
+ * 单独导出是为了用真实 OpenClaw Gateway 做端到端握手回归，不读取或暴露用户密钥。
+ */
+export function buildOpenClawConnectFrame({
+  nonce,
+  gatewayToken,
+  gatewayPassword,
+  challengeTs,
+  keyData,
+  platform = process.platform === 'darwin' ? 'macos' : process.platform,
+}) {
+  const { deviceId, publicKey, privateKey } = keyData
+  const signedAt = resolveConnectSignedAt(challengeTs)
+  const payloadStr = buildDeviceAuthPayloadV3({
+    deviceId,
+    clientId: 'openclaw-control-ui',
+    clientMode: 'ui',
+    role: 'operator',
+    scopes: SCOPES,
+    signedAt,
+    signatureToken: gatewayToken || '',
+    nonce,
+    platform,
+    deviceFamily: 'desktop',
+  })
+  const signature = crypto.sign(null, Buffer.from(payloadStr), privateKey)
+  const idHex = (signedAt & 0xFFFFFFFF).toString(16).padStart(8, '0')
+  const rndHex = Math.floor(Math.random() * 0xFFFF).toString(16).padStart(4, '0')
+  return {
+    type: 'req',
+    id: `connect-${idHex}-${rndHex}`,
+    method: 'connect',
+    params: {
+      minProtocol: OPENCLAW_PROTOCOL_RANGE.min,
+      maxProtocol: OPENCLAW_PROTOCOL_RANGE.max,
+      client: { id: 'openclaw-control-ui', version: '1.0.0', platform, deviceFamily: 'desktop', mode: 'ui' },
+      role: 'operator', scopes: SCOPES, caps: [],
+      auth: gatewayToken
+        ? { token: gatewayToken }
+        : (gatewayPassword ? { password: gatewayPassword } : {}),
+      device: { id: deviceId, publicKey, signedAt, nonce: nonce || '', signature: Buffer.from(signature).toString('base64url') },
+      locale: 'zh-CN', userAgent: 'ClawPanel/1.0.0 (web)',
+    },
+  }
+}
+
 function getLocalIps() {
   const ips = []
   const ifaces = networkInterfaces()
@@ -3251,7 +3303,7 @@ function calibrateOpenclawConfig(mode = 'inherit') {
 }
 
 // === Raw WebSocket（支持 Origin header，绕过 Gateway origin 检查）===
-function rawWsConnect(host, port, wsPath) {
+export function rawWsConnect(host, port, wsPath) {
   return new Promise((ok, no) => {
     const key = crypto.randomBytes(16).toString('base64')
     const req = http.request({ hostname: host, port, path: wsPath, method: 'GET', headers: {
@@ -3266,7 +3318,7 @@ function rawWsConnect(host, port, wsPath) {
   })
 }
 
-function wsReadFrame(socket, timeout = 8000) {
+export function wsReadFrame(socket, timeout = 8000) {
   return new Promise((ok, no) => {
     let settled = false
     const cleanup = () => {
@@ -3299,7 +3351,7 @@ function wsReadFrame(socket, timeout = 8000) {
   })
 }
 
-function wsSendFrame(socket, text) {
+export function wsSendFrame(socket, text) {
   const p = Buffer.from(text, 'utf8'), mask = crypto.randomBytes(4)
   let h
   if (p.length < 126) { h = Buffer.alloc(2); h[0] = 0x81; h[1] = 0x80 | p.length }
@@ -3308,7 +3360,7 @@ function wsSendFrame(socket, text) {
   socket.write(Buffer.concat([h, mask, m]))
 }
 
-function wsReadLoop(socket, onMessage, timeoutMs = DOCKER_TASK_TIMEOUT_MS) {
+export function wsReadLoop(socket, onMessage, timeoutMs = DOCKER_TASK_TIMEOUT_MS) {
   let buf = Buffer.alloc(0), done = false
   const timer = setTimeout(() => { done = true; socket.destroy() }, timeoutMs)
   const cancel = () => { done = true; clearTimeout(timer); try { socket.destroy() } catch {} }
@@ -13732,7 +13784,11 @@ const handlers = {
     if (challenge.event !== 'connect.challenge') throw new Error('Gateway 未发送 challenge')
 
     // 3b. 发送 connect 帧（固定 token + 完整设备签名）
-    const connectFrame = handlers.create_connect_frame({ nonce: challenge.payload?.nonce || '', gatewayToken: CLUSTER_TOKEN })
+    const connectFrame = handlers.create_connect_frame({
+      nonce: challenge.payload?.nonce || '',
+      challengeTs: challenge.payload?.ts,
+      gatewayToken: CLUSTER_TOKEN,
+    })
     wsSendFrame(socket, JSON.stringify(connectFrame))
 
     // 3c. 读取 connect 响应
@@ -15428,7 +15484,7 @@ const handlers = {
     return execOpenclawSync(['gateway', 'install'], { windowsHide: true, cwd: homedir() }, 'Gateway 服务安装失败') || 'Gateway 服务已安装'
   },
 
-  async list_openclaw_versions({ source = 'chinese' } = {}) {
+  async list_openclaw_versions({ source = 'official' } = {}) {
     const pkg = npmPackageName(source)
     const encodedPkg = pkg.replace('/', '%2F').replace('@', '%40')
     const firstRegistry = pickRegistryForPackage(pkg)
@@ -15459,7 +15515,7 @@ const handlers = {
     throw new Error('查询版本失败: ' + (lastError?.message || lastError || 'unknown error'))
   },
 
-  async upgrade_openclaw({ source = 'chinese', version, method = 'auto' } = {}) {
+  async upgrade_openclaw({ source = 'official', version, method = 'auto' } = {}) {
     const currentSource = detectInstalledSource()
     const currentInstallMode = detectActiveCliInstallMode()
     const pkg = npmPackageName(source)
@@ -15775,34 +15831,14 @@ const handlers = {
     return { paired: !!paired[keyData.deviceId] }
   },
 
-  create_connect_frame({ nonce, gatewayToken }) {
-    const { deviceId, publicKey, privateKey } = getOrCreateDeviceKey()
-    const signedAt = Date.now()
-    const platform = process.platform === 'darwin' ? 'macos' : process.platform
-    const scopesStr = SCOPES.join(',')
-    // 设备签名 payload 字符串格式：以 `v3|` 开头标识 payload schema 版本（device signature payload format = v3）。
-    // 注意：这里的 `v3` 是 **设备签名 payload 字符串的 schema 版本**，与下面 `minProtocol/maxProtocol` 协商的
-    // **Gateway WebSocket 握手帧协议版本**（v3 / v4）是两套独立的版本号。即使在 v4 握手协议下，
-    // 签名 payload 仍以 `v3|` 开头，两者互不影响。详见 src/lib/feature-catalog.js KERNEL_TARGET 注释。
-    const payloadStr = `v3|${deviceId}|openclaw-control-ui|ui|operator|${scopesStr}|${signedAt}|${gatewayToken || ''}|${nonce || ''}|${platform}|desktop`
-    const signature = crypto.sign(null, Buffer.from(payloadStr), privateKey)
-    const sigB64 = Buffer.from(signature).toString('base64url')
-    const idHex = (signedAt & 0xFFFFFFFF).toString(16).padStart(8, '0')
-    const rndHex = Math.floor(Math.random() * 0xFFFF).toString(16).padStart(4, '0')
-    return {
-      type: 'req',
-      id: `connect-${idHex}-${rndHex}`,
-      method: 'connect',
-      params: {
-        // 协议握手范围声明：下限 3 用于继续兼容历史内核，上限 4 启用新版增量 delta 协议。
-        minProtocol: 3, maxProtocol: 4,
-        client: { id: 'openclaw-control-ui', version: '1.0.0', platform, deviceFamily: 'desktop', mode: 'ui' },
-        role: 'operator', scopes: SCOPES, caps: [],
-        auth: { token: gatewayToken || '' },
-        device: { id: deviceId, publicKey, signedAt, nonce: nonce || '', signature: sigB64 },
-        locale: 'zh-CN', userAgent: 'ClawPanel/1.0.0 (web)',
-      },
-    }
+  create_connect_frame({ nonce, gatewayToken, gatewayPassword, challengeTs }) {
+    return buildOpenClawConnectFrame({
+      nonce,
+      gatewayToken,
+      gatewayPassword,
+      challengeTs,
+      keyData: getOrCreateDeviceKey(),
+    })
   },
   // 数据目录 & 图片存储
   assistant_ensure_data_dir() {

@@ -68,10 +68,11 @@ COPY --from=builder --chown=node:node /build/package*.json ./
 COPY --from=builder --chown=node:node /build/node_modules ./node_modules
 COPY --from=builder --chown=node:node /build/src/lib/model-presets.js ./src/lib/model-presets.js
 
-# 安装 OpenClaw CLI（用于读写配置）
-# 使用国内镜像源加速
-RUN npm install -g @qingchencloud/openclaw-zh --registry https://registry.npmmirror.com || \
-    npm install -g @qingchencloud/openclaw-zh --registry https://registry.npmjs.org
+# 安装 OpenClaw CLI（默认官方稳定版；构建参数仍可切换汉化版）
+ARG OPENCLAW_PACKAGE=openclaw
+ARG OPENCLAW_VERSION=2026.8.1
+RUN npm install -g "${OPENCLAW_PACKAGE}@${OPENCLAW_VERSION}" --registry https://registry.npmmirror.com || \
+    npm install -g "${OPENCLAW_PACKAGE}@${OPENCLAW_VERSION}" --registry https://registry.npmjs.org
 
 # 创建数据目录
 RUN mkdir -p /app/data && \

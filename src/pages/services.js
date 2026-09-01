@@ -88,7 +88,7 @@ async function loadAll(page) {
 // ===== 版本检测 =====
 
 // 后端检测到的当前安装源
-let detectedSource = 'chinese'
+let detectedSource = 'official'
 let lastVersionInfo = null
 
 async function loadVersion(page) {
@@ -99,7 +99,7 @@ async function loadVersion(page) {
       api.readPanelConfig().catch(() => ({})),
     ])
     lastVersionInfo = info
-    detectedSource = info.source || 'chinese'
+    detectedSource = info.source === 'chinese' ? 'chinese' : 'official'
     const ver = info.current || t('common.unknown')
     const hasRecommended = !!info.recommended
     const aheadOfRecommended = !!info.current && hasRecommended && !!info.ahead_of_recommended
