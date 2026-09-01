@@ -20123,7 +20123,12 @@ async function _apiMiddleware(req, res, next) {
   // --- 健康检查（前端用于检测后端是否在线） ---
   if (cmd === 'health') {
     res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ ok: true, ts: Date.now() }))
+    res.end(JSON.stringify({
+      ok: true,
+      ts: Date.now(),
+      backendVersion: PANEL_VERSION,
+      apiContractVersion: 1,
+    }))
     return
   }
 
@@ -20331,6 +20336,10 @@ async function _apiMiddleware(req, res, next) {
 }
 
 // 导出供 serve.js 独立部署使用
+export function _isWebSocketAuthorized(req) {
+  return isAuthenticated(req)
+}
+
 export { _initApi, _apiMiddleware, nodeVersionSatisfiesRequirement }
 
 export function devApiPlugin() {

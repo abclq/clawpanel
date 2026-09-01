@@ -217,6 +217,8 @@ curl -fsSL https://raw.githubusercontent.com/qingchencloud/clawpanel/main/script
 `curl -fsSL https://raw.githubusercontent.com/qingchencloud/clawpanel/main/scripts/linux-deploy.sh | OPENCLAW_SOURCE=chinese bash`。
 部署完成后访问 `http://服务器IP:1420`，功能与桌面版一致。
 
+也可以从 GitHub Release 下载 `web-x.y.z.zip` 完整 Web 服务端包。升级时必须整体替换前端与 Node 后端并重启服务；`frontend-hot-update-x.y.z.zip` 只供桌面端热更新，不能用于 Web 服务器部署。
+
 📖 详细教程见 [Linux 部署指南](docs/linux-deploy.md)
 
 ### Docker 部署
@@ -287,6 +289,8 @@ sudo systemctl restart clawpanel
 ```
 
 普通用户服务将最后一行替换为 `systemctl --user restart clawpanel`。升级后如果浏览器仍显示旧版本，请使用 `Ctrl+F5` 强制刷新。
+
+> **重要**：Web 版不能只覆盖 `dist/`。页面前端、`scripts/dev-api.js` 和 WebSocket 代理必须保持同一版本；新版会在 `/__api/health` 自动核对前后端版本，不一致时会停止加载并提示安装完整 Web 包。
 
 > **升级 OpenClaw**：面板和 OpenClaw 版本需要匹配。可在「服务管理」页面一键升级，或手动执行：
 > ```bash

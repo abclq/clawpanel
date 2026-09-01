@@ -5,6 +5,8 @@
 
 import { t } from './i18n.js'
 
+const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0'
+
 export function isTauriRuntime() {
   return !!window.__TAURI_INTERNALS__ || !!window.__TAURI__ || window.location?.hostname === 'tauri.localhost'
 }
@@ -215,6 +217,7 @@ async function webStreamInvoke(cmd, args, onEvent, options = {}) {
 
 // 后端连接状态
 let _backendOnline = null // null=未检测, true=在线, false=离线
+let _backendHealth = null
 const _backendListeners = []
 
 export function onBackendStatusChange(fn) {
@@ -223,6 +226,7 @@ export function onBackendStatusChange(fn) {
 }
 
 export function isBackendOnline() { return _backendOnline }
+export function getBackendHealth() { return _backendHealth ? { ..._backendHealth } : null }
 
 function _setBackendOnline(v) {
   if (_backendOnline !== v) {
@@ -233,7 +237,11 @@ function _setBackendOnline(v) {
 
 // 后端健康检查
 export async function checkBackendHealth() {
-  if (isTauriRuntime()) { _setBackendOnline(true); return true }
+  if (isTauriRuntime()) {
+    _backendHealth = { ok: true, backendVersion: APP_VERSION, apiContractVersion: 1, compatible: true }
+    _setBackendOnline(true)
+    return true
+  }
   try {
     const resp = await fetch('/__api/health', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
     const ct = (resp.headers.get('content-type') || '').toLowerCase()
@@ -242,10 +250,13 @@ export async function checkBackendHealth() {
       return false
     }
     const data = await resp.json().catch(() => null)
-    const ok = !!data?.ok
+    const compatible = data?.backendVersion === APP_VERSION && data?.apiContractVersion === 1
+    _backendHealth = data && typeof data === 'object' ? { ...data, compatible } : null
+    const ok = !!data?.ok && compatible
     _setBackendOnline(ok)
     return ok
   } catch {
+    _backendHealth = null
     _setBackendOnline(false)
     return false
   }

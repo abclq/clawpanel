@@ -10,7 +10,7 @@ import { renderSidebar, openMobileSidebar } from './components/sidebar.js'
 import { initTheme } from './lib/theme.js'
 import { detectOpenclawStatus, isOpenclawReady, isUpgrading, isGatewayRunning, isGatewayForeign, onGatewayChange, startGatewayPoll, onGuardianGiveUp, resetAutoRestart, loadActiveInstance, getActiveInstance, onInstanceChange } from './lib/app-state.js'
 import { wsClient } from './lib/ws-client.js'
-import { api, checkBackendHealth, invalidate, isBackendOnline, isTauriRuntime, onBackendStatusChange } from './lib/tauri-api.js'
+import { api, checkBackendHealth, getBackendHealth, invalidate, isBackendOnline, isTauriRuntime, onBackendStatusChange } from './lib/tauri-api.js'
 const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0'
 import { statusIcon } from './lib/icons.js'
 import { isForeignGatewayError, showGatewayConflictGuidance } from './lib/gateway-ownership.js'
@@ -367,15 +367,23 @@ let _backendRetryTimer = null
 function showBackendDownOverlay() {
   if (document.getElementById('backend-down-overlay')) return
   _hideSplash()
+  const health = getBackendHealth()
+  const versionMismatch = !!health?.ok && health?.compatible === false
+  const backendVersion = health?.backendVersion || t('common.unknown')
+  const title = versionMismatch ? t('common.backendMismatchTitle') : t('common.backendDownTitle')
+  const desc = versionMismatch
+    ? t('common.backendMismatchDesc', { frontendVersion: APP_VERSION, backendVersion })
+    : t('common.backendDownDesc')
+  const hint = versionMismatch ? t('common.backendMismatchHint') : t('common.backendDownHint')
   const overlay = document.createElement('div')
   overlay.id = 'backend-down-overlay'
   overlay.innerHTML = `
     <div class="login-card" style="text-align:center">
       ${_logoSvg}
-      <div class="login-title" style="color:var(--error,#ef4444)">${t('common.backendDownTitle')}</div>
+      <div class="login-title" style="color:var(--error,#ef4444)">${title}</div>
       <div class="login-desc" style="line-height:1.8">
-        ${t('common.backendDownDesc')}<br>
-        <span style="font-size:12px;color:var(--text-tertiary)">${t('common.backendDownHint')}</span>
+        ${desc}<br>
+        <span style="font-size:12px;color:var(--text-tertiary)">${hint}</span>
       </div>
       <div style="background:var(--bg-tertiary);border-radius:var(--radius-md,8px);padding:14px 18px;margin:16px 0;text-align:left;font-family:var(--font-mono,monospace);font-size:12px;line-height:1.8;user-select:all;color:var(--text-secondary)">
         <div style="color:var(--text-tertiary);margin-bottom:4px"># ${t('common.devMode')}</div>

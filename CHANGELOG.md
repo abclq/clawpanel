@@ -7,6 +7,17 @@
 
 ## [未发布 (Unreleased)]
 
+## [0.21.5] - 2026-09-01
+
+### 修复 (Fixes)
+
+- **修复 OpenClaw 2026.8.1 WebSocket 远程 Origin 拒绝** — Web/Ubuntu 代理不再把浏览器公网或局域网 Origin 直接传给本机 Gateway，统一使用受面板 Session 保护的 loopback 上游来源，实时聊天、路由地图、渠道运行态与梦境模式恢复连接
+- **阻止 Web 前后端混装** — `/__api/health` 返回后端版本和 API 契约版本；浏览器检测到只替换 `dist/` 导致版本不一致时停止加载，并明确提示安装完整 Web 包
+
+### 改进 (Improvements)
+
+- **区分完整 Web 包与桌面热更新包** — Release 中 `web-x.y.z.zip` 改为可独立运行的完整 Node Web 服务端包，`frontend-hot-update-x.y.z.zip` 仅保留给桌面端前端热更新，避免用户误装
+
 ## [0.21.4] - 2026-09-01
 
 ### 修复 (Fixes)
