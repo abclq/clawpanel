@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -20,11 +20,17 @@ test('Web 发布同时生成完整服务端包与独立前端热更新包', () =
 test('完整 Web 服务端包包含运行后端和版本核验所需文件', () => {
   const temp = mkdtempSync(path.join(root, '.tmp-web-bundle-test-'))
   try {
-    const relative = path.relative(root, temp)
+    const sourceDist = path.join(temp, 'fixture-dist')
+    const output = path.join(temp, 'output')
+    mkdirSync(sourceDist, { recursive: true })
+    writeFileSync(path.join(sourceDist, 'index.html'), '<!doctype html><title>fixture</title>')
+
     const result = spawnSync(process.execPath, [
       path.join(root, 'scripts/prepare-web-bundle.mjs'),
       '--output',
-      relative,
+      path.relative(root, output),
+      '--dist-dir',
+      path.relative(root, sourceDist),
     ], { cwd: root, encoding: 'utf8' })
     assert.equal(result.status, 0, result.stdout + result.stderr)
 
@@ -39,7 +45,7 @@ test('完整 Web 服务端包包含运行后端和版本核验所需文件', () 
       'openclaw-version-policy.json',
       'WEB-BUNDLE-README.txt',
     ]) {
-      assert.ok(statSync(path.join(temp, file)).isFile(), `${file} 未打入完整 Web 包`)
+      assert.ok(statSync(path.join(output, file)).isFile(), `${file} 未打入完整 Web 包`)
     }
   } finally {
     rmSync(temp, { recursive: true, force: true })
