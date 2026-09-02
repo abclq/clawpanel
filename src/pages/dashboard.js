@@ -15,6 +15,7 @@ import { showGatewayStartDiagnostics } from '../lib/gateway-start-diagnostics.js
 import { syncExplicitModelPolicyAllow } from '../lib/openclaw-model-policy.js'
 
 let _unsubGw = null
+let _unsubWsStatus = null
 let _dashboardLoadPromise = null
 let _dashboardPendingLoad = null
 let _lastGwChangeLoad = 0
@@ -90,6 +91,10 @@ export async function render() {
     loadDashboardData(page)
   })
 
+  // WebSocket 握手完成通常晚于仪表盘首屏数据；只重绘连接状态，避免页面一直停在“握手中”。
+  if (_unsubWsStatus) _unsubWsStatus()
+  _unsubWsStatus = wsClient.onStatusChange(() => refreshDashboardWsStatus(page))
+
   if (_dashboardRuntimeRefreshHandler) window.removeEventListener('openclaw:runtime-changed', _dashboardRuntimeRefreshHandler)
   _dashboardRuntimeRefreshHandler = () => {
     _dashboardInitialized = false
@@ -104,6 +109,7 @@ export async function render() {
 
 export function cleanup() {
   if (_unsubGw) { _unsubGw(); _unsubGw = null }
+  if (_unsubWsStatus) { _unsubWsStatus(); _unsubWsStatus = null }
   if (_detachCliConflict) { try { _detachCliConflict() } catch (_) {} _detachCliConflict = null }
   if (_dashboardRuntimeRefreshHandler) {
     window.removeEventListener('openclaw:runtime-changed', _dashboardRuntimeRefreshHandler)
@@ -692,13 +698,19 @@ function renderWsStatus() {
   }
 
   return `
-    <div class="config-section" style="margin-top:16px">
+    <div class="config-section" data-dashboard-ws-status style="margin-top:16px">
       <div class="config-section-title" style="display:flex;align-items:center;gap:8px">
         <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${statusColor}"></span>
         WebSocket ${statusLabel}
         ${statusDetail ? `<span style="font-weight:normal;color:var(--text-tertiary);font-size:var(--font-size-xs)">${escapeHtml(statusDetail)}</span>` : ''}
       </div>
     </div>`
+}
+
+function refreshDashboardWsStatus(page) {
+  if (!page?.isConnected) return
+  const current = page.querySelector('[data-dashboard-ws-status]')
+  if (current) current.outerHTML = renderWsStatus()
 }
 
 const CHANNEL_ICONS = { qqbot: 'message-square', qq: 'message-circle', feishu: 'message-square', dingtalk: 'message-square', telegram: 'send', discord: 'hash', slack: 'hash', weixin: 'message-circle', wechat: 'message-circle', webchat: 'globe', whatsapp: 'phone', line: 'message-circle', teams: 'users', msteams: 'users', matrix: 'globe' }

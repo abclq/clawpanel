@@ -228,7 +228,7 @@ docker run -d --name clawpanel --restart unless-stopped \
   -p 1420:1420 -v clawpanel-data:/root/.openclaw \
   node:22.22.3-slim \
   sh -c "apt-get update && apt-get install -y git && \
-    npm install -g openclaw@2026.8.1 --registry https://registry.npmmirror.com && \
+    npm install -g openclaw@2026.8.2 --registry https://registry.npmmirror.com && \
     git clone https://github.com/qingchencloud/clawpanel.git /app && \
     cd /app && npm install && npm run build && npm run serve"
 ```
@@ -294,7 +294,7 @@ sudo systemctl restart clawpanel
 
 > **升级 OpenClaw**：面板和 OpenClaw 版本需要匹配。可在「服务管理」页面一键升级，或手动执行：
 > ```bash
-> sudo npm install -g openclaw@2026.8.1 --registry https://registry.npmmirror.com
+> sudo npm install -g openclaw@2026.8.2 --registry https://registry.npmmirror.com
 > ```
 > 汉化版仍可显式安装：`sudo npm install -g @qingchencloud/openclaw-zh@2026.7.1-2-zh.1 --registry https://registry.npmmirror.com`。
 

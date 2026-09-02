@@ -111,7 +111,7 @@ npm -v    # 10.x.x
 ClawPanel 是 OpenClaw 的管理工具，需要先安装 OpenClaw：
 
 ```bash
-npm install -g openclaw@2026.8.1 --registry https://registry.npmmirror.com
+npm install -g openclaw@2026.8.2 --registry https://registry.npmmirror.com
 ```
 
 如需汉化版：

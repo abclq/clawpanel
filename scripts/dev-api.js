@@ -980,7 +980,10 @@ function detectWindowsShimSource(cliPath) {
   try {
     const lower = fs.readFileSync(normalized, 'utf8').toLowerCase()
     if (lower.includes('@qingchencloud') || lower.includes('openclaw-zh')) return 'npm-zh'
-    if (lower.includes('/node_modules/openclaw/') || lower.includes('\\node_modules\\openclaw\\')) return 'npm-official'
+    // npm 在 Windows 全局目录生成的 shim 常见写法是
+    // `%~dp0node_modules\openclaw\openclaw.mjs`，node_modules 前没有字面量斜杠。
+    // 只要 shim 引用了 node_modules 且未命中汉化包标记，即可判定为官方 npm 包。
+    if (lower.includes('node_modules')) return 'npm-official'
   } catch {}
   return null
 }

@@ -7,6 +7,20 @@
 
 ## [未发布 (Unreleased)]
 
+## [0.21.6] - 2026-09-02
+
+### 兼容性 (Compatibility)
+
+- **官方 OpenClaw 稳定基线升级到 2026.8.2** — 安装向导、Linux 一键部署与 Docker 镜像默认使用官方 `openclaw@2026.8.2`；继续保留 8.1 起的 `agents.entries`、模型策略和 Gateway challenge 时间戳兼容逻辑，并保持对旧版内核的协议范围兼容
+
+### 修复 (Fixes)
+
+- **仪表盘实时刷新 WebSocket 状态** — Gateway 握手完成后立即把“握手中”更新为“已连接”，无需切页或手动刷新
+
+### 测试与验证 (Testing)
+
+- 官方 npm `openclaw@2026.8.2` 隔离运行时通过配置 schema、Agent 注册表、协议 4 Gateway 握手、health/status、消息渠道、路由地图、梦境模式与真实本地模型对话回归
+
 ## [0.21.5] - 2026-09-01
 
 ### 修复 (Fixes)
